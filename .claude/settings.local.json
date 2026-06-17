@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(winget --version)",
+      "Bash(winget install *)",
+      "PowerShell(Get-ChildItem \"$env:LOCALAPPDATA\\\\Microsoft\\\\WinGet\\\\Packages\" -Recurse -Filter \"ngrok.exe\" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName)",
+      "PowerShell(winget install Cloudflare.cloudflared 2>&1)",
+      "PowerShell(ssh -V 2>&1)",
+      "Bash(curl -s \"https://graph.facebook.com/v25.0/1032683093271618?fields=id,whatsapp_business_account\" -H \"Authorization: Bearer EAAfWyipnOp8BRt4a57HgUWpzpyfbV3EjJ11ZByeaY8kRpgWyRtGdIiMwztQ25PBv8j6Jk5csg6kIsYxdk06hHGPZB4DDbzJSsygFbFCBllP9JMjoNBt8sEMjBY8ATmWlAkaZCZAwEyZAQZBTUw0HTJa9avX74dWkuSrXRdDQKZCJAXEY8AXfzBiO8ZAEuCZC3jL60oq1UOHzhNPPsCJhNUu13Fl8dbocIrvZC2HA9FEAh6nVKYX09Y2DC4uJx3oj3JNWpCzd1r302Dt2AVUTMuYZAtuZA8E9\")",
+      "Bash(curl -s \"https://graph.facebook.com/v25.0/me/businesses?fields=id,name,whatsapp_business_accounts\" -H \"Authorization: Bearer EAAfWyipnOp8BRt4a57HgUWpzpyfbV3EjJ11ZByeaY8kRpgWyRtGdIiMwztQ25PBv8j6Jk5csg6kIsYxdk06hHGPZB4DDbzJSsygFbFCBllP9JMjoNBt8sEMjBY8ATmWlAkaZCZAwEyZAQZBTUw0HTJa9avX74dWkuSrXRdDQKZCJAXEY8AXfzBiO8ZAEuCZC3jL60oq1UOHzhNPPsCJhNUu13Fl8dbocIrvZC2HA9FEAh6nVKYX09Y2DC4uJx3oj3JNWpCzd1r302Dt2AVUTMuYZAtuZA8E9\")",
+      "Bash(curl -s \"https://graph.facebook.com/v25.0/1032683093271618\" -H \"Authorization: Bearer EAAfWyipnOp8BRt4a57HgUWpzpyfbV3EjJ11ZByeaY8kRpgWyRtGdIiMwztQ25PBv8j6Jk5csg6kIsYxdk06hHGPZB4DDbzJSsygFbFCBllP9JMjoNBt8sEMjBY8ATmWlAkaZCZAwEyZAQZBTUw0HTJa9avX74dWkuSrXRdDQKZCJAXEY8AXfzBiO8ZAEuCZC3jL60oq1UOHzhNPPsCJhNUu13Fl8dbocIrvZC2HA9FEAh6nVKYX09Y2DC4uJx3oj3JNWpCzd1r302Dt2AVUTMuYZAtuZA8E9\")"
+    ]
+  }
+}
