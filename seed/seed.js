@@ -5,7 +5,7 @@ const Product   = require('../models/Product');
 const Order     = require('../models/Order');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/waflow';
-const PHONE = '61422286126'; // all customers use this phone for testing
+const PHONE = '+61422286126'; // all customers use this phone for testing
 
 // ─── Data templates ──────────────────────────────────────────────────────────
 

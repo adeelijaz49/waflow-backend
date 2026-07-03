@@ -1,4 +1,5 @@
 require("dotenv").config();
+const tokenManager = require("./utils/tokenManager");
 const express  = require("express");
 const axios    = require("axios");
 const cors     = require("cors");
@@ -8,10 +9,11 @@ const mime     = require("mime-types");
 const Stripe   = require("stripe");
 const mongoose = require("mongoose");
 
+const { PORT, APP_URL } = require("./utils/config");
+const { carts, pendingCatalogs, pendingAddressReqs } = require("./utils/state");
+
 const app  = express();
-const PORT = process.env.PORT || 3000;
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
-const APP_URL = process.env.APP_URL || `http://localhost:${PORT}`;
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/waflow";
 
 // Stripe webhook needs raw body — before express.json()
@@ -30,6 +32,8 @@ app.use("/api/products",   require("./routes/products"));
 app.use("/api/customers",  require("./routes/customers"));
 app.use("/api/orders",     require("./routes/orders"));
 app.use("/api/promotions", require("./routes/promotions"));
+app.use("/api/whatsapp",   require("./routes/whatsapp"));
+app.use(require("./routes/pay"));
 
 // ─── Stripe ──────────────────────────────────────────────────────────────────
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
@@ -102,32 +106,50 @@ function generateProductId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-// ─── In-memory cart state (for Stripe flow) ──────────────────────────────────
-const pendingProducts = new Map();
-const carts = new Map();
+// ─── In-memory state ─────────────────────────────────────────────────────────
+// carts / pendingCatalogs / pendingAddressReqs live in ./utils/state (shared with routes/pay.js)
+const pendingProducts = new Map(); // randomId → { name, priceAud, description }
 
 // ─── Stripe helpers ──────────────────────────────────────────────────────────
 function buildCartSummary(cart) {
   return cart.map((item, i) => `${i + 1}. ${item.name} — $${item.priceAud.toFixed(2)} AUD`).join("\n");
 }
 
-async function createCheckoutSession(buyerPhone, cart) {
-  const lineItems = cart.map(item => ({
-    price_data: {
-      currency: "aud",
-      product_data: { name: item.name, description: item.description || undefined },
-      unit_amount: Math.round(item.priceAud * 100),
+const SHIPPING_COST_AUD = 25;
+
+async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, address) {
+  const total = +(subtotal + shippingCost).toFixed(2);
+  return stripe.paymentIntents.create({
+    amount: Math.round(total * 100),
+    currency: "aud",
+    automatic_payment_methods: { enabled: true },
+    metadata: {
+      buyerPhone,
+      subtotal:     String(subtotal),
+      shippingCost: String(shippingCost),
+      address:      address || "",
     },
-    quantity: 1,
-  }));
-  return stripe.checkout.sessions.create({
-    payment_method_types: ["card"],
-    line_items: lineItems,
-    mode: "payment",
-    success_url: `${APP_URL}/payment-success?session_id={CHECKOUT_SESSION_ID}`,
-    cancel_url:  `${APP_URL}/payment-cancel`,
-    metadata: { buyerPhone },
   });
+}
+
+async function proceedToPayment(from, customer, cart) {
+  const subtotal = +cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
+  const total    = +(subtotal + SHIPPING_COST_AUD).toFixed(2);
+
+  try {
+    const pi = await createPaymentIntent(from, cart, SHIPPING_COST_AUD, subtotal, customer.address);
+    await waPost({
+      messaging_product: "whatsapp", to: from, type: "text",
+      text: {
+        body: `🛒 *Your Order Summary*\n\n${buildCartSummary(cart)}\n\nSubtotal: $${subtotal.toFixed(2)} AUD\nShipping: $${SHIPPING_COST_AUD.toFixed(2)} AUD\n*Total: $${total.toFixed(2)} AUD*\n\n📍 Delivering to:\n${customer.address}\n\nPay securely:\n${APP_URL}/pay/${pi.id}`,
+      },
+    });
+    pendingCatalogs.delete(from);
+  } catch (err) {
+    console.error("Payment intent error:", err.message);
+    await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+      text: { body: "Sorry, checkout is unavailable right now. Please try again." } }).catch(() => {});
+  }
 }
 
 // ─── Stripe webhook ──────────────────────────────────────────────────────────
@@ -139,11 +161,14 @@ async function handleStripeWebhook(req, res) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  if (event.type === "checkout.session.completed") {
-    const session    = event.data.object;
-    const buyerPhone = session.metadata?.buyerPhone;
-    const amountAud  = (session.amount_total / 100).toFixed(2);
-    const points     = Math.floor(session.amount_total / 100);
+  if (event.type === "payment_intent.succeeded") {
+    const pi          = event.data.object;
+    const buyerPhone   = pi.metadata?.buyerPhone;
+    const subtotal     = parseFloat(pi.metadata?.subtotal || '0');
+    const shippingCost = parseFloat(pi.metadata?.shippingCost || '0');
+    const address      = pi.metadata?.address || '';
+    const amountAud    = (pi.amount / 100).toFixed(2);
+    const points       = Math.floor(subtotal);
 
     const cartItems = carts.get(buyerPhone) || [];
     carts.delete(buyerPhone);
@@ -167,8 +192,10 @@ async function handleStripeWebhook(req, res) {
               quantity:    1,
               unitPrice:   item.priceAud,
             })),
-            subtotal:            session.amount_total / 100,
-            total:               session.amount_total / 100,
+            subtotal,
+            shippingCost,
+            shippingAddress:     address,
+            total:               pi.amount / 100,
             status:              'confirmed',
             loyaltyPointsEarned: points,
           });
@@ -196,6 +223,100 @@ app.get("/webhook", (req, res) => {
   res.sendStatus(403);
 });
 
+// ─── Promo catalog helpers ────────────────────────────────────────────────────
+const { sendCatalog, getCategories, sendCategories } = require("./utils/whatsapp");
+
+async function handlePromoInterest(from, promoId) {
+  try {
+    const Promotion = require("./models/Promotion");
+    const Product   = require("./models/Product");
+
+    const promo = await Promotion.findById(promoId).populate("products");
+    if (!promo) return;
+
+    let products = promo.products || [];
+    if (!products.length && promo.type === "store_wide") {
+      products = await Product.find({ active: true }).limit(50).lean();
+    }
+
+    if (!products.length) {
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: "Sorry, no products are available for this promotion right now." } });
+      return;
+    }
+
+    const categories = getCategories(products);
+    pendingCatalogs.set(from, { products, promotion: promo, categories });
+    await sendCategories(from, categories, promo);
+  } catch (err) {
+    console.error("handlePromoInterest error:", err.message);
+  }
+}
+
+async function handleCategorySelection(from, categoryIndex) {
+  try {
+    const catalog = pendingCatalogs.get(from);
+    if (!catalog) return;
+
+    const category = catalog.categories[categoryIndex];
+    if (!category) return;
+
+    const filtered = catalog.products.filter(p => p.category === category);
+    catalog.displayedProducts = filtered;
+    pendingCatalogs.set(from, catalog);
+
+    if (!filtered.length) {
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: "No products found in that category right now." } });
+      return;
+    }
+
+    await sendCatalog(from, filtered, catalog.promotion);
+  } catch (err) {
+    console.error("handleCategorySelection error:", err.message);
+  }
+}
+
+async function handleProductSelection(from, productId) {
+  try {
+    const catalog = pendingCatalogs.get(from);
+    const Product = require("./models/Product");
+
+    // Find product in catalog first (already populated), then fall back to DB
+    let p = catalog?.products.find(x => x._id.toString() === productId);
+    if (!p) p = await Product.findById(productId).lean();
+    if (!p) return;
+
+    const promo        = catalog?.promotion;
+    const discFactor   = promo ? 1 - promo.discountPercent / 100 : 1;
+    const salePrice    = parseFloat((p.basePrice * discFactor).toFixed(2));
+
+    const cart = carts.get(from) || [];
+    cart.push({ name: p.name, priceAud: salePrice, description: p.description || p.category || "" });
+    carts.set(from, cart);
+
+    const total = cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
+
+    await waPost({
+      messaging_product: "whatsapp", to: from, type: "interactive",
+      interactive: {
+        type: "button",
+        body: {
+          text: `✅ *${p.name}* added to cart!\n💰 $${salePrice.toFixed(2)} AUD${promo ? ` (${promo.discountPercent}% OFF)` : ""}\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · $${total} AUD total`,
+        },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "continue_shopping", title: "Keep Shopping 🛍️" } },
+            { type: "reply", reply: { id: "checkout",          title: "Checkout ✅"       } },
+          ],
+        },
+      },
+    });
+  } catch (err) {
+    console.error("handleProductSelection error:", err.message);
+  }
+}
+
 // ─── WhatsApp incoming messages ──────────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
@@ -205,62 +326,165 @@ app.post("/webhook", async (req, res) => {
   const from = message.from;
   console.log(`Incoming from ${from}:`, JSON.stringify(message, null, 2));
 
-  if (message.type === "interactive" && message.interactive?.type === "button_reply") {
-    const buttonId = message.interactive.button_reply.id;
-    console.log(`Button: ${buttonId} from ${from}`);
+  // ── Template quick-reply (user tapped button on a template message) ──────────
+  if (message.type === "button") {
+    const payload = message.button?.payload || "";
+    if (payload.startsWith("promo_")) {
+      await handlePromoInterest(from, payload.slice(6));
+    }
+    return;
+  }
 
-    if (buttonId.startsWith("int_")) {
-      const productId = buttonId.slice(4);
-      let product = pendingProducts.get(productId);
-      if (product) {
-        pendingProducts.delete(productId);
-      } else {
-        // Promotion flow — productId is a MongoDB ObjectId
-        try {
-          const Product = require('./models/Product');
-          const dbProduct = await Product.findById(productId);
-          if (dbProduct) {
-            product = { name: dbProduct.name, priceAud: dbProduct.basePrice, description: dbProduct.category };
-          }
-        } catch (_) {}
+  // ── Interactive messages ──────────────────────────────────────────────────────
+  if (message.type === "interactive") {
+
+    // List message row tapped
+    if (message.interactive.type === "list_reply") {
+      const rowId = message.interactive.list_reply?.id || "";
+      if (rowId.startsWith("cart_")) {
+        // Product row → add to cart
+        await handleProductSelection(from, rowId.slice(5));
+      } else if (rowId.startsWith("cat_")) {
+        // Category row → show products within that category
+        await handleCategorySelection(from, parseInt(rowId.slice(4), 10));
       }
-      if (product) {
-        const cart = carts.get(from) || [];
-        cart.push(product);
-        carts.set(from, cart);
+      return;
+    }
+
+    // Button reply
+    if (message.interactive.type === "button_reply") {
+      const buttonId = message.interactive.button_reply.id;
+      console.log(`Button: ${buttonId} from ${from}`);
+
+      if (buttonId.startsWith("promo_")) {
+        // "Shop Now" tapped on interactive promo message → show categories
+        await handlePromoInterest(from, buttonId.slice(6));
+
+      } else if (buttonId.startsWith("int_")) {
+        // Legacy: manual single-product send from /send-message endpoint
+        const productId = buttonId.slice(4);
+        const product   = pendingProducts.get(productId);
+        if (product) {
+          pendingProducts.delete(productId);
+          const cart = carts.get(from) || [];
+          cart.push(product);
+          carts.set(from, cart);
+        }
+        await sendGoodChoice(from).catch(err => console.error("sendGoodChoice error:", err.message));
+
+      } else if (buttonId === "continue_shopping" || buttonId === "shop_now") {
+        const catalog = pendingCatalogs.get(from);
+        if (catalog) {
+          // Back to categories so they can browse more of the sale
+          await sendCategories(from, catalog.categories, catalog.promotion)
+            .catch(err => console.error("resend categories error:", err.message));
+        } else {
+          await waPost({
+            messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "🛍️ Happy shopping! Take your time browsing our latest collection." },
+          }).catch(err => console.error("continue_shopping error:", err.message));
+        }
+
+      } else if (buttonId === "checkout" || buttonId.startsWith("checkout_")) {
+        const cart = carts.get(from);
+        if (!cart?.length) {
+          await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "Your cart is empty. Browse the sale and tap a product to add it." } }).catch(() => {});
+          return;
+        }
+
+        const Customer = require("./models/Customer");
+        const customer = await Customer.findOne({ phone: from });
+        if (!customer) {
+          await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "We couldn't find your profile. Please contact support to complete this order." } }).catch(() => {});
+          return;
+        }
+
+        if (customer.address) {
+          await proceedToPayment(from, customer, cart);
+        } else {
+          pendingAddressReqs.set(from, true);
+          await waPost({
+            messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "📍 Please reply with your delivery address (street, suburb, state, postcode) so we can calculate shipping." },
+          }).catch(() => {});
+        }
       }
-      await sendGoodChoice(from).catch(err => console.error("sendGoodChoice error:", err.message));
+    }
+    return;
+  }
 
-    } else if (buttonId === "continue_shopping" || buttonId === "shop_now") {
-      await waPost({
-        messaging_product: "whatsapp",
-        to: from,
-        type: "text",
-        text: { body: "🛍️ Happy shopping! Take your time browsing our latest collection." },
-      }).catch(err => console.error("continue_shopping error:", err.message));
+  // ── Text message ──────────────────────────────────────────────────────────────
+  if (message.type === "text") {
+    const text = message.text?.body?.trim() || "";
 
-    } else if (buttonId === "checkout") {
+    // Awaiting delivery address after "Checkout" was tapped
+    if (pendingAddressReqs.has(from)) {
+      pendingAddressReqs.delete(from);
       const cart = carts.get(from);
       if (!cart?.length) {
         await waPost({ messaging_product: "whatsapp", to: from, type: "text",
-          text: { body: "Your cart is empty. Tap Interested? on a product to add it." } }).catch(() => {});
+          text: { body: "Your cart is empty. Browse the sale and tap a product to add it." } }).catch(() => {});
         return;
       }
-      try {
-        const session = await createCheckoutSession(from, cart);
-        const total = cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
-        await waPost({
-          messaging_product: "whatsapp",
-          to: from,
-          type: "text",
-          text: { body: `🛒 *Your Order Summary*\n\n${buildCartSummary(cart)}\n\n*Total: $${total} AUD*\n\nPay securely:\n${session.url}` },
-        }).catch(err => console.error("checkout link error:", err.message));
-      } catch (err) {
-        console.error("Stripe session error:", err.message);
+      const Customer = require("./models/Customer");
+      const customer = await Customer.findOneAndUpdate({ phone: from }, { address: text }, { new: true });
+      if (!customer) {
         await waPost({ messaging_product: "whatsapp", to: from, type: "text",
-          text: { body: "Sorry, checkout is unavailable right now. Please try again." } }).catch(() => {});
+          text: { body: "We couldn't find your profile. Please contact support to complete this order." } }).catch(() => {});
+        return;
       }
+      await proceedToPayment(from, customer, cart);
+      return;
     }
+
+    // Number selection from a large (>10 item) category catalog
+    const catalog = pendingCatalogs.get(from);
+    if (!catalog) return;
+
+    const products = catalog.displayedProducts || catalog.products;
+    let indices    = [];
+
+    if (text.toLowerCase() === "all") {
+      indices = products.map((_, i) => i);
+    } else {
+      indices = text.split(/[\s,]+/)
+        .map(p => parseInt(p, 10) - 1)
+        .filter(n => !isNaN(n) && n >= 0 && n < products.length);
+      indices = [...new Set(indices)];
+    }
+
+    if (!indices.length) return; // not a product selection, ignore
+
+    // Add each selected product sequentially
+    const disc  = 1 - catalog.promotion.discountPercent / 100;
+    const cart  = carts.get(from) || [];
+    let summary = "";
+    for (const i of indices) {
+      const p         = products[i];
+      const salePrice = parseFloat((p.basePrice * disc).toFixed(2));
+      cart.push({ name: p.name, priceAud: salePrice, description: p.description || p.category || "" });
+      summary += `✅ ${p.name} — $${salePrice.toFixed(2)} AUD\n`;
+    }
+    carts.set(from, cart);
+    const total = cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
+
+    await waPost({
+      messaging_product: "whatsapp", to: from, type: "interactive",
+      interactive: {
+        type: "button",
+        body: {
+          text: `Added to cart:\n${summary}\n🛒 ${cart.length} item${cart.length !== 1 ? "s" : ""} · $${total} AUD total\n\nWhat would you like to do?`,
+        },
+        action: {
+          buttons: [
+            { type: "reply", reply: { id: "continue_shopping", title: "Keep Shopping 🛍️" } },
+            { type: "reply", reply: { id: "checkout",          title: "Checkout ✅"       } },
+          ],
+        },
+      },
+    }).catch(err => console.error("cart confirm error:", err.message));
   }
 });
 
@@ -291,9 +515,9 @@ app.post("/send-message", upload.array("images"), async (req, res) => {
   }
 });
 
-// ─── Payment pages ───────────────────────────────────────────────────────────
-app.get("/payment-success", (req, res) => res.send("<h2>Payment successful! Return to WhatsApp. 🎉</h2>"));
-app.get("/payment-cancel",  (req, res) => res.send("<h2>Payment cancelled. Return to WhatsApp to try again.</h2>"));
-app.get("/",                (req, res) => res.send("Waflow backend running"));
+app.get("/", (req, res) => res.send("Waflow backend running"));
 
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+  tokenManager.init(); // validate + auto-refresh WA token in background
+});

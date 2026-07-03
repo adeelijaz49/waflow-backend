@@ -3,7 +3,7 @@ const Promotion = require('../models/Promotion');
 const Product   = require('../models/Product');
 const Customer  = require('../models/Customer');
 const Order     = require('../models/Order');
-const { sendPromoMessage, sendLoyaltyReminder } = require('../utils/whatsapp');
+const { sendPromoTemplate, sendPromoMessage, sendLoyaltyTemplate, sendLoyaltyReminder } = require('../utils/whatsapp');
 
 // ─── CRUD ────────────────────────────────────────────────────────────────────
 
@@ -147,13 +147,20 @@ router.post('/:id/send', async (req, res) => {
     for (const customer of customers) {
       for (const product of products) {
         try {
-          await sendPromoMessage(customer.phone, product, promotion, customer.loyaltyPoints);
+          // Try template first (works without 24h session window)
+          await sendPromoTemplate(customer.phone, customer, product, promotion);
           sentCount++;
-          await new Promise(r => setTimeout(r, 300));
-        } catch (err) {
-          errors.push({ customer: customer._id, product: product._id, error: err.message });
-          console.error(`Send failed ${customer.phone}:`, err.response?.data ?? err.message);
+        } catch (templateErr) {
+          // Fall back to interactive session message
+          try {
+            await sendPromoMessage(customer.phone, product, promotion, customer.loyaltyPoints);
+            sentCount++;
+          } catch (err) {
+            errors.push({ customer: customer._id, product: product._id, error: err.message });
+            console.error(`Send failed ${customer.phone}:`, err.response?.data ?? err.message);
+          }
         }
+        await new Promise(r => setTimeout(r, 300));
       }
     }
 
@@ -181,12 +188,17 @@ router.post('/loyalty/remind', async (req, res) => {
     for (const c of customers) {
       if (!c.loyaltyPoints) continue;
       try {
-        await sendLoyaltyReminder(c.phone, c.firstname, c.loyaltyPoints);
+        await sendLoyaltyTemplate(c.phone, c.firstname, c.loyaltyPoints);
         sentCount++;
-        await new Promise(r => setTimeout(r, 300));
-      } catch (err) {
-        console.error(`Loyalty remind failed ${c.phone}:`, err.message);
+      } catch {
+        try {
+          await sendLoyaltyReminder(c.phone, c.firstname, c.loyaltyPoints);
+          sentCount++;
+        } catch (err) {
+          console.error(`Loyalty remind failed ${c.phone}:`, err.message);
+        }
       }
+      await new Promise(r => setTimeout(r, 300));
     }
     res.json({ success: true, sentCount });
   } catch (err) {

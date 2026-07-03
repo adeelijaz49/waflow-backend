@@ -5,6 +5,7 @@ const schema = new mongoose.Schema({
   lastname:  { type: String, required: true },
   phone:     { type: String, required: true },
   email:     { type: String },
+  address:   { type: String },
   loyaltyPoints: { type: Number, default: 0 },
 }, { timestamps: true });
 

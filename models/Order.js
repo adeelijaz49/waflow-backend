@@ -14,6 +14,8 @@ const schema = new mongoose.Schema({
   customer:           { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
   items:              [itemSchema],
   subtotal:           Number,
+  shippingCost:       { type: Number, default: 0 },
+  shippingAddress:    String,
   loyaltyPointsUsed:  { type: Number, default: 0 },
   loyaltyDiscount:    { type: Number, default: 0 },
   total:              Number,
