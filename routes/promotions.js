@@ -4,7 +4,7 @@ const Product   = require('../models/Product');
 const Customer  = require('../models/Customer');
 const Order     = require('../models/Order');
 const Service   = require('../models/Service');
-const { sendPromoTemplate, sendPromoAnnouncement, sendLoyaltyTemplate, sendLoyaltyReminder } = require('../utils/whatsapp');
+const { sendPromoTemplate, sendPromoAnnouncement, sendPointsPromoMessage, sendLoyaltyTemplate, sendLoyaltyReminder } = require('../utils/whatsapp');
 
 // ─── CRUD ────────────────────────────────────────────────────────────────────
 
@@ -159,19 +159,22 @@ router.post('/:id/send', async (req, res) => {
       items = promotion.products?.length ? promotion.products : await Product.find({ active: true }).limit(10);
     }
 
-    // ONE announcement per customer — customer taps "Shop Now" to get the carousel
     for (const customer of customers) {
       let sent = false;
       try {
-        await sendPromoAnnouncement(customer.phone, customer, promotion, items);
+        if (promotion.customerType === 'points') {
+          await sendPointsPromoMessage(customer.phone, customer, promotion, items);
+        } else {
+          await sendPromoAnnouncement(customer.phone, customer, promotion, items);
+        }
         sent = true;
         sentCount++;
       } catch (interactiveErr) {
-        console.warn(`Interactive announcement failed for ${customer.phone}:`, interactiveErr.message);
+        console.warn(`Send failed for ${customer.phone}:`, interactiveErr.response?.data || interactiveErr.message);
       }
 
-      // Fallback for customers outside the 24h session window: send a template for the first product
-      if (!sent && items.length && promotion.scope !== 'services') {
+      // Template fallback for cash promos outside the 24h session window
+      if (!sent && promotion.customerType !== 'points' && items.length && promotion.scope !== 'services') {
         try {
           await sendPromoTemplate(customer.phone, customer, items[0], promotion);
           sentCount++;
@@ -180,7 +183,7 @@ router.post('/:id/send', async (req, res) => {
           console.error(`All send methods failed ${customer.phone}:`, err.response?.data ?? err.message);
         }
       } else if (!sent) {
-        errors.push({ customer: customer._id, error: 'Interactive send failed and no template fallback for services' });
+        errors.push({ customer: customer._id, error: 'Send failed' });
       }
 
       await new Promise(r => setTimeout(r, 300));
