@@ -299,78 +299,32 @@ async function sendProductCards(to, products, promotion) {
   }
 }
 
-// Swipeable product carousel — uses image.link directly (no pre-upload).
-// Falls back to individual rich cards (≤5) or list (>5) when carousel is unavailable.
+// Product browsing for a promotion batch.
+// NOTE: WhatsApp Cloud API has no documented 'carousel' interactive type (valid types are
+// button, list, product, product_list, catalog_message, flow, call_permission_request).
+// An earlier version of this function tried interactive.type:'carousel', which the API
+// silently mishandled — only the first card ever reached the customer. Use the reliable,
+// documented message types instead: individual rich cards (≤5) or a list message (>5).
 async function sendProductCarousel(to, products, promotion, batchStart = 0) {
-  const isPoints  = promotion?.customerType === 'points';
-  const disc      = promotion?.discountPercent || 0;
-  const ptPrice   = promotion?.pointsPrice || 0;
   const batch     = products.slice(batchStart, batchStart + 10);
   const remaining = products.length - batchStart - batch.length;
 
-  // Build carousel cards — only products with an image URL (carousel requires header)
-  const cards = batch
-    .filter(p => p.images?.[0])
-    .map(p => {
-      const salePrice = isPoints ? null : +(p.basePrice * (1 - disc / 100)).toFixed(2);
-      const priceStr  = isPoints
-        ? `💎 ${ptPrice} pts`
-        : disc > 0
-          ? `💰 $${salePrice} AUD (was $${p.basePrice.toFixed(2)})`
-          : `💰 $${p.basePrice.toFixed(2)} AUD`;
-      return {
-        header: { type: 'image', image: { link: p.images[0] } },
-        body:   { text: `*${p.name}*\n${priceStr}${p.description ? '\n' + p.description.slice(0, 72) : ''}` },
-        action: { buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }] },
-      };
-    });
+  const result = batch.length <= 5
+    ? await sendProductCards(to, batch, promotion)
+    : await sendCatalog(to, batch, promotion);
 
-  const headerLabel = isPoints
-    ? `💎 ${promotion.name} — ${ptPrice} pts/item`
-    : `🏷️ ${promotion.name}${disc > 0 ? ` — ${disc}% OFF` : ''}`;
-
-  const rangeNote = products.length > 10
-    ? ` (${batchStart + 1}–${batchStart + batch.length} of ${products.length})`
-    : '';
-
-  if (cards.length >= 2) {
-    try {
-      const result = await waPost({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'interactive',
-        interactive: {
-          type: 'carousel',
-          body: { text: `${headerLabel}${rangeNote}\n\nSwipe to browse. Tap a card to add it — you can pick multiple! 🛍️` },
-          action: { cards },
-        },
-      });
-
-      if (remaining > 0) {
-        await waPost({
-          messaging_product: 'whatsapp', to, type: 'interactive',
-          interactive: {
-            type:   'button',
-            body:   { text: `${remaining} more item${remaining !== 1 ? 's' : ''} in this promotion.` },
-            action: { buttons: [{ type: 'reply', reply: { id: `more_${batchStart + batch.length}_${promotion._id}`, title: `See Next ${Math.min(remaining, 10)} →` } }] },
-          },
-        }).catch(() => {});
-      }
-      return result;
-    } catch (err) {
-      console.warn('Carousel failed, falling back to product cards:', err.response?.data || err.message);
-    }
-  } else {
-    console.log(`Carousel skipped — only ${cards.length} products have images`);
+  if (remaining > 0) {
+    await waPost({
+      messaging_product: 'whatsapp', to, type: 'interactive',
+      interactive: {
+        type:   'button',
+        body:   { text: `${remaining} more item${remaining !== 1 ? 's' : ''} in this promotion.` },
+        action: { buttons: [{ type: 'reply', reply: { id: `more_${batchStart + batch.length}_${promotion._id}`, title: `See Next ${Math.min(remaining, 10)} →` } }] },
+      },
+    }).catch(() => {});
   }
 
-  // Fallback A: send individual rich cards with images (best for small sets)
-  if (batch.length <= 5) {
-    return sendProductCards(to, batch, promotion);
-  }
-
-  // Fallback B: list message for large sets
-  return sendCatalog(to, batch, promotion);
+  return result;
 }
 
 // Variant size/colour picker shown after customer taps "Add to Cart" on a product with variants.
