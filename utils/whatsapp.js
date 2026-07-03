@@ -230,6 +230,148 @@ async function sendLoyaltyTemplate(to, customerName, loyaltyPoints) {
   });
 }
 
+// ── Announcement + Carousel ────────────────────────────────────────────────────
+
+// One announcement per promotion (replaces per-product send).
+// Works as outbound — tries interactive, falls back to template if outside 24h window.
+async function sendPromoAnnouncement(to, customer, promotion, items) {
+  const firstName = customer.firstname || 'there';
+  const isPoints  = promotion.customerType === 'points';
+  const isService = promotion.scope === 'services';
+  const count     = items.length;
+
+  const preview   = items.slice(0, 3).map(i => `• ${i.name}`).join('\n');
+  const moreNote  = count > 3 ? `\n_...and ${count - 3} more_` : '';
+
+  let priceNote;
+  if (isService) {
+    priceNote = isPoints ? `💎 Redeem ${promotion.pointsPrice} pts per session` : `💰 Book at a special rate`;
+  } else {
+    priceNote = isPoints
+      ? `💎 Redeem ${promotion.pointsPrice} pts per item`
+      : `🏷️ ${promotion.discountPercent}% OFF all items`;
+  }
+
+  const cta   = isService ? 'Book Now! 📅' : 'Shop Now! 🛍️';
+  const body  = `Hi ${firstName}! ✨\n\n*${promotion.name}*\n\n${preview}${moreNote}\n\n${priceNote}\n\nTap below to browse and ${isService ? 'book your slot' : 'add to cart'}.`;
+
+  return waPost({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type:   'button',
+      body:   { text: body },
+      action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: cta } }] },
+    },
+  });
+}
+
+// Swipeable product carousel — up to 10 cards per batch, with image + price + Add to Cart.
+// Falls back to list message if carousel type is unsupported.
+async function sendProductCarousel(to, products, promotion, batchStart = 0) {
+  const isPoints  = promotion?.customerType === 'points';
+  const disc      = promotion?.discountPercent || 0;
+  const ptPrice   = promotion?.pointsPrice || 0;
+  const batch     = products.slice(batchStart, batchStart + 10);
+  const remaining = products.length - batchStart - batch.length;
+
+  // Upload images concurrently; non-fatal if some fail
+  const imgResults = await Promise.allSettled(
+    batch.map(p => p.images?.[0] ? uploadMediaFromUrl(p.images[0]) : Promise.reject('no-img'))
+  );
+
+  const cards = batch.map((p, idx) => {
+    const salePrice = isPoints ? null : +(p.basePrice * (1 - disc / 100)).toFixed(2);
+    const priceStr  = isPoints
+      ? `💎 ${ptPrice} pts`
+      : disc > 0
+        ? `💰 $${salePrice} AUD  ~~$${p.basePrice.toFixed(2)}~~`
+        : `💰 $${p.basePrice.toFixed(2)} AUD`;
+
+    const card = {
+      body: { text: `*${p.name}*\n${priceStr}${p.description ? '\n' + p.description.slice(0, 72) : ''}` },
+      action: {
+        buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }],
+      },
+    };
+    if (imgResults[idx]?.status === 'fulfilled') {
+      card.header = { type: 'image', image: { id: imgResults[idx].value } };
+    }
+    return card;
+  });
+
+  const headerLabel = isPoints
+    ? `💎 ${promotion.name} — ${ptPrice} pts/item`
+    : `🏷️ ${promotion.name}${disc > 0 ? ` — ${disc}% OFF` : ''}`;
+
+  const rangeNote = products.length > 10
+    ? ` (${batchStart + 1}–${batchStart + batch.length} of ${products.length})`
+    : '';
+
+  try {
+    const result = await waPost({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'carousel',
+        body: { text: `${headerLabel}${rangeNote}\n\nSwipe to browse. Tap a card to add it — you can pick multiple! 🛍️` },
+        action: { sections: [{ cards }] },
+      },
+    });
+
+    if (remaining > 0) {
+      await waPost({
+        messaging_product: 'whatsapp', to, type: 'interactive',
+        interactive: {
+          type:   'button',
+          body:   { text: `${remaining} more item${remaining !== 1 ? 's' : ''} in this promotion.` },
+          action: { buttons: [{ type: 'reply', reply: { id: `more_${batchStart + batch.length}_${promotion._id}`, title: `See Next ${Math.min(remaining, 10)} →` } }] },
+        },
+      }).catch(() => {});
+    }
+    return result;
+  } catch {
+    // Carousel not supported on this tier/account — fall back to list
+    console.warn('Carousel unsupported, falling back to list');
+    return sendCatalog(to, batch, promotion);
+  }
+}
+
+// Variant size/colour picker shown after customer taps "Add to Cart" on a product with variants.
+async function sendVariantPicker(to, product, promotion) {
+  const isPoints  = promotion?.customerType === 'points';
+  const disc      = promotion?.discountPercent || 0;
+  const ptPrice   = promotion?.pointsPrice || 0;
+
+  const availableVariants = (product.variants || []).filter(v => v.stock > 0);
+
+  const rows = availableVariants.map((v, i) => ({
+    id:          `variant_${product._id}_${i}`,
+    title:       [v.size, v.color].filter(Boolean).join(' · ').slice(0, 24) || `Option ${i + 1}`,
+    description: isPoints
+      ? `${ptPrice} pts · ${v.stock} in stock`.slice(0, 72)
+      : `$${+(product.basePrice * (1 - disc / 100)).toFixed(2)} AUD · ${v.stock} in stock`.slice(0, 72),
+  }));
+
+  // Also add a "No preference" option if the product itself has stock (base product)
+  if (product.stock > 0 || !availableVariants.length) {
+    rows.unshift({ id: `variant_${product._id}_base`, title: 'No preference', description: 'Standard / any available' });
+  }
+
+  return waPost({
+    messaging_product: 'whatsapp', to, type: 'interactive',
+    interactive: {
+      type:   'list',
+      header: { type: 'text', text: `Choose your option` },
+      body:   { text: `*${product.name}* — pick your size/colour:` },
+      footer: { text: 'Only in-stock options shown' },
+      action: { button: 'View Options', sections: [{ title: 'Available Options', rows }] },
+    },
+  });
+}
+
 // ── Session (interactive) messages — require 24h conversation window ──────────
 
 async function sendPromoMessage(to, product, promotion, loyaltyPoints) {
@@ -493,6 +635,10 @@ module.exports = {
   sendLoyaltyTemplate,
   // Catalog
   sendCatalog,
+  // Announcement + carousel
+  sendPromoAnnouncement,
+  sendProductCarousel,
+  sendVariantPicker,
   // Session messages (require 24h window)
   sendPromoMessage,
   sendPointsPromoMessage,

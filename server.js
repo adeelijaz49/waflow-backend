@@ -10,7 +10,7 @@ const Stripe   = require("stripe");
 const mongoose = require("mongoose");
 
 const { PORT, APP_URL } = require("./utils/config");
-const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pendingSlotSelections, pendingServiceCheckouts } = require("./utils/state");
+const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pendingSlotSelections, pendingServiceCheckouts, pendingVariantSelections } = require("./utils/state");
 
 const app  = express();
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
@@ -276,7 +276,7 @@ app.get("/webhook", (req, res) => {
 });
 
 // ─── Promo catalog helpers ────────────────────────────────────────────────────
-const { sendCatalog, getCategories, sendCategories, sendServiceSlots } = require("./utils/whatsapp");
+const { sendCatalog, sendProductCarousel, sendVariantPicker, sendPromoAnnouncement, sendServiceSlots } = require("./utils/whatsapp");
 
 async function handlePromoInterest(from, promoId) {
   try {
@@ -286,7 +286,6 @@ async function handlePromoInterest(from, promoId) {
     const promo = await Promotion.findById(promoId).populate("products").populate("services");
     if (!promo) return;
 
-    // Service promotion — show time slots
     if (promo.scope === "services") {
       return handleServicePromoInterest(from, promo);
     }
@@ -302,39 +301,26 @@ async function handlePromoInterest(from, promoId) {
       return;
     }
 
-    const categories = getCategories(products);
-    pendingCatalogs.set(from, { products, promotion: promo, categories });
-    await sendCategories(from, categories, promo);
+    pendingCatalogs.set(from, { products, promotion: promo, batchStart: 0 });
+    await sendProductCarousel(from, products, promo, 0);
   } catch (err) {
     console.error("handlePromoInterest error:", err.message);
   }
 }
 
-async function handleCategorySelection(from, categoryIndex) {
+async function handleMoreProducts(from, batchStart, promoId) {
   try {
     const catalog = pendingCatalogs.get(from);
     if (!catalog) return;
-
-    const category = catalog.categories[categoryIndex];
-    if (!category) return;
-
-    const filtered = catalog.products.filter(p => p.category === category);
-    catalog.displayedProducts = filtered;
+    catalog.batchStart = batchStart;
     pendingCatalogs.set(from, catalog);
-
-    if (!filtered.length) {
-      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
-        text: { body: "No products found in that category right now." } });
-      return;
-    }
-
-    await sendCatalog(from, filtered, catalog.promotion);
+    await sendProductCarousel(from, catalog.products, catalog.promotion, batchStart);
   } catch (err) {
-    console.error("handleCategorySelection error:", err.message);
+    console.error("handleMoreProducts error:", err.message);
   }
 }
 
-async function handleProductSelection(from, productId) {
+async function handleProductSelection(from, productId, variantLabel) {
   try {
     const catalog = pendingCatalogs.get(from);
     const Product = require("./models/Product");
@@ -345,21 +331,31 @@ async function handleProductSelection(from, productId) {
 
     const promo      = catalog?.promotion;
     const isPoints   = promo?.customerType === 'points';
+
+    // If product has variants and no variant chosen yet — show picker
+    const availableVariants = (p.variants || []).filter(v => v.stock > 0);
+    if (availableVariants.length > 0 && !variantLabel) {
+      pendingVariantSelections.set(from, { product: p, promotion: promo });
+      await sendVariantPicker(from, p, promo);
+      return;
+    }
+
     const discFactor = (!isPoints && promo) ? 1 - promo.discountPercent / 100 : 1;
     const salePrice  = isPoints ? 0 : parseFloat((p.basePrice * discFactor).toFixed(2));
     const pointsCost = isPoints ? (promo?.pointsPrice || 0) : 0;
 
+    const displayName = variantLabel ? `${p.name} (${variantLabel})` : p.name;
     const cart = carts.get(from) || [];
-    cart.push({ name: p.name, priceAud: salePrice, pointsCost, description: p.description || p.category || "" });
+    cart.push({ name: displayName, priceAud: salePrice, pointsCost, description: p.description || p.category || "" });
     carts.set(from, cart);
 
     let bodyText;
     if (isPoints) {
       const totalPts = cart.reduce((s, i) => s + (i.pointsCost || 0), 0);
-      bodyText = `✅ *${p.name}* added!\n💎 ${pointsCost} pts per item\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · ${totalPts} pts total`;
+      bodyText = `✅ *${displayName}* added!\n💎 ${pointsCost} pts\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · ${totalPts} pts total\n\n_Keep tapping cards to add more, or checkout when ready._`;
     } else {
       const total = cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
-      bodyText = `✅ *${p.name}* added to cart!\n💰 $${salePrice.toFixed(2)} AUD${promo ? ` (${promo.discountPercent}% OFF)` : ""}\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · $${total} AUD total`;
+      bodyText = `✅ *${displayName}* added!\n💰 $${salePrice.toFixed(2)} AUD${promo?.discountPercent ? ` (${promo.discountPercent}% OFF)` : ""}\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · $${total} AUD total\n\n_Keep tapping cards to add more, or checkout when ready._`;
     }
 
     await waPost({
@@ -369,7 +365,7 @@ async function handleProductSelection(from, productId) {
         body: { text: bodyText },
         action: {
           buttons: [
-            { type: "reply", reply: { id: "continue_shopping",                       title: "Keep Shopping 🛍️"   } },
+            { type: "reply", reply: { id: "continue_shopping",                       title: "Keep Browsing 🛍️"  } },
             { type: "reply", reply: { id: isPoints ? "points_checkout" : "checkout", title: isPoints ? "Redeem Points 💎" : "Checkout ✅" } },
           ],
         },
@@ -543,19 +539,30 @@ app.post("/webhook", async (req, res) => {
     // List message row tapped
     if (message.interactive.type === "list_reply") {
       const rowId = message.interactive.list_reply?.id || "";
-      if (rowId.startsWith("slot_")) {
-        // Service time slot tapped (paid booking)
+      if (rowId.startsWith("variant_")) {
+        // Customer picked a size/colour variant
+        const parts     = rowId.slice(8).split("_");
+        const productId = parts[0];
+        const varIdx    = parts[1]; // numeric index or "base"
+        const pending   = pendingVariantSelections.get(from);
+        pendingVariantSelections.delete(from);
+        if (pending) {
+          const product = pending.product;
+          let label = "";
+          if (varIdx !== "base") {
+            const v = (product.variants || [])[parseInt(varIdx, 10)];
+            label = [v?.size, v?.color].filter(Boolean).join(" · ");
+          }
+          await handleProductSelection(from, productId, label);
+        }
+      } else if (rowId.startsWith("slot_")) {
         await handleSlotSelection(from, rowId.slice(5), false, null);
       } else if (rowId.startsWith("reslot_")) {
-        // Service time slot tapped (free rebook after cancellation)
-        const pending  = pendingSlotSelections.get(from);
+        const pending = pendingSlotSelections.get(from);
         await handleSlotSelection(from, rowId.slice(7), true, pending?.oldBookingId || null);
       } else if (rowId.startsWith("cart_")) {
-        // Product row → add to cart
-        await handleProductSelection(from, rowId.slice(5));
-      } else if (rowId.startsWith("cat_")) {
-        // Category row → show products within that category
-        await handleCategorySelection(from, parseInt(rowId.slice(4), 10));
+        // Product row from list fallback
+        await handleProductSelection(from, rowId.slice(5), "");
       }
       return;
     }
@@ -588,12 +595,18 @@ app.post("/webhook", async (req, res) => {
         }
         await sendGoodChoice(from).catch(err => console.error("sendGoodChoice error:", err.message));
 
+      } else if (buttonId.startsWith("more_")) {
+        // Load next carousel batch: more_<batchStart>_<promoId>
+        const parts      = buttonId.slice(5).split("_");
+        const batchStart = parseInt(parts[0], 10);
+        const promoId    = parts.slice(1).join("_");
+        await handleMoreProducts(from, batchStart, promoId);
+
       } else if (buttonId === "continue_shopping" || buttonId === "shop_now") {
         const catalog = pendingCatalogs.get(from);
         if (catalog) {
-          // Back to categories so they can browse more of the sale
-          await sendCategories(from, catalog.categories, catalog.promotion)
-            .catch(err => console.error("resend categories error:", err.message));
+          await sendProductCarousel(from, catalog.products, catalog.promotion, catalog.batchStart || 0)
+            .catch(err => console.error("continue_shopping carousel error:", err.message));
         } else {
           await waPost({
             messaging_product: "whatsapp", to: from, type: "text",
@@ -778,11 +791,11 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // Number selection from a large (>10 item) category catalog
+    // Number selection from a large catalog text list (fallback when carousel unsupported)
     const catalog = pendingCatalogs.get(from);
     if (!catalog) return;
 
-    const products = catalog.displayedProducts || catalog.products;
+    const products = catalog.products;
     let indices    = [];
 
     if (text.toLowerCase() === "all") {
@@ -796,40 +809,10 @@ app.post("/webhook", async (req, res) => {
 
     if (!indices.length) return; // not a product selection, ignore
 
-    // Add each selected product sequentially
-    const isPoints   = catalog.promotion?.customerType === 'points';
-    const pointsPrice = catalog.promotion?.pointsPrice || 0;
-    const disc       = isPoints ? 1 : 1 - (catalog.promotion?.discountPercent || 0) / 100;
-    const cart       = carts.get(from) || [];
-    let summary      = "";
+    // Route each selection through handleProductSelection (handles variant check too)
     for (const i of indices) {
-      const p         = products[i];
-      const salePrice = isPoints ? 0 : parseFloat((p.basePrice * disc).toFixed(2));
-      cart.push({ name: p.name, priceAud: salePrice, pointsCost: isPoints ? pointsPrice : 0, description: p.description || p.category || "" });
-      summary += isPoints
-        ? `✅ ${p.name} — ${pointsPrice} pts\n`
-        : `✅ ${p.name} — $${salePrice.toFixed(2)} AUD\n`;
+      await handleProductSelection(from, products[i]._id.toString(), "");
     }
-    carts.set(from, cart);
-    const totalDisplay = isPoints
-      ? `${cart.reduce((s, i) => s + (i.pointsCost || 0), 0)} pts total`
-      : `$${cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2)} AUD total`;
-
-    await waPost({
-      messaging_product: "whatsapp", to: from, type: "interactive",
-      interactive: {
-        type: "button",
-        body: {
-          text: `Added to cart:\n${summary}\n🛒 ${cart.length} item${cart.length !== 1 ? "s" : ""} · ${totalDisplay}\n\nWhat would you like to do?`,
-        },
-        action: {
-          buttons: [
-            { type: "reply", reply: { id: "continue_shopping",                       title: "Keep Shopping 🛍️"   } },
-            { type: "reply", reply: { id: isPoints ? "points_checkout" : "checkout", title: isPoints ? "Redeem Points 💎" : "Checkout ✅" } },
-          ],
-        },
-      },
-    }).catch(err => console.error("cart confirm error:", err.message));
   }
 });
 

@@ -4,7 +4,7 @@ const Product   = require('../models/Product');
 const Customer  = require('../models/Customer');
 const Order     = require('../models/Order');
 const Service   = require('../models/Service');
-const { sendPromoTemplate, sendPromoMessage, sendPointsPromoMessage, sendServicePromoMessage, sendLoyaltyTemplate, sendLoyaltyReminder } = require('../utils/whatsapp');
+const { sendPromoTemplate, sendPromoAnnouncement, sendLoyaltyTemplate, sendLoyaltyReminder } = require('../utils/whatsapp');
 
 // ─── CRUD ────────────────────────────────────────────────────────────────────
 
@@ -151,60 +151,39 @@ router.post('/:id/send', async (req, res) => {
     let sentCount = 0;
     const errors = [];
 
+    // Resolve items list for the announcement preview
+    let items = [];
     if (promotion.scope === 'services') {
-      // Service promotion: one message per service per customer
-      const services = promotion.services?.length ? promotion.services : await Service.find({ active: true }).limit(3);
-      for (const customer of customers) {
-        for (const service of services) {
-          try {
-            await sendServicePromoMessage(customer.phone, customer, service, promotion);
-            sentCount++;
-          } catch (err) {
-            errors.push({ customer: customer._id, service: service._id, error: err.message });
-            console.error(`Service promo send failed ${customer.phone}:`, err.response?.data ?? err.message);
-          }
-          await new Promise(r => setTimeout(r, 300));
-        }
+      items = promotion.services?.length ? promotion.services : await Service.find({ active: true }).limit(10);
+    } else {
+      items = promotion.products?.length ? promotion.products : await Product.find({ active: true }).limit(10);
+    }
+
+    // ONE announcement per customer — customer taps "Shop Now" to get the carousel
+    for (const customer of customers) {
+      let sent = false;
+      try {
+        await sendPromoAnnouncement(customer.phone, customer, promotion, items);
+        sent = true;
+        sentCount++;
+      } catch (interactiveErr) {
+        console.warn(`Interactive announcement failed for ${customer.phone}:`, interactiveErr.message);
       }
-    } else if (promotion.customerType === 'points') {
-      // Points product promotion: one message per customer showing all products
-      let products = promotion.products;
-      if (!products.length && promotion.type === 'store_wide') {
-        products = await Product.find({ active: true }).limit(3);
-      }
-      for (const customer of customers) {
+
+      // Fallback for customers outside the 24h session window: send a template for the first product
+      if (!sent && items.length && promotion.scope !== 'services') {
         try {
-          await sendPointsPromoMessage(customer.phone, customer, promotion, products);
+          await sendPromoTemplate(customer.phone, customer, items[0], promotion);
           sentCount++;
         } catch (err) {
           errors.push({ customer: customer._id, error: err.message });
-          console.error(`Points promo send failed ${customer.phone}:`, err.response?.data ?? err.message);
+          console.error(`All send methods failed ${customer.phone}:`, err.response?.data ?? err.message);
         }
-        await new Promise(r => setTimeout(r, 300));
+      } else if (!sent) {
+        errors.push({ customer: customer._id, error: 'Interactive send failed and no template fallback for services' });
       }
-    } else {
-      // Cash product promotion: one message per product per customer
-      let products = promotion.products;
-      if (!products.length && promotion.type === 'store_wide') {
-        products = await Product.find({ active: true }).limit(3);
-      }
-      for (const customer of customers) {
-        for (const product of products) {
-          try {
-            await sendPromoTemplate(customer.phone, customer, product, promotion);
-            sentCount++;
-          } catch (templateErr) {
-            try {
-              await sendPromoMessage(customer.phone, product, promotion, customer.loyaltyPoints);
-              sentCount++;
-            } catch (err) {
-              errors.push({ customer: customer._id, product: product._id, error: err.message });
-              console.error(`Send failed ${customer.phone}:`, err.response?.data ?? err.message);
-            }
-          }
-          await new Promise(r => setTimeout(r, 300));
-        }
-      }
+
+      await new Promise(r => setTimeout(r, 300));
     }
 
     await Promotion.findByIdAndUpdate(req.params.id, {

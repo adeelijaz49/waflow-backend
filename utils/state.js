@@ -4,8 +4,9 @@ const carts                  = new Map(); // phone → [{ name, priceAud, points
 const pendingCatalogs        = new Map(); // phone → { promotion, products, categories, displayedProducts }
 const pendingAddressReqs     = new Map(); // phone → 'cash'|'points' (awaiting free-text address reply)
 const pendingPointsCheckouts = new Map(); // phone → { cart, promotion, totalPointsCost, address }
-const pendingSlotSelections  = new Map(); // phone → { service, promotion, slots, isFree, oldBookingId }
+const pendingSlotSelections   = new Map(); // phone → { service, promotion, slots, isFree, oldBookingId }
 const pendingServiceCheckouts = new Map(); // phone → { service, slot, promotion, totalPointsCost }
+const pendingVariantSelections = new Map(); // phone → { product, promotion }
 
 module.exports = {
   carts,
@@ -14,4 +15,5 @@ module.exports = {
   pendingPointsCheckouts,
   pendingSlotSelections,
   pendingServiceCheckouts,
+  pendingVariantSelections,
 };
