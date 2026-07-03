@@ -3,7 +3,7 @@ const Promotion = require('../models/Promotion');
 const Product   = require('../models/Product');
 const Customer  = require('../models/Customer');
 const Order     = require('../models/Order');
-const { sendPromoTemplate, sendPromoMessage, sendLoyaltyTemplate, sendLoyaltyReminder } = require('../utils/whatsapp');
+const { sendPromoTemplate, sendPromoMessage, sendPointsPromoMessage, sendLoyaltyTemplate, sendLoyaltyReminder } = require('../utils/whatsapp');
 
 // ─── CRUD ────────────────────────────────────────────────────────────────────
 
@@ -156,23 +156,38 @@ router.post('/:id/send', async (req, res) => {
     let sentCount = 0;
     const errors = [];
 
-    for (const customer of customers) {
-      for (const product of products) {
+    if (promotion.customerType === 'points') {
+      // Points promotion: send one message per customer showing all products
+      for (const customer of customers) {
         try {
-          // Try template first (works without 24h session window)
-          await sendPromoTemplate(customer.phone, customer, product, promotion);
+          await sendPointsPromoMessage(customer.phone, customer, promotion, products);
           sentCount++;
-        } catch (templateErr) {
-          // Fall back to interactive session message
-          try {
-            await sendPromoMessage(customer.phone, product, promotion, customer.loyaltyPoints);
-            sentCount++;
-          } catch (err) {
-            errors.push({ customer: customer._id, product: product._id, error: err.message });
-            console.error(`Send failed ${customer.phone}:`, err.response?.data ?? err.message);
-          }
+        } catch (err) {
+          errors.push({ customer: customer._id, error: err.message });
+          console.error(`Points promo send failed ${customer.phone}:`, err.response?.data ?? err.message);
         }
         await new Promise(r => setTimeout(r, 300));
+      }
+    } else {
+      // Cash promotion: one message per product per customer
+      for (const customer of customers) {
+        for (const product of products) {
+          try {
+            // Try template first (works without 24h session window)
+            await sendPromoTemplate(customer.phone, customer, product, promotion);
+            sentCount++;
+          } catch (templateErr) {
+            // Fall back to interactive session message
+            try {
+              await sendPromoMessage(customer.phone, product, promotion, customer.loyaltyPoints);
+              sentCount++;
+            } catch (err) {
+              errors.push({ customer: customer._id, product: product._id, error: err.message });
+              console.error(`Send failed ${customer.phone}:`, err.response?.data ?? err.message);
+            }
+          }
+          await new Promise(r => setTimeout(r, 300));
+        }
       }
     }
 

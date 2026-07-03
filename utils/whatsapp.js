@@ -325,6 +325,42 @@ async function sendLoyaltyReminder(to, customerName, loyaltyPoints) {
   });
 }
 
+// One message per customer for points promotions — shows all products at once
+async function sendPointsPromoMessage(to, customer, promotion, products) {
+  const firstName  = customer.firstname || 'Valued Customer';
+  const pts        = customer.loyaltyPoints || 0;
+  const pointsPrice = promotion.pointsPrice || 0;
+  const itemNames  = products.slice(0, 5).map(p => `• ${p.name}`).join('\n');
+  const more       = products.length > 5 ? `\n_...and ${products.length - 5} more items_` : '';
+
+  const bodyText =
+    `Hi ${firstName}! 💎 You have *${pts} loyalty points*!\n\n` +
+    `Redeem *${pointsPrice} pts per item* in our *${promotion.name}* — no cash needed:\n\n` +
+    `${itemNames}${more}\n\n` +
+    `Tap below to browse and choose what you'd like!`;
+
+  try {
+    return await waPost({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type:   'button',
+        body:   { text: bodyText },
+        action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: 'Shop Now! 💎' } }] },
+      },
+    });
+  } catch (_) {
+    // Fallback plain text when outside the 24-hour window
+    return waPost({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'text',
+      text: { body: bodyText + '\n\nReply *SHOP* or tap our link to browse.' },
+    });
+  }
+}
+
 async function sendGoodChoice(to, productId) {
   return waPost({
     messaging_product: 'whatsapp',
@@ -363,6 +399,7 @@ module.exports = {
   sendCatalog,
   // Session messages (require 24h window)
   sendPromoMessage,
+  sendPointsPromoMessage,
   sendLoyaltyReminder,
   sendGoodChoice,
   // Template names (for status checks)
