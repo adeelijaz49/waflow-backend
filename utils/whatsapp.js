@@ -305,73 +305,128 @@ async function sendProductCarousel(to, products, promotion, batchStart = 0) {
   const isPoints  = promotion?.customerType === 'points';
   const disc      = promotion?.discountPercent || 0;
   const ptPrice   = promotion?.pointsPrice || 0;
-  const batch     = products.slice(batchStart, batchStart + 10);
+
+  const batch = products
+    .slice(batchStart, batchStart + 10)
+    .filter(p => p.images?.[0]);
+
   const remaining = products.length - batchStart - batch.length;
 
-  // Build carousel cards — only products with an image URL (carousel requires header)
-  const cards = batch
-    .filter(p => p.images?.[0])
-    .map(p => {
-      const salePrice = isPoints ? null : +(p.basePrice * (1 - disc / 100)).toFixed(2);
-      const priceStr  = isPoints
-        ? `💎 ${ptPrice} pts`
-        : disc > 0
-          ? `💰 $${salePrice} AUD (was $${p.basePrice.toFixed(2)})`
-          : `💰 $${p.basePrice.toFixed(2)} AUD`;
-      return {
-        header: { type: 'image', image: { link: p.images[0] } },
-        body:   { text: `*${p.name}*\n${priceStr}${p.description ? '\n' + p.description.slice(0, 72) : ''}` },
-        action: { buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }] },
-      };
-    });
+  function limitText(text, max) {
+    return String(text || '')
+      .replace(/\n{3,}/g, '\n\n')
+      .slice(0, max);
+  }
+
+  if (batch.length < 2) {
+    console.log(`Carousel skipped — only ${batch.length} products have images`);
+    return sendProductCards(to, products.slice(batchStart, batchStart + 5), promotion);
+  }
+
+  const cards = batch.map((p, index) => {
+    const basePrice = Number(p.basePrice || 0);
+    const salePrice = isPoints ? null : +(basePrice * (1 - disc / 100)).toFixed(2);
+
+    const priceStr = isPoints
+      ? `${ptPrice} pts`
+      : disc > 0
+        ? `$${salePrice} AUD was $${basePrice.toFixed(2)}`
+        : `$${basePrice.toFixed(2)} AUD`;
+
+    const bodyText = limitText(
+      `${p.name}\n${priceStr}${p.description ? '\n' + p.description : ''}`,
+      160
+    );
+
+    return {
+      card_index: index,
+      type: 'button',
+      header: {
+        type: 'image',
+        image: {
+          link: p.images[0],
+        },
+      },
+      body: {
+        text: bodyText,
+      },
+      action: {
+        buttons: [
+          {
+            type: 'quick_reply',
+            quick_reply: {
+              id: `cart_${p._id}`,
+              title: isPoints ? 'Redeem' : 'Add to Cart',
+            },
+          },
+        ],
+      },
+    };
+  });
 
   const headerLabel = isPoints
-    ? `💎 ${promotion.name} — ${ptPrice} pts/item`
-    : `🏷️ ${promotion.name}${disc > 0 ? ` — ${disc}% OFF` : ''}`;
+    ? `${promotion.name} — ${ptPrice} pts/item`
+    : `${promotion.name}${disc > 0 ? ` — ${disc}% OFF` : ''}`;
 
   const rangeNote = products.length > 10
-    ? ` (${batchStart + 1}–${batchStart + batch.length} of ${products.length})`
+    ? ` (${batchStart + 1}-${batchStart + batch.length} of ${products.length})`
     : '';
 
-  if (cards.length >= 2) {
-    try {
-      const result = await waPost({
+  try {
+    const result = await waPost({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'carousel',
+        body: {
+          text: limitText(
+            `${headerLabel}${rangeNote}\n\nSwipe to browse. Tap Add to Cart to choose an item.`,
+            1024
+          ),
+        },
+        action: {
+          cards,
+        },
+      },
+    });
+
+    if (remaining > 0) {
+      await waPost({
         messaging_product: 'whatsapp',
         to,
         type: 'interactive',
         interactive: {
-          type: 'carousel',
-          body: { text: `${headerLabel}${rangeNote}\n\nSwipe to browse. Tap a card to add it — you can pick multiple! 🛍️` },
-          action: { cards },
-        },
-      });
-
-      if (remaining > 0) {
-        await waPost({
-          messaging_product: 'whatsapp', to, type: 'interactive',
-          interactive: {
-            type:   'button',
-            body:   { text: `${remaining} more item${remaining !== 1 ? 's' : ''} in this promotion.` },
-            action: { buttons: [{ type: 'reply', reply: { id: `more_${batchStart + batch.length}_${promotion._id}`, title: `See Next ${Math.min(remaining, 10)} →` } }] },
+          type: 'button',
+          body: {
+            text: `${remaining} more item${remaining !== 1 ? 's' : ''} in this promotion.`,
           },
-        }).catch(() => {});
-      }
-      return result;
-    } catch (err) {
-      console.warn('Carousel failed, falling back to product cards:', err.response?.data || err.message);
+          action: {
+            buttons: [
+              {
+                type: 'reply',
+                reply: {
+                  id: `more_${batchStart + batch.length}_${promotion._id}`,
+                  title: `See Next ${Math.min(remaining, 10)}`,
+                },
+              },
+            ],
+          },
+        },
+      }).catch(() => {});
     }
-  } else {
-    console.log(`Carousel skipped — only ${cards.length} products have images`);
-  }
 
-  // Fallback A: send individual rich cards with images (best for small sets)
-  if (batch.length <= 5) {
+    return result;
+  } catch (err) {
+    console.warn(
+      'Carousel failed, falling back to product cards:',
+      JSON.stringify(err.response?.data || err.message, null, 2)
+    );
+
     return sendProductCards(to, batch, promotion);
   }
-
-  // Fallback B: list message for large sets
-  return sendCatalog(to, batch, promotion);
-}
+} 
 
 // Variant size/colour picker shown after customer taps "Add to Cart" on a product with variants.
 async function sendVariantPicker(to, product, promotion) {
