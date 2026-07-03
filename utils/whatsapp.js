@@ -255,20 +255,52 @@ async function sendPromoAnnouncement(to, customer, promotion, items) {
   const cta   = isService ? 'Book Now! 📅' : 'Shop Now! 🛍️';
   const body  = `Hi ${firstName}! ✨\n\n*${promotion.name}*\n\n${preview}${moreNote}\n\n${priceNote}\n\nTap below to browse and ${isService ? 'book your slot' : 'add to cart'}.`;
 
-  return waPost({
-    messaging_product: 'whatsapp',
-    to,
-    type: 'interactive',
-    interactive: {
-      type:   'button',
-      body:   { text: body },
-      action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: cta } }] },
-    },
-  });
+  const firstImage = items.find(i => i.images?.[0])?.images?.[0];
+
+  const interactive = {
+    type:   'button',
+    body:   { text: body },
+    action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: cta } }] },
+  };
+  if (firstImage) interactive.header = { type: 'image', image: { link: firstImage } };
+
+  return waPost({ messaging_product: 'whatsapp', to, type: 'interactive', interactive });
 }
 
-// Swipeable product carousel — up to 10 cards per batch, with image + price + Add to Cart.
-// Carousel cards REQUIRE an image header; cards without images fall back to list automatically.
+// Send one rich button card per product (image + price + Add to Cart).
+// Uses image.link directly — no pre-upload needed.
+async function sendProductCards(to, products, promotion) {
+  const isPoints = promotion?.customerType === 'points';
+  const disc     = promotion?.discountPercent || 0;
+  const ptPrice  = promotion?.pointsPrice || 0;
+
+  for (const p of products) {
+    const salePrice = isPoints ? null : +(p.basePrice * (1 - disc / 100)).toFixed(2);
+    const priceStr  = isPoints
+      ? `💎 ${ptPrice} pts`
+      : disc > 0
+        ? `$${salePrice} AUD _(was $${p.basePrice.toFixed(2)})_`
+        : `$${p.basePrice.toFixed(2)} AUD`;
+
+    const bodyText = `*${p.name}*\n${priceStr}${p.description ? '\n\n' + p.description.slice(0, 150) : ''}`;
+
+    const interactive = {
+      type:   'button',
+      body:   { text: bodyText },
+      action: { buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }] },
+    };
+
+    if (p.images?.[0]) {
+      interactive.header = { type: 'image', image: { link: p.images[0] } };
+    }
+
+    await waPost({ messaging_product: 'whatsapp', to, type: 'interactive', interactive })
+      .catch(e => console.warn(`Product card failed for ${p.name}:`, e.response?.data || e.message));
+  }
+}
+
+// Swipeable product carousel — uses image.link directly (no pre-upload).
+// Falls back to individual rich cards (≤5) or list (>5) when carousel is unavailable.
 async function sendProductCarousel(to, products, promotion, batchStart = 0) {
   const isPoints  = promotion?.customerType === 'points';
   const disc      = promotion?.discountPercent || 0;
@@ -276,27 +308,22 @@ async function sendProductCarousel(to, products, promotion, batchStart = 0) {
   const batch     = products.slice(batchStart, batchStart + 10);
   const remaining = products.length - batchStart - batch.length;
 
-  // Upload images concurrently; non-fatal if some fail
-  const imgResults = await Promise.allSettled(
-    batch.map(p => p.images?.[0] ? uploadMediaFromUrl(p.images[0]) : Promise.reject('no-img'))
-  );
-
-  // Carousel cards MUST have an image header — filter to only those with a successful upload
-  const cardsWithImages = [];
-  batch.forEach((p, idx) => {
-    if (imgResults[idx]?.status !== 'fulfilled') return;
-    const salePrice = isPoints ? null : +(p.basePrice * (1 - disc / 100)).toFixed(2);
-    const priceStr  = isPoints
-      ? `💎 ${ptPrice} pts`
-      : disc > 0
-        ? `💰 $${salePrice} AUD  (was $${p.basePrice.toFixed(2)})`
-        : `💰 $${p.basePrice.toFixed(2)} AUD`;
-    cardsWithImages.push({
-      header: { type: 'image', image: { id: imgResults[idx].value } },
-      body:   { text: `*${p.name}*\n${priceStr}${p.description ? '\n' + p.description.slice(0, 72) : ''}` },
-      action: { buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }] },
+  // Build carousel cards — only products with an image URL (carousel requires header)
+  const cards = batch
+    .filter(p => p.images?.[0])
+    .map(p => {
+      const salePrice = isPoints ? null : +(p.basePrice * (1 - disc / 100)).toFixed(2);
+      const priceStr  = isPoints
+        ? `💎 ${ptPrice} pts`
+        : disc > 0
+          ? `💰 $${salePrice} AUD (was $${p.basePrice.toFixed(2)})`
+          : `💰 $${p.basePrice.toFixed(2)} AUD`;
+      return {
+        header: { type: 'image', image: { link: p.images[0] } },
+        body:   { text: `*${p.name}*\n${priceStr}${p.description ? '\n' + p.description.slice(0, 72) : ''}` },
+        action: { buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }] },
+      };
     });
-  });
 
   const headerLabel = isPoints
     ? `💎 ${promotion.name} — ${ptPrice} pts/item`
@@ -306,8 +333,7 @@ async function sendProductCarousel(to, products, promotion, batchStart = 0) {
     ? ` (${batchStart + 1}–${batchStart + batch.length} of ${products.length})`
     : '';
 
-  // Need at least 2 cards with images for a carousel to be valid
-  if (cardsWithImages.length >= 2) {
+  if (cards.length >= 2) {
     try {
       const result = await waPost({
         messaging_product: 'whatsapp',
@@ -316,7 +342,7 @@ async function sendProductCarousel(to, products, promotion, batchStart = 0) {
         interactive: {
           type: 'carousel',
           body: { text: `${headerLabel}${rangeNote}\n\nSwipe to browse. Tap a card to add it — you can pick multiple! 🛍️` },
-          action: { sections: [{ cards: cardsWithImages }] },
+          action: { sections: [{ cards }] },
         },
       });
 
@@ -332,12 +358,18 @@ async function sendProductCarousel(to, products, promotion, batchStart = 0) {
       }
       return result;
     } catch (err) {
-      console.warn('Carousel API error, falling back to list:', err.response?.data || err.message);
+      console.warn('Carousel failed, falling back to product cards:', err.response?.data || err.message);
     }
   } else {
-    console.log(`Carousel skipped (${cardsWithImages.length} of ${batch.length} products have images) — using list`);
+    console.log(`Carousel skipped — only ${cards.length} products have images`);
   }
 
+  // Fallback A: send individual rich cards with images (best for small sets)
+  if (batch.length <= 5) {
+    return sendProductCards(to, batch, promotion);
+  }
+
+  // Fallback B: list message for large sets
   return sendCatalog(to, batch, promotion);
 }
 
@@ -640,6 +672,7 @@ module.exports = {
   // Announcement + carousel
   sendPromoAnnouncement,
   sendProductCarousel,
+  sendProductCards,
   sendVariantPicker,
   // Session messages (require 24h window)
   sendPromoMessage,
