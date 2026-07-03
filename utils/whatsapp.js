@@ -342,7 +342,7 @@ async function sendProductCarousel(to, products, promotion, batchStart = 0) {
         interactive: {
           type: 'carousel',
           body: { text: `${headerLabel}${rangeNote}\n\nSwipe to browse. Tap a card to add it — you can pick multiple! 🛍️` },
-          action: { sections: [{ cards }] },
+          action: { cards },
         },
       });
 

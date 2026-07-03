@@ -595,6 +595,10 @@ app.post("/webhook", async (req, res) => {
         }
         await sendGoodChoice(from).catch(err => console.error("sendGoodChoice error:", err.message));
 
+      } else if (buttonId.startsWith("cart_")) {
+        // "Add to Cart" tapped on an individual product card (button_reply from sendProductCards)
+        await handleProductSelection(from, buttonId.slice(5), "");
+
       } else if (buttonId.startsWith("more_")) {
         // Load next carousel batch: more_<batchStart>_<promoId>
         const parts      = buttonId.slice(5).split("_");
