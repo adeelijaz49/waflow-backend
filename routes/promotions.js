@@ -3,13 +3,14 @@ const Promotion = require('../models/Promotion');
 const Product   = require('../models/Product');
 const Customer  = require('../models/Customer');
 const Order     = require('../models/Order');
-const { sendPromoTemplate, sendPromoMessage, sendPointsPromoMessage, sendLoyaltyTemplate, sendLoyaltyReminder } = require('../utils/whatsapp');
+const Service   = require('../models/Service');
+const { sendPromoTemplate, sendPromoMessage, sendPointsPromoMessage, sendServicePromoMessage, sendLoyaltyTemplate, sendLoyaltyReminder } = require('../utils/whatsapp');
 
 // ─── CRUD ────────────────────────────────────────────────────────────────────
 
 router.get('/', async (req, res) => {
   try {
-    const promotions = await Promotion.find().populate('products', 'name basePrice images').sort({ createdAt: -1 });
+    const promotions = await Promotion.find().populate('products', 'name basePrice images').populate('services', 'name basePrice duration').sort({ createdAt: -1 });
     res.json(promotions);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -143,21 +144,34 @@ router.post('/:id/send', async (req, res) => {
     const { customerIds } = req.body;
     if (!customerIds?.length) return res.status(400).json({ error: 'customerIds required' });
 
-    const promotion = await Promotion.findById(req.params.id).populate('products');
+    const promotion = await Promotion.findById(req.params.id).populate('products').populate('services');
     if (!promotion) return res.status(404).json({ error: 'Not found' });
 
-    let products = promotion.products;
-    if (!products.length && promotion.type === 'store_wide') {
-      products = await Product.find({ active: true }).limit(3);
-    }
-
     const customers = await Customer.find({ _id: { $in: customerIds } });
-
     let sentCount = 0;
     const errors = [];
 
-    if (promotion.customerType === 'points') {
-      // Points promotion: send one message per customer showing all products
+    if (promotion.scope === 'services') {
+      // Service promotion: one message per service per customer
+      const services = promotion.services?.length ? promotion.services : await Service.find({ active: true }).limit(3);
+      for (const customer of customers) {
+        for (const service of services) {
+          try {
+            await sendServicePromoMessage(customer.phone, customer, service, promotion);
+            sentCount++;
+          } catch (err) {
+            errors.push({ customer: customer._id, service: service._id, error: err.message });
+            console.error(`Service promo send failed ${customer.phone}:`, err.response?.data ?? err.message);
+          }
+          await new Promise(r => setTimeout(r, 300));
+        }
+      }
+    } else if (promotion.customerType === 'points') {
+      // Points product promotion: one message per customer showing all products
+      let products = promotion.products;
+      if (!products.length && promotion.type === 'store_wide') {
+        products = await Product.find({ active: true }).limit(3);
+      }
       for (const customer of customers) {
         try {
           await sendPointsPromoMessage(customer.phone, customer, promotion, products);
@@ -169,15 +183,17 @@ router.post('/:id/send', async (req, res) => {
         await new Promise(r => setTimeout(r, 300));
       }
     } else {
-      // Cash promotion: one message per product per customer
+      // Cash product promotion: one message per product per customer
+      let products = promotion.products;
+      if (!products.length && promotion.type === 'store_wide') {
+        products = await Product.find({ active: true }).limit(3);
+      }
       for (const customer of customers) {
         for (const product of products) {
           try {
-            // Try template first (works without 24h session window)
             await sendPromoTemplate(customer.phone, customer, product, promotion);
             sentCount++;
           } catch (templateErr) {
-            // Fall back to interactive session message
             try {
               await sendPromoMessage(customer.phone, product, promotion, customer.loyaltyPoints);
               sentCount++;

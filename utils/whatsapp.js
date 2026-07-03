@@ -325,6 +325,102 @@ async function sendLoyaltyReminder(to, customerName, loyaltyPoints) {
   });
 }
 
+// Sends available time slots for a service as a WhatsApp list message
+async function sendServiceSlots(to, service, slots, promoId, isFree) {
+  if (!slots.length) {
+    return waPost({
+      messaging_product: 'whatsapp', to, type: 'text',
+      text: { body: `Sorry, there are no available slots for *${service.name}* right now. Please check back later!` },
+    });
+  }
+
+  const prefix    = isFree ? 'reslot' : 'slot';
+  const rows      = slots.slice(0, 10).map(s => ({
+    id:          `${prefix}_${s._id}`,
+    title:       `${s.date} · ${s.startTime}–${s.endTime}`.slice(0, 24),
+    description: `${s.capacity - s.bookedCount} spot${s.capacity - s.bookedCount !== 1 ? 's' : ''} left`.slice(0, 72),
+  }));
+
+  const headerText = isFree
+    ? `🔄 Rebook: ${service.name}`
+    : `📅 Book: ${service.name}`;
+
+  const bodyText = isFree
+    ? 'Pick a new time slot — we\'ll move your booking at no charge.'
+    : `${service.duration} min session · Choose your preferred time slot below.`;
+
+  return waPost({
+    messaging_product: 'whatsapp', to, type: 'interactive',
+    interactive: {
+      type:   'list',
+      header: { type: 'text', text: headerText },
+      body:   { text: bodyText },
+      footer: { text: 'All times are confirmed instantly' },
+      action: {
+        button:   'View Slots',
+        sections: [{ title: 'Available Slots', rows }],
+      },
+    },
+  });
+}
+
+// Service promotion message — for cash promotions (one per service)
+async function sendServicePromoMessage(to, customer, service, promotion) {
+  const firstName = customer.firstname || 'Valued Customer';
+  const isPoints  = promotion.customerType === 'points';
+  const priceStr  = isPoints
+    ? `💎 ${promotion.pointsPrice} pts`
+    : `💰 $${service.basePrice.toFixed(2)} AUD (${promotion.discountPercent}% OFF — was $${service.basePrice.toFixed(2)})`;
+
+  const bodyText =
+    `Hi ${firstName}! ✨\n\n` +
+    `*${service.name}* is now available as part of our *${promotion.name}* offer!\n\n` +
+    `${service.description ? service.description + '\n\n' : ''}` +
+    `⏱ ${service.duration} min session\n${priceStr}\n\n` +
+    `Tap below to see available time slots and book yours!`;
+
+  try {
+    return await waPost({
+      messaging_product: 'whatsapp', to, type: 'interactive',
+      interactive: {
+        type:   'button',
+        body:   { text: bodyText },
+        action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: 'Book Now! 📅' } }] },
+      },
+    });
+  } catch (_) {
+    return waPost({
+      messaging_product: 'whatsapp', to, type: 'text',
+      text: { body: bodyText + '\n\nReply *BOOK* to see available time slots.' },
+    });
+  }
+}
+
+// Cancellation notice sent to customer — offers free rebooking
+async function sendRebookMessage(to, customerName, serviceName, slot, serviceId, bookingId) {
+  const slotLabel = slot ? `${slot.date} at ${slot.startTime}` : 'your scheduled slot';
+  const bodyText =
+    `Hi ${customerName}! 😔\n\n` +
+    `Unfortunately your booking for *${serviceName}* on *${slotLabel}* has been cancelled.\n\n` +
+    `We\'d love to fit you in at another time — tap below to rebook at *no charge*!`;
+
+  try {
+    return await waPost({
+      messaging_product: 'whatsapp', to, type: 'interactive',
+      interactive: {
+        type:   'button',
+        body:   { text: bodyText },
+        action: { buttons: [{ type: 'reply', reply: { id: `rebook_${serviceId}_${bookingId}`, title: 'Rebook Free 🔄' } }] },
+      },
+    });
+  } catch (_) {
+    return waPost({
+      messaging_product: 'whatsapp', to, type: 'text',
+      text: { body: bodyText },
+    });
+  }
+}
+
 // One message per customer for points promotions — shows all products at once
 async function sendPointsPromoMessage(to, customer, promotion, products) {
   const firstName  = customer.firstname || 'Valued Customer';
@@ -400,6 +496,9 @@ module.exports = {
   // Session messages (require 24h window)
   sendPromoMessage,
   sendPointsPromoMessage,
+  sendServicePromoMessage,
+  sendServiceSlots,
+  sendRebookMessage,
   sendLoyaltyReminder,
   sendGoodChoice,
   // Template names (for status checks)

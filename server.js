@@ -10,7 +10,7 @@ const Stripe   = require("stripe");
 const mongoose = require("mongoose");
 
 const { PORT, APP_URL } = require("./utils/config");
-const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts } = require("./utils/state");
+const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pendingSlotSelections, pendingServiceCheckouts } = require("./utils/state");
 
 const app  = express();
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
@@ -32,6 +32,7 @@ app.use("/api/products",   require("./routes/products"));
 app.use("/api/customers",  require("./routes/customers"));
 app.use("/api/orders",     require("./routes/orders"));
 app.use("/api/promotions", require("./routes/promotions"));
+app.use("/api/services",   require("./routes/services"));
 app.use("/api/whatsapp",   require("./routes/whatsapp"));
 app.use("/api/settings",  require("./routes/settings"));
 app.use(require("./routes/pay"));
@@ -181,10 +182,42 @@ async function handleStripeWebhook(req, res) {
   if (event.type === "payment_intent.succeeded") {
     const pi          = event.data.object;
     const buyerPhone   = pi.metadata?.buyerPhone;
+    const amountAud    = (pi.amount / 100).toFixed(2);
+
+    // ── Service booking payment ───────────────────────────────────────────────
+    if (pi.metadata?.bookingType === "service") {
+      const { serviceId, slotId, serviceName, slotLabel } = pi.metadata;
+      if (buyerPhone) {
+        try {
+          const Customer = require('./models/Customer');
+          const TimeSlot = require('./models/TimeSlot');
+          const Booking  = require('./models/Booking');
+          const customer = await Customer.findOne({ phone: buyerPhone });
+          await TimeSlot.findByIdAndUpdate(slotId, { $inc: { bookedCount: 1 } });
+          await Booking.create({
+            serviceId,
+            slotId,
+            customerId:    customer?._id,
+            phone:         buyerPhone,
+            customerName:  customer ? `${customer.firstname || ''} ${customer.lastname || ''}`.trim() : buyerPhone,
+            status:        'confirmed',
+            paymentType:   'cash',
+            amount:        pi.amount / 100,
+            stripePaymentIntentId: pi.id,
+          });
+          await waPost({ messaging_product: "whatsapp", to: buyerPhone, type: "text",
+            text: { body: `✅ *Booking Confirmed!*\n\n📋 ${serviceName}\n📅 ${slotLabel}\n💰 $${amountAud} AUD paid\n\nSee you then! 🎉` },
+          }).catch(err => console.error("Service booking WA error:", err.message));
+        } catch (err) {
+          console.error("Service booking post-payment error:", err.message);
+        }
+      }
+      return res.sendStatus(200);
+    }
+
     const subtotal     = parseFloat(pi.metadata?.subtotal || '0');
     const shippingCost = parseFloat(pi.metadata?.shippingCost || '0');
     const address      = pi.metadata?.address || '';
-    const amountAud    = (pi.amount / 100).toFixed(2);
     let loyaltySettings = { loyaltyPointsPerUnit: 100, minPointsPerPurchase: 100 };
     try { loyaltySettings = (await require('./models/Settings').findOne()) || loyaltySettings; } catch (_) {}
     const points = Math.max(loyaltySettings.minPointsPerPurchase, Math.round(subtotal * loyaltySettings.loyaltyPointsPerUnit));
@@ -243,15 +276,20 @@ app.get("/webhook", (req, res) => {
 });
 
 // ─── Promo catalog helpers ────────────────────────────────────────────────────
-const { sendCatalog, getCategories, sendCategories } = require("./utils/whatsapp");
+const { sendCatalog, getCategories, sendCategories, sendServiceSlots } = require("./utils/whatsapp");
 
 async function handlePromoInterest(from, promoId) {
   try {
     const Promotion = require("./models/Promotion");
     const Product   = require("./models/Product");
 
-    const promo = await Promotion.findById(promoId).populate("products");
+    const promo = await Promotion.findById(promoId).populate("products").populate("services");
     if (!promo) return;
+
+    // Service promotion — show time slots
+    if (promo.scope === "services") {
+      return handleServicePromoInterest(from, promo);
+    }
 
     let products = promo.products || [];
     if (!products.length && promo.type === "store_wide") {
@@ -342,6 +380,145 @@ async function handleProductSelection(from, productId) {
   }
 }
 
+// Shows available time slots when a customer taps a service promotion
+async function handleServicePromoInterest(from, promo) {
+  try {
+    const Service  = require("./models/Service");
+    const TimeSlot = require("./models/TimeSlot");
+
+    const services = promo.services?.length ? promo.services : await Service.find({ active: true }).limit(1);
+    if (!services.length) {
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: "Sorry, no services are available for this promotion right now." } });
+      return;
+    }
+
+    // Use first service in promotion (or only service)
+    const service = services[0];
+    const today   = new Date().toISOString().slice(0, 10);
+    const slots   = await TimeSlot.find({
+      serviceId:   service._id,
+      date:        { $gte: today },
+      $expr:       { $lt: ["$bookedCount", "$capacity"] },
+    }).sort({ date: 1, startTime: 1 }).limit(10);
+
+    pendingSlotSelections.set(from, { service, promotion: promo, slots, isFree: false });
+    await sendServiceSlots(from, service, slots, promo._id.toString(), false);
+  } catch (err) {
+    console.error("handleServicePromoInterest error:", err.message);
+  }
+}
+
+// Customer picked a time slot from a service promo
+async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
+  try {
+    const TimeSlot = require("./models/TimeSlot");
+    const Service  = require("./models/Service");
+    const Customer = require("./models/Customer");
+    const Booking  = require("./models/Booking");
+
+    const pending  = pendingSlotSelections.get(from);
+    const slot     = await TimeSlot.findById(slotId);
+    if (!slot) return;
+
+    const service  = pending?.service || await Service.findById(slot.serviceId);
+    const customer = await Customer.findOne({ phone: from });
+
+    if (!slot || slot.bookedCount >= slot.capacity) {
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: "⚠️ Sorry, that slot just got booked up. Please pick another time." } });
+      return;
+    }
+
+    if (isFree) {
+      // Rescheduling — free, no payment needed
+      await TimeSlot.findByIdAndUpdate(slotId, { $inc: { bookedCount: 1 } });
+
+      // If rescheduling an existing booking, mark old one rescheduled
+      if (oldBookingId) {
+        await Booking.findByIdAndUpdate(oldBookingId, { status: 'rescheduled' });
+      }
+
+      const booking = await Booking.create({
+        serviceId:    service._id,
+        slotId:       slot._id,
+        customerId:   customer?._id,
+        phone:        from,
+        customerName: customer ? `${customer.firstname || ''} ${customer.lastname || ''}`.trim() : from,
+        status:       'confirmed',
+        paymentType:  'free',
+        amount:       0,
+      });
+
+      pendingSlotSelections.delete(from);
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: `✅ *Booked!* Your appointment for *${service.name}* on *${slot.date} at ${slot.startTime}* is confirmed.\n\nSee you then! 🎉` } });
+      return;
+    }
+
+    const promotion = pending?.promotion;
+    const isPoints  = promotion?.customerType === 'points';
+
+    if (isPoints) {
+      const pointsCost = promotion.pointsPrice || 0;
+      if ((customer?.loyaltyPoints || 0) < pointsCost) {
+        await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+          text: { body: `⚠️ You need ${pointsCost} pts but only have ${customer?.loyaltyPoints || 0} pts.` } });
+        return;
+      }
+      pendingServiceCheckouts.set(from, { service, slot, promotion, totalPointsCost: pointsCost });
+      const remaining = (customer?.loyaltyPoints || 0) - pointsCost;
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: `💎 *Booking Summary*\n\n📋 ${service.name}\n📅 ${slot.date} at ${slot.startTime}–${slot.endTime}\n\n*${pointsCost} points will be deducted*\nYou have: ${customer?.loyaltyPoints || 0} pts → after: ${remaining} pts\n\nReply *YES* to confirm or *NO* to cancel.` } });
+    } else {
+      // Cash — create Stripe payment intent for the service
+      const amount = service.basePrice || 0;
+      const pi = await stripe.paymentIntents.create({
+        amount:   Math.round(amount * 100),
+        currency: "aud",
+        automatic_payment_methods: { enabled: true },
+        metadata: {
+          bookingType: "service",
+          buyerPhone:  from,
+          serviceId:   service._id.toString(),
+          slotId:      slot._id.toString(),
+          serviceName: service.name,
+          slotLabel:   `${slot.date} at ${slot.startTime}`,
+        },
+      });
+
+      pendingSlotSelections.delete(from);
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: `📋 *${service.name}*\n📅 ${slot.date} at ${slot.startTime}–${slot.endTime}\n💰 $${amount.toFixed(2)} AUD\n\nPay securely to confirm your booking:\n${APP_URL}/pay/${pi.id}` } });
+    }
+  } catch (err) {
+    console.error("handleSlotSelection error:", err.message);
+  }
+}
+
+// Shows available slots for a rebook (free, initiated from cancellation WA message)
+async function handleRebookRequest(from, serviceId, oldBookingId) {
+  try {
+    const Service  = require("./models/Service");
+    const TimeSlot = require("./models/TimeSlot");
+
+    const service = await Service.findById(serviceId);
+    if (!service) return;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const slots = await TimeSlot.find({
+      serviceId,
+      date:  { $gte: today },
+      $expr: { $lt: ["$bookedCount", "$capacity"] },
+    }).sort({ date: 1, startTime: 1 }).limit(10);
+
+    pendingSlotSelections.set(from, { service, promotion: null, slots, isFree: true, oldBookingId });
+    await sendServiceSlots(from, service, slots, null, true);
+  } catch (err) {
+    console.error("handleRebookRequest error:", err.message);
+  }
+}
+
 // ─── WhatsApp incoming messages ──────────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
@@ -366,7 +543,14 @@ app.post("/webhook", async (req, res) => {
     // List message row tapped
     if (message.interactive.type === "list_reply") {
       const rowId = message.interactive.list_reply?.id || "";
-      if (rowId.startsWith("cart_")) {
+      if (rowId.startsWith("slot_")) {
+        // Service time slot tapped (paid booking)
+        await handleSlotSelection(from, rowId.slice(5), false, null);
+      } else if (rowId.startsWith("reslot_")) {
+        // Service time slot tapped (free rebook after cancellation)
+        const pending  = pendingSlotSelections.get(from);
+        await handleSlotSelection(from, rowId.slice(7), true, pending?.oldBookingId || null);
+      } else if (rowId.startsWith("cart_")) {
         // Product row → add to cart
         await handleProductSelection(from, rowId.slice(5));
       } else if (rowId.startsWith("cat_")) {
@@ -381,8 +565,15 @@ app.post("/webhook", async (req, res) => {
       const buttonId = message.interactive.button_reply.id;
       console.log(`Button: ${buttonId} from ${from}`);
 
-      if (buttonId.startsWith("promo_")) {
-        // "Shop Now" tapped on interactive promo message → show categories
+      if (buttonId.startsWith("rebook_")) {
+        // Customer tapped "Rebook Free" from cancellation message
+        const parts     = buttonId.slice(7).split("_");
+        const serviceId = parts[0];
+        const bookingId = parts[1];
+        await handleRebookRequest(from, serviceId, bookingId);
+
+      } else if (buttonId.startsWith("promo_")) {
+        // "Shop Now" / "Book Now" tapped on promo message → show catalog or slots
         await handlePromoInterest(from, buttonId.slice(6));
 
       } else if (buttonId.startsWith("int_")) {
@@ -463,6 +654,53 @@ app.post("/webhook", async (req, res) => {
   // ── Text message ──────────────────────────────────────────────────────────────
   if (message.type === "text") {
     const text = message.text?.body?.trim() || "";
+
+    // Awaiting YES/NO for points service booking confirmation
+    if (pendingServiceCheckouts.has(from)) {
+      const upper = text.toUpperCase();
+      if (upper === 'YES') {
+        const pending = pendingServiceCheckouts.get(from);
+        pendingServiceCheckouts.delete(from);
+        pendingSlotSelections.delete(from);
+        try {
+          const Customer = require('./models/Customer');
+          const TimeSlot = require('./models/TimeSlot');
+          const Booking  = require('./models/Booking');
+
+          const customer = await Customer.findOneAndUpdate(
+            { phone: from, loyaltyPoints: { $gte: pending.totalPointsCost } },
+            { $inc: { loyaltyPoints: -pending.totalPointsCost } },
+            { new: true }
+          );
+          if (!customer) {
+            await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
+              text: { body: '⚠️ Insufficient points. Booking could not be completed.' } }).catch(() => {});
+            return;
+          }
+          await TimeSlot.findByIdAndUpdate(pending.slot._id, { $inc: { bookedCount: 1 } });
+          await Booking.create({
+            serviceId:    pending.service._id,
+            slotId:       pending.slot._id,
+            customerId:   customer._id,
+            phone:        from,
+            customerName: `${customer.firstname || ''} ${customer.lastname || ''}`.trim(),
+            status:       'confirmed',
+            paymentType:  'points',
+            pointsUsed:   pending.totalPointsCost,
+          });
+          await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
+            text: { body: `✅ *Booked!*\n\n📋 ${pending.service.name}\n📅 ${pending.slot.date} at ${pending.slot.startTime}\n💎 ${pending.totalPointsCost} points redeemed\n\nRemaining points: ${customer.loyaltyPoints} pts\n\nSee you then! 🎉` } }).catch(() => {});
+        } catch (err) {
+          console.error('Service points booking error:', err.message);
+        }
+      } else if (upper === 'NO') {
+        pendingServiceCheckouts.delete(from);
+        pendingSlotSelections.delete(from);
+        await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
+          text: { body: '👍 No worries! Your points are safe. Feel free to browse again anytime.' } }).catch(() => {});
+      }
+      return;
+    }
 
     // Awaiting YES/NO for points redemption confirmation
     if (pendingPointsCheckouts.has(from)) {
