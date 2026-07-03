@@ -268,7 +268,7 @@ async function sendPromoAnnouncement(to, customer, promotion, items) {
 }
 
 // Swipeable product carousel — up to 10 cards per batch, with image + price + Add to Cart.
-// Falls back to list message if carousel type is unsupported.
+// Carousel cards REQUIRE an image header; cards without images fall back to list automatically.
 async function sendProductCarousel(to, products, promotion, batchStart = 0) {
   const isPoints  = promotion?.customerType === 'points';
   const disc      = promotion?.discountPercent || 0;
@@ -281,24 +281,21 @@ async function sendProductCarousel(to, products, promotion, batchStart = 0) {
     batch.map(p => p.images?.[0] ? uploadMediaFromUrl(p.images[0]) : Promise.reject('no-img'))
   );
 
-  const cards = batch.map((p, idx) => {
+  // Carousel cards MUST have an image header — filter to only those with a successful upload
+  const cardsWithImages = [];
+  batch.forEach((p, idx) => {
+    if (imgResults[idx]?.status !== 'fulfilled') return;
     const salePrice = isPoints ? null : +(p.basePrice * (1 - disc / 100)).toFixed(2);
     const priceStr  = isPoints
       ? `💎 ${ptPrice} pts`
       : disc > 0
-        ? `💰 $${salePrice} AUD  ~~$${p.basePrice.toFixed(2)}~~`
+        ? `💰 $${salePrice} AUD  (was $${p.basePrice.toFixed(2)})`
         : `💰 $${p.basePrice.toFixed(2)} AUD`;
-
-    const card = {
-      body: { text: `*${p.name}*\n${priceStr}${p.description ? '\n' + p.description.slice(0, 72) : ''}` },
-      action: {
-        buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }],
-      },
-    };
-    if (imgResults[idx]?.status === 'fulfilled') {
-      card.header = { type: 'image', image: { id: imgResults[idx].value } };
-    }
-    return card;
+    cardsWithImages.push({
+      header: { type: 'image', image: { id: imgResults[idx].value } },
+      body:   { text: `*${p.name}*\n${priceStr}${p.description ? '\n' + p.description.slice(0, 72) : ''}` },
+      action: { buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }] },
+    });
   });
 
   const headerLabel = isPoints
@@ -309,34 +306,39 @@ async function sendProductCarousel(to, products, promotion, batchStart = 0) {
     ? ` (${batchStart + 1}–${batchStart + batch.length} of ${products.length})`
     : '';
 
-  try {
-    const result = await waPost({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: {
-        type: 'carousel',
-        body: { text: `${headerLabel}${rangeNote}\n\nSwipe to browse. Tap a card to add it — you can pick multiple! 🛍️` },
-        action: { sections: [{ cards }] },
-      },
-    });
-
-    if (remaining > 0) {
-      await waPost({
-        messaging_product: 'whatsapp', to, type: 'interactive',
+  // Need at least 2 cards with images for a carousel to be valid
+  if (cardsWithImages.length >= 2) {
+    try {
+      const result = await waPost({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'interactive',
         interactive: {
-          type:   'button',
-          body:   { text: `${remaining} more item${remaining !== 1 ? 's' : ''} in this promotion.` },
-          action: { buttons: [{ type: 'reply', reply: { id: `more_${batchStart + batch.length}_${promotion._id}`, title: `See Next ${Math.min(remaining, 10)} →` } }] },
+          type: 'carousel',
+          body: { text: `${headerLabel}${rangeNote}\n\nSwipe to browse. Tap a card to add it — you can pick multiple! 🛍️` },
+          action: { sections: [{ cards: cardsWithImages }] },
         },
-      }).catch(() => {});
+      });
+
+      if (remaining > 0) {
+        await waPost({
+          messaging_product: 'whatsapp', to, type: 'interactive',
+          interactive: {
+            type:   'button',
+            body:   { text: `${remaining} more item${remaining !== 1 ? 's' : ''} in this promotion.` },
+            action: { buttons: [{ type: 'reply', reply: { id: `more_${batchStart + batch.length}_${promotion._id}`, title: `See Next ${Math.min(remaining, 10)} →` } }] },
+          },
+        }).catch(() => {});
+      }
+      return result;
+    } catch (err) {
+      console.warn('Carousel API error, falling back to list:', err.response?.data || err.message);
     }
-    return result;
-  } catch {
-    // Carousel not supported on this tier/account — fall back to list
-    console.warn('Carousel unsupported, falling back to list');
-    return sendCatalog(to, batch, promotion);
+  } else {
+    console.log(`Carousel skipped (${cardsWithImages.length} of ${batch.length} products have images) — using list`);
   }
+
+  return sendCatalog(to, batch, promotion);
 }
 
 // Variant size/colour picker shown after customer taps "Add to Cart" on a product with variants.
