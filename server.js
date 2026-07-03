@@ -10,7 +10,7 @@ const Stripe   = require("stripe");
 const mongoose = require("mongoose");
 
 const { PORT, APP_URL } = require("./utils/config");
-const { carts, pendingCatalogs, pendingAddressReqs } = require("./utils/state");
+const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts } = require("./utils/state");
 
 const app  = express();
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
@@ -33,6 +33,7 @@ app.use("/api/customers",  require("./routes/customers"));
 app.use("/api/orders",     require("./routes/orders"));
 app.use("/api/promotions", require("./routes/promotions"));
 app.use("/api/whatsapp",   require("./routes/whatsapp"));
+app.use("/api/settings",  require("./routes/settings"));
 app.use(require("./routes/pay"));
 
 // ─── Stripe ──────────────────────────────────────────────────────────────────
@@ -152,6 +153,22 @@ async function proceedToPayment(from, customer, cart) {
   }
 }
 
+async function proceedToPointsConfirmation(from, customer, cart, promotion) {
+  const totalPointsCost = cart.reduce((s, i) => s + (i.pointsCost || 0), 0) || (promotion?.pointsPrice || 0) * cart.length;
+  if (customer.loyaltyPoints < totalPointsCost) {
+    await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+      text: { body: `⚠️ You need ${totalPointsCost} pts but only have ${customer.loyaltyPoints} pts. Add fewer items or earn more points first.` } }).catch(() => {});
+    return;
+  }
+  pendingPointsCheckouts.set(from, { cart, promotion, totalPointsCost, address: customer.address });
+  const itemList  = cart.map(i => `• ${i.name}`).join("\n");
+  const remaining = customer.loyaltyPoints - totalPointsCost;
+  await waPost({
+    messaging_product: "whatsapp", to: from, type: "text",
+    text: { body: `💎 *Points Redemption Summary*\n\n${itemList}\n\n📍 Delivering to: ${customer.address}\n\n*${totalPointsCost} points will be deducted*\nYou have: ${customer.loyaltyPoints} pts → after: ${remaining} pts\n\nReply *YES* to confirm or *NO* to cancel.` },
+  }).catch(() => {});
+}
+
 // ─── Stripe webhook ──────────────────────────────────────────────────────────
 async function handleStripeWebhook(req, res) {
   let event;
@@ -168,7 +185,9 @@ async function handleStripeWebhook(req, res) {
     const shippingCost = parseFloat(pi.metadata?.shippingCost || '0');
     const address      = pi.metadata?.address || '';
     const amountAud    = (pi.amount / 100).toFixed(2);
-    const points       = Math.floor(subtotal);
+    let loyaltySettings = { loyaltyPointsPerUnit: 100, minPointsPerPurchase: 100 };
+    try { loyaltySettings = (await require('./models/Settings').findOne()) || loyaltySettings; } catch (_) {}
+    const points = Math.max(loyaltySettings.minPointsPerPurchase, Math.round(subtotal * loyaltySettings.loyaltyPointsPerUnit));
 
     const cartItems = carts.get(buyerPhone) || [];
     carts.delete(buyerPhone);
@@ -282,32 +301,38 @@ async function handleProductSelection(from, productId) {
     const catalog = pendingCatalogs.get(from);
     const Product = require("./models/Product");
 
-    // Find product in catalog first (already populated), then fall back to DB
     let p = catalog?.products.find(x => x._id.toString() === productId);
     if (!p) p = await Product.findById(productId).lean();
     if (!p) return;
 
-    const promo        = catalog?.promotion;
-    const discFactor   = promo ? 1 - promo.discountPercent / 100 : 1;
-    const salePrice    = parseFloat((p.basePrice * discFactor).toFixed(2));
+    const promo      = catalog?.promotion;
+    const isPoints   = promo?.customerType === 'points';
+    const discFactor = (!isPoints && promo) ? 1 - promo.discountPercent / 100 : 1;
+    const salePrice  = isPoints ? 0 : parseFloat((p.basePrice * discFactor).toFixed(2));
+    const pointsCost = isPoints ? (promo?.pointsPrice || 0) : 0;
 
     const cart = carts.get(from) || [];
-    cart.push({ name: p.name, priceAud: salePrice, description: p.description || p.category || "" });
+    cart.push({ name: p.name, priceAud: salePrice, pointsCost, description: p.description || p.category || "" });
     carts.set(from, cart);
 
-    const total = cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
+    let bodyText;
+    if (isPoints) {
+      const totalPts = cart.reduce((s, i) => s + (i.pointsCost || 0), 0);
+      bodyText = `✅ *${p.name}* added!\n💎 ${pointsCost} pts per item\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · ${totalPts} pts total`;
+    } else {
+      const total = cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
+      bodyText = `✅ *${p.name}* added to cart!\n💰 $${salePrice.toFixed(2)} AUD${promo ? ` (${promo.discountPercent}% OFF)` : ""}\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · $${total} AUD total`;
+    }
 
     await waPost({
       messaging_product: "whatsapp", to: from, type: "interactive",
       interactive: {
         type: "button",
-        body: {
-          text: `✅ *${p.name}* added to cart!\n💰 $${salePrice.toFixed(2)} AUD${promo ? ` (${promo.discountPercent}% OFF)` : ""}\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · $${total} AUD total`,
-        },
+        body: { text: bodyText },
         action: {
           buttons: [
-            { type: "reply", reply: { id: "continue_shopping", title: "Keep Shopping 🛍️" } },
-            { type: "reply", reply: { id: "checkout",          title: "Checkout ✅"       } },
+            { type: "reply", reply: { id: "continue_shopping",                       title: "Keep Shopping 🛍️"   } },
+            { type: "reply", reply: { id: isPoints ? "points_checkout" : "checkout", title: isPoints ? "Redeem Points 💎" : "Checkout ✅" } },
           ],
         },
       },
@@ -392,7 +417,6 @@ app.post("/webhook", async (req, res) => {
             text: { body: "Your cart is empty. Browse the sale and tap a product to add it." } }).catch(() => {});
           return;
         }
-
         const Customer = require("./models/Customer");
         const customer = await Customer.findOne({ phone: from });
         if (!customer) {
@@ -400,15 +424,36 @@ app.post("/webhook", async (req, res) => {
             text: { body: "We couldn't find your profile. Please contact support to complete this order." } }).catch(() => {});
           return;
         }
-
         if (customer.address) {
           await proceedToPayment(from, customer, cart);
         } else {
-          pendingAddressReqs.set(from, true);
-          await waPost({
-            messaging_product: "whatsapp", to: from, type: "text",
-            text: { body: "📍 Please reply with your delivery address (street, suburb, state, postcode) so we can calculate shipping." },
-          }).catch(() => {});
+          pendingAddressReqs.set(from, 'cash');
+          await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "📍 Please reply with your delivery address (street, suburb, state, postcode) so we can calculate shipping." } }).catch(() => {});
+        }
+
+      } else if (buttonId === "points_checkout") {
+        const cart = carts.get(from);
+        if (!cart?.length) {
+          await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "Your cart is empty. Tap a product to add it." } }).catch(() => {});
+          return;
+        }
+        const Customer  = require("./models/Customer");
+        const customer  = await Customer.findOne({ phone: from });
+        if (!customer) {
+          await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "We couldn't find your profile. Please contact support." } }).catch(() => {});
+          return;
+        }
+        const catalog   = pendingCatalogs.get(from);
+        const promotion = catalog?.promotion;
+        if (customer.address) {
+          await proceedToPointsConfirmation(from, customer, cart, promotion);
+        } else {
+          pendingAddressReqs.set(from, 'points');
+          await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "📍 Please reply with your delivery address for this redemption order." } }).catch(() => {});
         }
       }
     }
@@ -419,8 +464,59 @@ app.post("/webhook", async (req, res) => {
   if (message.type === "text") {
     const text = message.text?.body?.trim() || "";
 
+    // Awaiting YES/NO for points redemption confirmation
+    if (pendingPointsCheckouts.has(from)) {
+      const upper = text.toUpperCase();
+      if (upper === 'YES') {
+        const pending = pendingPointsCheckouts.get(from);
+        pendingPointsCheckouts.delete(from);
+        carts.delete(from);
+        pendingCatalogs.delete(from);
+        try {
+          const Customer = require('./models/Customer');
+          const Order    = require('./models/Order');
+          const customer = await Customer.findOneAndUpdate(
+            { phone: from, loyaltyPoints: { $gte: pending.totalPointsCost } },
+            { $inc: { loyaltyPoints: -pending.totalPointsCost } },
+            { new: true }
+          );
+          if (!customer) {
+            await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
+              text: { body: '⚠️ Insufficient points. Your order could not be processed.' } }).catch(() => {});
+            return;
+          }
+          if (pending.cart.length) {
+            await Order.create({
+              customer:         customer._id,
+              items:            pending.cart.map(i => ({ productName: i.name, category: i.description || 'General', quantity: 1, unitPrice: 0 })),
+              subtotal:         0,
+              shippingCost:     0,
+              shippingAddress:  pending.address,
+              total:            0,
+              loyaltyPointsUsed:  pending.totalPointsCost,
+              loyaltyDiscount:    pending.totalPointsCost,
+              status:           'confirmed',
+              loyaltyPointsEarned: 0,
+            });
+          }
+          await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
+            text: { body: `✅ *Order Confirmed!*\n\n💎 ${pending.totalPointsCost} points redeemed successfully.\n📍 Delivering to: ${pending.address}\n\nRemaining points: ${customer.loyaltyPoints} pts\n\nThank you for shopping with us! 🎉` } }).catch(() => {});
+        } catch (err) {
+          console.error('Points redemption error:', err.message);
+        }
+      } else if (upper === 'NO') {
+        pendingPointsCheckouts.delete(from);
+        carts.delete(from);
+        pendingCatalogs.delete(from);
+        await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
+          text: { body: '👍 No worries! Your points are safe. Feel free to browse again anytime.' } }).catch(() => {});
+      }
+      return;
+    }
+
     // Awaiting delivery address after "Checkout" was tapped
     if (pendingAddressReqs.has(from)) {
+      const addrType = pendingAddressReqs.get(from);
       pendingAddressReqs.delete(from);
       const cart = carts.get(from);
       if (!cart?.length) {
@@ -435,7 +531,12 @@ app.post("/webhook", async (req, res) => {
           text: { body: "We couldn't find your profile. Please contact support to complete this order." } }).catch(() => {});
         return;
       }
-      await proceedToPayment(from, customer, cart);
+      if (addrType === 'points') {
+        const catalog = pendingCatalogs.get(from);
+        await proceedToPointsConfirmation(from, customer, cart, catalog?.promotion);
+      } else {
+        await proceedToPayment(from, customer, cart);
+      }
       return;
     }
 
@@ -458,29 +559,35 @@ app.post("/webhook", async (req, res) => {
     if (!indices.length) return; // not a product selection, ignore
 
     // Add each selected product sequentially
-    const disc  = 1 - catalog.promotion.discountPercent / 100;
-    const cart  = carts.get(from) || [];
-    let summary = "";
+    const isPoints   = catalog.promotion?.customerType === 'points';
+    const pointsPrice = catalog.promotion?.pointsPrice || 0;
+    const disc       = isPoints ? 1 : 1 - (catalog.promotion?.discountPercent || 0) / 100;
+    const cart       = carts.get(from) || [];
+    let summary      = "";
     for (const i of indices) {
       const p         = products[i];
-      const salePrice = parseFloat((p.basePrice * disc).toFixed(2));
-      cart.push({ name: p.name, priceAud: salePrice, description: p.description || p.category || "" });
-      summary += `✅ ${p.name} — $${salePrice.toFixed(2)} AUD\n`;
+      const salePrice = isPoints ? 0 : parseFloat((p.basePrice * disc).toFixed(2));
+      cart.push({ name: p.name, priceAud: salePrice, pointsCost: isPoints ? pointsPrice : 0, description: p.description || p.category || "" });
+      summary += isPoints
+        ? `✅ ${p.name} — ${pointsPrice} pts\n`
+        : `✅ ${p.name} — $${salePrice.toFixed(2)} AUD\n`;
     }
     carts.set(from, cart);
-    const total = cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
+    const totalDisplay = isPoints
+      ? `${cart.reduce((s, i) => s + (i.pointsCost || 0), 0)} pts total`
+      : `$${cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2)} AUD total`;
 
     await waPost({
       messaging_product: "whatsapp", to: from, type: "interactive",
       interactive: {
         type: "button",
         body: {
-          text: `Added to cart:\n${summary}\n🛒 ${cart.length} item${cart.length !== 1 ? "s" : ""} · $${total} AUD total\n\nWhat would you like to do?`,
+          text: `Added to cart:\n${summary}\n🛒 ${cart.length} item${cart.length !== 1 ? "s" : ""} · ${totalDisplay}\n\nWhat would you like to do?`,
         },
         action: {
           buttons: [
-            { type: "reply", reply: { id: "continue_shopping", title: "Keep Shopping 🛍️" } },
-            { type: "reply", reply: { id: "checkout",          title: "Checkout ✅"       } },
+            { type: "reply", reply: { id: "continue_shopping",                       title: "Keep Shopping 🛍️"   } },
+            { type: "reply", reply: { id: isPoints ? "points_checkout" : "checkout", title: isPoints ? "Redeem Points 💎" : "Checkout ✅" } },
           ],
         },
       },

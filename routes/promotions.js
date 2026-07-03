@@ -79,6 +79,18 @@ router.get('/:id/recommended-customers', async (req, res) => {
       }},
     ]);
 
+    // For points promotions: return all customers sorted by loyalty points
+    if (promotion.customerType === 'points') {
+      const all = await Customer.find().sort({ loyaltyPoints: -1 }).limit(topN).lean();
+      return res.json(all.map(c => ({
+        ...c,
+        rfmScore: 0,
+        orderCount: 0,
+        totalSpent: 0,
+        hasEnoughPoints: c.loyaltyPoints >= (promotion.pointsPrice || 0),
+      })));
+    }
+
     if (!stats.length) {
       const all = await Customer.find().limit(topN).lean();
       return res.json(all.map(c => ({ ...c, rfmScore: 0, orderCount: 0, totalSpent: 0 })));

@@ -265,13 +265,17 @@ async function sendPromoMessage(to, product, promotion, loyaltyPoints) {
 // ≤10 products → WhatsApp List Message (tappable rows).
 // >10 products  → numbered text (customer replies with numbers).
 async function sendCatalog(to, products, promotion) {
-  const disc = 1 - promotion.discountPercent / 100;
+  const isPoints   = promotion?.customerType === 'points';
+  const pointsPrice = promotion?.pointsPrice || 0;
+  const disc       = isPoints ? 1 : 1 - (promotion?.discountPercent || 0) / 100;
 
   if (products.length <= 10) {
     const rows = products.map(p => ({
       id:          `cart_${p._id}`,
       title:       p.name.slice(0, 24),
-      description: `$${(p.basePrice * disc).toFixed(2)} AUD (was $${p.basePrice.toFixed(2)})`.slice(0, 72),
+      description: isPoints
+        ? `${pointsPrice} pts (worth $${p.basePrice.toFixed(2)} AUD)`.slice(0, 72)
+        : `$${(p.basePrice * disc).toFixed(2)} AUD (was $${p.basePrice.toFixed(2)})`.slice(0, 72),
     }));
     return waPost({
       messaging_product: 'whatsapp',
@@ -279,22 +283,29 @@ async function sendCatalog(to, products, promotion) {
       type: 'interactive',
       interactive: {
         type:   'list',
-        header: { type: 'text', text: `🏷️ ${promotion.name} — ${promotion.discountPercent}% OFF` },
-        body:   { text: 'Tap a product to add it to your cart. You can select multiple items one by one.' },
-        footer: { text: 'Prices shown are after discount' },
+        header: { type: 'text', text: isPoints
+          ? `💎 ${promotion.name} — ${pointsPrice} pts per item`
+          : `🏷️ ${promotion.name} — ${promotion.discountPercent}% OFF` },
+        body:   { text: isPoints
+          ? 'Tap a product to redeem your points. You can add multiple items.'
+          : 'Tap a product to add it to your cart. You can select multiple items one by one.' },
+        footer: { text: isPoints ? 'Points required per item' : 'Prices shown are after discount' },
         action: {
-          button:   'View Products',
-          sections: [{ title: 'Products on Sale', rows }],
+          button:   isPoints ? 'View Products' : 'View Products',
+          sections: [{ title: isPoints ? 'Products to Redeem' : 'Products on Sale', rows }],
         },
       },
     });
   }
 
   // Text fallback for large catalogs
-  let text = `🛍️ *${promotion.name}* — *${promotion.discountPercent}% OFF*\n\n`;
-  text += 'Reply with the number(s) to add to your cart:\n\n';
+  let text = isPoints
+    ? `💎 *${promotion.name}* — *${pointsPrice} pts per item*\n\nReply with the number(s) to redeem:\n\n`
+    : `🛍️ *${promotion.name}* — *${promotion.discountPercent}% OFF*\n\nReply with the number(s) to add to your cart:\n\n`;
   products.forEach((p, i) => {
-    text += `${i + 1}. *${p.name}* — $${(p.basePrice * disc).toFixed(2)} AUD _(was $${p.basePrice.toFixed(2)})_\n`;
+    text += isPoints
+      ? `${i + 1}. *${p.name}* — ${pointsPrice} pts _(worth $${p.basePrice.toFixed(2)} AUD)_\n`
+      : `${i + 1}. *${p.name}* — $${(p.basePrice * disc).toFixed(2)} AUD _(was $${p.basePrice.toFixed(2)})_\n`;
   });
   text += '\nExamples: "1" · "1,3" · "all"';
   return waPost({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text } });
