@@ -115,7 +115,7 @@ function buildCartSummary(cart) {
   return cart.map((item, i) => `${i + 1}. ${item.name} — $${item.priceAud.toFixed(2)} AUD`).join("\n");
 }
 
-const SHIPPING_COST_AUD = 25;
+const SHIPPING_COST_AUD = 0.5;
 
 async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, address) {
   const total = +(subtotal + shippingCost).toFixed(2);
