@@ -15,6 +15,12 @@ let cachedWabaId = process.env.WA_WABA_ID || null;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// WhatsApp Cloud API rejects WebP for message images/headers (error 131053).
+// Link-based headers are accepted at send time but fail async, so filter up front.
+function isSupportedImageLink(url) {
+  return !!url && !/\.webp(?:$|\?)/i.test(url);
+}
+
 function getHeaders() {
   return {
     Authorization:  `Bearer ${tokenManager.getToken()}`,
@@ -255,7 +261,7 @@ async function sendPromoAnnouncement(to, customer, promotion, items) {
   const cta   = isService ? 'Book Now! 📅' : 'Shop Now! 🛍️';
   const body  = `Hi ${firstName}! ✨\n\n*${promotion.name}*\n\n${preview}${moreNote}\n\n${priceNote}\n\nTap below to browse and ${isService ? 'book your slot' : 'add to cart'}.`;
 
-  const firstImage = items.find(i => i.images?.[0])?.images?.[0];
+  const firstImage = items.find(i => i.images?.[0] && isSupportedImageLink(i.images[0]))?.images?.[0];
 
   const interactive = {
     type:   'button',
@@ -290,7 +296,7 @@ async function sendProductCards(to, products, promotion) {
       action: { buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }] },
     };
 
-    if (p.images?.[0]) {
+    if (p.images?.[0] && isSupportedImageLink(p.images[0])) {
       interactive.header = { type: 'image', image: { link: p.images[0] } };
     }
 
