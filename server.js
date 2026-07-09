@@ -20,6 +20,7 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/waflow
 app.post("/stripe-webhook", express.raw({ type: "application/json" }), handleStripeWebhook);
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // OAuth token/authorize endpoints use form-encoded bodies
 app.use(cors());
 
 // ─── MongoDB ─────────────────────────────────────────────────────────────────
@@ -36,6 +37,10 @@ app.use("/api/services",   require("./routes/services"));
 app.use("/api/whatsapp",   require("./routes/whatsapp"));
 app.use("/api/settings",  require("./routes/settings"));
 app.use(require("./routes/pay"));
+
+// ─── MCP (Model Context Protocol) — lets Claude/ChatGPT connect as tools ─────
+app.use(require("./mcp/oauth").router);
+app.use("/mcp", require("./mcp"));
 
 // ─── Stripe ──────────────────────────────────────────────────────────────────
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
