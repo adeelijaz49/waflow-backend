@@ -1,5 +1,6 @@
 const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
+const Stripe = require('stripe');
 
 const Product  = require('../models/Product');
 const Service   = require('../models/Service');
@@ -11,8 +12,13 @@ const TimeSlot  = require('../models/TimeSlot');
 const Booking   = require('../models/Booking');
 const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
-  sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage,
+  sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
 } = require('../utils/whatsapp');
+const { carts } = require('../utils/state');
+const { APP_URL } = require('../utils/config');
+
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+const SHIPPING_COST_AUD = 0.5; // matches server.js's checkout flow
 
 function ok(data) {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
@@ -343,6 +349,68 @@ function createMcpServer() {
       Order.find().populate('customer', 'firstname lastname').sort({ createdAt: -1 }).limit(10),
     ]);
     return { totalOrders, totalCustomers, recentRevenue: recentRevenue[0]?.revenue ?? 0, statusBreakdown, recentOrders };
+  }));
+
+  server.registerTool('create_order', {
+    title: 'Place an order & send a Stripe payment link (real WhatsApp send)',
+    description: 'Creates an order for a customer and messages them a secure Stripe payment link on WhatsApp to pay themselves. Does NOT charge any card directly — the customer must complete payment on the hosted page. The order and loyalty points are recorded automatically once they pay. Requires a shipping address on file, or pass one in.',
+    inputSchema: {
+      customerId: z.string(),
+      items: z.array(z.object({ productId: z.string(), quantity: z.number().int().min(1).optional() })).min(1),
+      shippingAddress: z.string().optional(),
+    },
+  }, wrap(async ({ customerId, items, shippingAddress }) => {
+    const customer = await Customer.findById(customerId);
+    if (!customer) throw new Error('Customer not found');
+
+    const address = shippingAddress || customer.address;
+    if (!address) throw new Error('No shipping address on file for this customer — pass shippingAddress or call update_customer first.');
+    if (shippingAddress && shippingAddress !== customer.address) {
+      customer.address = shippingAddress;
+      await customer.save();
+    }
+
+    const cartItems = [];
+    for (const { productId, quantity = 1 } of items) {
+      const product = await Product.findById(productId);
+      if (!product) throw new Error(`Product ${productId} not found`);
+      for (let i = 0; i < quantity; i++) {
+        cartItems.push({ name: product.name, priceAud: product.basePrice, pointsCost: 0, description: product.description || product.category || '' });
+      }
+    }
+
+    const subtotal = +cartItems.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
+    const total = +(subtotal + SHIPPING_COST_AUD).toFixed(2);
+
+    const pi = await stripe.paymentIntents.create({
+      amount: Math.round(total * 100),
+      currency: 'aud',
+      automatic_payment_methods: { enabled: true },
+      metadata: { buyerPhone: customer.phone, subtotal: String(subtotal), shippingCost: String(SHIPPING_COST_AUD), address },
+    });
+
+    // Shared with routes/pay.js and the Stripe webhook in server.js — this is what lets
+    // payment_intent.succeeded build the real Order with line items once the customer pays.
+    carts.set(customer.phone, cartItems);
+
+    const summary = cartItems.map((it, i) => `${i + 1}. ${it.name} — $${it.priceAud.toFixed(2)} AUD`).join('\n');
+    await waPost({
+      messaging_product: 'whatsapp', to: customer.phone, type: 'text',
+      text: {
+        body: `🛒 *Your Order Summary*\n\n${summary}\n\nSubtotal: $${subtotal.toFixed(2)} AUD\nShipping: $${SHIPPING_COST_AUD.toFixed(2)} AUD\n*Total: $${total.toFixed(2)} AUD*\n\n📍 Delivering to:\n${address}\n\nPay securely:\n${APP_URL}/pay/${pi.id}`,
+      },
+    });
+
+    return { success: true, paymentIntentId: pi.id, paymentLink: `${APP_URL}/pay/${pi.id}`, subtotal, shippingCost: SHIPPING_COST_AUD, total, itemCount: cartItems.length };
+  }));
+
+  server.registerTool('get_payment_status', {
+    title: 'Check Stripe payment status',
+    description: 'Checks whether a payment intent created by create_order has been paid yet.',
+    inputSchema: { paymentIntentId: z.string() },
+  }, wrap(async ({ paymentIntentId }) => {
+    const pi = await stripe.paymentIntents.retrieve(paymentIntentId);
+    return { id: pi.id, status: pi.status, amount: pi.amount / 100, currency: pi.currency, buyerPhone: pi.metadata?.buyerPhone || null };
   }));
 
   // ─── Promotions ──────────────────────────────────────────────────────────
