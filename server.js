@@ -38,9 +38,12 @@ app.use("/api/whatsapp",   require("./routes/whatsapp"));
 app.use("/api/settings",  require("./routes/settings"));
 app.use(require("./routes/pay"));
 
-// ─── MCP (Model Context Protocol) — lets Claude/ChatGPT connect as tools ─────
+// ─── MCP (Model Context Protocol) — lets Claude connect as tools ────────────
 app.use(require("./mcp/oauth").router);
 app.use("/mcp", require("./mcp"));
+
+// ─── ChatGPT Custom GPT Actions — REST + OpenAPI, separate API-key auth ─────
+app.use("/gpt-api", require("./gpt/routes"));
 
 // ─── Stripe ──────────────────────────────────────────────────────────────────
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
