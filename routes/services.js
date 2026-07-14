@@ -3,7 +3,7 @@ const Service  = require('../models/Service');
 const TimeSlot = require('../models/TimeSlot');
 const Booking  = require('../models/Booking');
 const Customer = require('../models/Customer');
-const { sendRebookMessage } = require('../utils/whatsapp');
+const ops      = require('../shared/operations');
 
 // ─── Services CRUD ────────────────────────────────────────────────────────────
 
@@ -96,81 +96,33 @@ router.get('/:id/bookings', async (req, res) => {
 // Cancel a booking — marks it cancelled, frees the slot capacity, sends WA rebook message
 router.post('/bookings/:bookingId/cancel', async (req, res) => {
   try {
-    const booking = await Booking.findById(req.params.bookingId)
-      .populate('serviceId')
-      .populate('slotId');
-    if (!booking) return res.status(404).json({ error: 'Booking not found' });
-    if (booking.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
-
-    booking.status = 'cancelled';
-    await booking.save();
-
-    // Free up the slot
-    await TimeSlot.findByIdAndUpdate(booking.slotId._id, { $inc: { bookedCount: -1 } });
-
-    // Send WhatsApp rebook message to the customer
-    try {
-      await sendRebookMessage(
-        booking.phone,
-        booking.customerName || 'Valued Customer',
-        booking.serviceId?.name || 'your service',
-        booking.slotId,
-        booking.serviceId?._id?.toString(),
-        booking._id.toString(),
-      );
-    } catch (waErr) {
-      console.warn('WA rebook message failed:', waErr.message);
-    }
-
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json(await ops.cancelBooking({ bookingId: req.params.bookingId }));
+  } catch (err) {
+    if (err.message === 'Booking not found') return res.status(404).json({ error: 'Booking not found' });
+    if (err.message === 'Already cancelled') return res.status(400).json({ error: 'Already cancelled' });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Reschedule — manager picks new slot; sends WA asking customer to confirm (free of charge)
 router.post('/bookings/:bookingId/reschedule', async (req, res) => {
   try {
-    const { newSlotId } = req.body;
-    const booking = await Booking.findById(req.params.bookingId)
-      .populate('serviceId')
-      .populate('slotId');
-    if (!booking) return res.status(404).json({ error: 'Booking not found' });
-
-    const newSlot = await TimeSlot.findById(newSlotId);
-    if (!newSlot) return res.status(404).json({ error: 'New slot not found' });
-    if (newSlot.bookedCount >= newSlot.capacity) return res.status(400).json({ error: 'Slot is full' });
-
-    // Free old slot, fill new slot
-    await TimeSlot.findByIdAndUpdate(booking.slotId._id, { $inc: { bookedCount: -1 } });
-    await TimeSlot.findByIdAndUpdate(newSlotId, { $inc: { bookedCount: 1 } });
-
-    booking.slotId = newSlotId;
-    booking.status = 'confirmed';
-    await booking.save();
-
-    // Notify customer
-    try {
-      const { waPost } = require('../utils/whatsapp');
-      const slotLabel = `${newSlot.date} at ${newSlot.startTime}`;
-      await waPost({
-        messaging_product: 'whatsapp',
-        to: booking.phone,
-        type: 'text',
-        text: { body: `📅 Your booking for *${booking.serviceId?.name}* has been rescheduled to *${slotLabel}*. See you then! 🎉` },
-      });
-    } catch (waErr) {
-      console.warn('WA reschedule notify failed:', waErr.message);
-    }
-
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json(await ops.rescheduleBooking({ bookingId: req.params.bookingId, newSlotId: req.body.newSlotId }));
+  } catch (err) {
+    if (err.message === 'Booking not found') return res.status(404).json({ error: 'Booking not found' });
+    if (err.message === 'New slot not found') return res.status(404).json({ error: 'New slot not found' });
+    if (err.message === 'Slot is full') return res.status(400).json({ error: 'Slot is full' });
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Mark booking complete
 router.post('/bookings/:bookingId/complete', async (req, res) => {
   try {
-    await Booking.findByIdAndUpdate(req.params.bookingId, { status: 'completed' });
-    res.json({ ok: true });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    res.json(await ops.completeBooking({ bookingId: req.params.bookingId }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // All bookings (cross-service, for dashboard)

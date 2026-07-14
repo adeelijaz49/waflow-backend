@@ -150,14 +150,35 @@ async function listCustomers({ search, page = 1, limit = 50 } = {}) {
     Customer.find(filter).sort({ firstname: 1 }).skip(skip).limit(limit),
     Customer.countDocuments(filter),
   ]);
-  return { customers, total, page, pages: Math.ceil(total / limit) };
+
+  const ids = customers.map(c => c._id);
+  const stats = await Order.aggregate([
+    { $match: { customer: { $in: ids } } },
+    { $group: {
+      _id: '$customer',
+      orderCount: { $sum: 1 },
+      totalSpent: { $sum: '$total' },
+      lastOrder:  { $max: '$createdAt' },
+    }},
+  ]);
+  const statsMap = Object.fromEntries(stats.map(s => [s._id.toString(), s]));
+
+  const enriched = customers.map(c => ({
+    ...c.toObject(),
+    orderCount: statsMap[c._id.toString()]?.orderCount ?? 0,
+    totalSpent: statsMap[c._id.toString()]?.totalSpent ?? 0,
+    lastOrder:  statsMap[c._id.toString()]?.lastOrder  ?? null,
+  }));
+
+  return { customers: enriched, total, page, pages: Math.ceil(total / limit) };
 }
 
 async function getCustomer({ id }) {
   const customer = await Customer.findById(id);
   if (!customer) throw new Error('Customer not found');
   const orders = await Order.find({ customer: id }).sort({ createdAt: -1 });
-  return { ...customer.toObject(), orders };
+  const totalSpent = orders.reduce((s, o) => s + (o.total || 0), 0);
+  return { ...customer.toObject(), orders, totalSpent };
 }
 
 async function createCustomer(data) {
@@ -271,13 +292,21 @@ async function getPromotion({ id }) {
   return promo;
 }
 
-async function createPromotion({ productIds, serviceIds, ...data }) {
-  return Promotion.create({ ...data, products: productIds || [], services: serviceIds || [] });
+// Accepts either the raw Mongoose field names (products/services — what the dashboard
+// sends) or productIds/serviceIds (the MCP/GPT tool convention) so both callers work.
+async function createPromotion({ productIds, serviceIds, products, services, ...data }) {
+  return Promotion.create({
+    ...data,
+    products: products ?? productIds ?? [],
+    services: services ?? serviceIds ?? [],
+  });
 }
 
-async function updatePromotion({ id, productIds, serviceIds, ...data }) {
-  if (productIds) data.products = productIds;
-  if (serviceIds) data.services = serviceIds;
+async function updatePromotion({ id, productIds, serviceIds, products, services, ...data }) {
+  const finalProducts = products ?? productIds;
+  const finalServices = services ?? serviceIds;
+  if (finalProducts) data.products = finalProducts;
+  if (finalServices) data.services = finalServices;
   const promo = await Promotion.findByIdAndUpdate(id, data, { new: true, runValidators: true });
   if (!promo) throw new Error('Promotion not found');
   return promo;
@@ -288,17 +317,81 @@ async function deletePromotion({ id }) {
   return { success: true };
 }
 
+// RFM (recency/frequency/monetary + category-affinity) scoring — weighted
+// 0.30/0.25/0.30/0.15, matching the algorithm merchants see on the dashboard.
 async function getRecommendedCustomers({ promotionId, limit = 100 }) {
   const promotion = await Promotion.findById(promotionId).populate('products', 'category');
   if (!promotion) throw new Error('Promotion not found');
+
+  const topN = limit;
+  const targetCategories = promotion.type === 'specific_products'
+    ? [...new Set(promotion.products.map(p => p.category))]
+    : [];
+
+  const stats = await Order.aggregate([
+    { $match: { status: { $ne: 'cancelled' } } },
+    { $unwind: { path: '$items', preserveNullAndEmptyArrays: true } },
+    { $group: {
+      _id: '$customer',
+      orderCount:   { $sum: 1 },
+      totalSpent:   { $sum: '$total' },
+      lastOrderAt:  { $max: '$createdAt' },
+      categories:   { $addToSet: '$items.category' },
+    }},
+  ]);
+
   if (promotion.customerType === 'points') {
-    const all = await Customer.find().sort({ loyaltyPoints: -1 }).limit(limit).lean();
-    return all.map(c => ({ ...c, hasEnoughPoints: c.loyaltyPoints >= (promotion.pointsPrice || 0) }));
+    const all = await Customer.find().sort({ loyaltyPoints: -1 }).limit(topN).lean();
+    return all.map(c => ({
+      ...c, rfmScore: 0, orderCount: 0, totalSpent: 0,
+      hasEnoughPoints: c.loyaltyPoints >= (promotion.pointsPrice || 0),
+    }));
   }
-  return Customer.find().limit(limit).lean();
+
+  if (!stats.length) {
+    const all = await Customer.find().limit(topN).lean();
+    return all.map(c => ({ ...c, rfmScore: 0, orderCount: 0, totalSpent: 0 }));
+  }
+
+  const now = Date.now();
+  const maxDays   = Math.max(...stats.map(s => (now - new Date(s.lastOrderAt)) / 86400000));
+  const maxOrders = Math.max(...stats.map(s => s.orderCount));
+  const maxSpent  = Math.max(...stats.map(s => s.totalSpent));
+
+  const scored = stats.map(s => {
+    const daysSince = (now - new Date(s.lastOrderAt)) / 86400000;
+    const recency   = 1 - daysSince / (maxDays || 1);
+    const frequency = s.orderCount / (maxOrders || 1);
+    const monetary  = s.totalSpent / (maxSpent || 1);
+
+    let affinity = 0;
+    if (targetCategories.length > 0 && s.categories?.length) {
+      const hits = targetCategories.filter(c => s.categories.includes(c)).length;
+      affinity = hits / targetCategories.length;
+    }
+
+    const rfmScore = 0.30 * recency + 0.25 * frequency + 0.30 * monetary + 0.15 * affinity;
+    return { customerId: s._id, rfmScore, orderCount: s.orderCount, totalSpent: s.totalSpent };
+  });
+
+  scored.sort((a, b) => b.rfmScore - a.rfmScore);
+  const topIds = scored.slice(0, topN).map(s => s.customerId);
+  const scoreMap = Object.fromEntries(scored.map(s => [s.customerId.toString(), s]));
+
+  const customers = await Customer.find({ _id: { $in: topIds } }).lean();
+  const enriched = customers.map(c => ({
+    ...c,
+    rfmScore:   +(scoreMap[c._id.toString()]?.rfmScore  * 100).toFixed(1),
+    orderCount: scoreMap[c._id.toString()]?.orderCount ?? 0,
+    totalSpent: +(scoreMap[c._id.toString()]?.totalSpent ?? 0).toFixed(2),
+  }));
+  enriched.sort((a, b) => b.rfmScore - a.rfmScore);
+
+  return enriched;
 }
 
 async function sendPromotion({ promotionId, customerIds }) {
+  if (!customerIds?.length) throw new Error('customerIds required');
   const promotion = await Promotion.findById(promotionId).populate('products').populate('services');
   if (!promotion) throw new Error('Promotion not found');
   const customers = await Customer.find({ _id: { $in: customerIds } });
