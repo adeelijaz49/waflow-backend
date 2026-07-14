@@ -3,6 +3,7 @@ const Stripe = require('stripe');
 const wa     = require('../utils/whatsapp');
 const { carts } = require('../utils/state');
 const { APP_URL } = require('../utils/config');
+const { money } = require('../utils/currency');
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY;
@@ -77,22 +78,23 @@ router.get('/pay/:piId', async (req, res) => {
   const address       = pi.metadata?.address || '';
   const total         = pi.amount / 100;
   const cart          = carts.get(phone) || [];
+  const currency      = pi.currency.toUpperCase();
 
-  const itemsHtml = cart.map(item => `<div class="row"><span>${escapeHtml(item.name)}</span><span>$${item.priceAud.toFixed(2)}</span></div>`).join('');
+  const itemsHtml = cart.map(item => `<div class="row"><span>${escapeHtml(item.name)}</span><span>${money(item.priceAud, currency)}</span></div>`).join('');
 
   const body = `
     <h1>Complete Your Payment</h1>
-    <p class="muted">${escapeHtml(pi.currency.toUpperCase())} · Order total below</p>
+    <p class="muted">${escapeHtml(currency)} · Order total below</p>
     <div class="summary">
       ${itemsHtml}
-      <div class="row"><span>Subtotal</span><span>$${subtotal.toFixed(2)}</span></div>
-      <div class="row"><span>Shipping</span><span>$${shippingCost.toFixed(2)}</span></div>
-      <div class="row total"><span>Total</span><span>$${total.toFixed(2)} AUD</span></div>
+      <div class="row"><span>Subtotal</span><span>${money(subtotal, currency)}</span></div>
+      <div class="row"><span>Shipping</span><span>${money(shippingCost, currency)}</span></div>
+      <div class="row total"><span>Total</span><span>${money(total, currency)}</span></div>
       ${address ? `<p class="muted" style="margin-top:14px">📍 Delivering to: ${escapeHtml(address)}</p>` : ''}
     </div>
     <form id="payment-form">
       <div id="payment-element"></div>
-      <button id="submit" class="pay" type="submit">Pay $${total.toFixed(2)} AUD</button>
+      <button id="submit" class="pay" type="submit">Pay ${money(total, currency)}</button>
       <div id="payment-message"></div>
     </form>
     <a class="exit" href="/payment-cancelled?phone=${encodeURIComponent(phone)}">Cancel and return to WhatsApp</a>

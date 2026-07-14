@@ -2,6 +2,8 @@ const axios       = require('axios');
 const FormData    = require('form-data');
 const mime        = require('mime-types');
 const tokenManager = require('./tokenManager');
+const { money }    = require('./currency');
+const { getCurrency } = require('./settingsCache');
 
 const WA_PHONE_ID = process.env.WA_PHONE_ID || '1032683093271618';
 const WA_BASE     = 'https://graph.facebook.com/v25.0';
@@ -147,8 +149,8 @@ async function createTemplate(name, bodyText, category = 'MARKETING') {
 }
 
 async function createPromoTemplate() {
-  // Variables: {{1}} first name, {{2}} product name, {{3}} discount %, {{4}} sale price, {{5}} promo name
-  const body = 'Hi {{1}}! 🏷️ *{{2}}* is now *{{3}}% OFF* — only ${{4}} AUD.\n\n{{5}}\n\nTap below to browse all products in this sale!';
+  // Variables: {{1}} first name, {{2}} product name, {{3}} discount %, {{4}} sale price, {{5}} promo name, {{6}} currency code
+  const body = 'Hi {{1}}! 🏷️ *{{2}}* is now *{{3}}% OFF* — only {{4}} {{6}}.\n\n{{5}}\n\nTap below to browse all products in this sale!';
   const wabaId = await getWabaId();
   const res = await axios.post(
     `${WA_BASE}/${wabaId}/message_templates`,
@@ -159,7 +161,7 @@ async function createPromoTemplate() {
       components: [
         { type: 'BODY', text: body },
         { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
-        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now! 🛍️' }] },
+        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
       ],
     },
     { headers: getHeaders() },
@@ -177,7 +179,8 @@ async function deleteTemplate(name) {
 }
 
 async function createLoyaltyTemplate() {
-  const body = 'Hi {{1}}! 💎 You have *{{2}} loyalty points* worth ${{3}} AUD.\n\nPop in and use them on your next purchase — we\'d love to see you! 🛍️';
+  // Variables: {{1}} first name, {{2}} loyalty points, {{3}} points worth, {{4}} currency code
+  const body = 'Hi {{1}}! 💎 You have *{{2}} loyalty points* worth {{3}} {{4}}.\n\nPop in and use them on your next purchase — we\'d love to see you! 🛍️';
   return createTemplate(LOYALTY_TEMPLATE, body, 'MARKETING');
 }
 
@@ -185,6 +188,7 @@ async function createLoyaltyTemplate() {
 
 async function sendPromoTemplate(to, customer, product, promotion) {
   const discounted = (product.basePrice * (1 - promotion.discountPercent / 100)).toFixed(2);
+  const currency = await getCurrency();
   return waPost({
     messaging_product: 'whatsapp',
     to,
@@ -201,6 +205,7 @@ async function sendPromoTemplate(to, customer, product, promotion) {
             { type: 'text', text: String(promotion.discountPercent) },
             { type: 'text', text: discounted },
             { type: 'text', text: promotion.name },
+            { type: 'text', text: currency },
           ],
         },
         // Dynamic quick-reply payload carries the promotion ID back via webhook
@@ -217,6 +222,7 @@ async function sendPromoTemplate(to, customer, product, promotion) {
 
 async function sendLoyaltyTemplate(to, customerName, loyaltyPoints) {
   const worth = (loyaltyPoints / 10).toFixed(2);
+  const currency = await getCurrency();
   return waPost({
     messaging_product: 'whatsapp',
     to,
@@ -230,6 +236,7 @@ async function sendLoyaltyTemplate(to, customerName, loyaltyPoints) {
           { type: 'text', text: customerName || 'Valued Customer' },
           { type: 'text', text: String(loyaltyPoints) },
           { type: 'text', text: worth },
+          { type: 'text', text: currency },
         ],
       }],
     },
@@ -279,14 +286,15 @@ async function sendProductCards(to, products, promotion) {
   const isPoints = promotion?.customerType === 'points';
   const disc     = promotion?.discountPercent || 0;
   const ptPrice  = promotion?.pointsPrice || 0;
+  const currency = await getCurrency();
 
   for (const p of products) {
     const salePrice = isPoints ? null : +(p.basePrice * (1 - disc / 100)).toFixed(2);
     const priceStr  = isPoints
       ? `💎 ${ptPrice} pts`
       : disc > 0
-        ? `$${salePrice} AUD _(was $${p.basePrice.toFixed(2)})_`
-        : `$${p.basePrice.toFixed(2)} AUD`;
+        ? `${money(salePrice, currency)} _(was ${money(p.basePrice, currency)})_`
+        : money(p.basePrice, currency);
 
     const bodyText = `*${p.name}*\n${priceStr}${p.description ? '\n\n' + p.description.slice(0, 150) : ''}`;
 
@@ -338,6 +346,7 @@ async function sendVariantPicker(to, product, promotion) {
   const isPoints  = promotion?.customerType === 'points';
   const disc      = promotion?.discountPercent || 0;
   const ptPrice   = promotion?.pointsPrice || 0;
+  const currency  = await getCurrency();
 
   const availableVariants = (product.variants || []).filter(v => v.stock > 0);
 
@@ -346,7 +355,7 @@ async function sendVariantPicker(to, product, promotion) {
     title:       [v.size, v.color].filter(Boolean).join(' · ').slice(0, 24) || `Option ${i + 1}`,
     description: isPoints
       ? `${ptPrice} pts · ${v.stock} in stock`.slice(0, 72)
-      : `$${+(product.basePrice * (1 - disc / 100)).toFixed(2)} AUD · ${v.stock} in stock`.slice(0, 72),
+      : `${money(product.basePrice * (1 - disc / 100), currency)} · ${v.stock} in stock`.slice(0, 72),
   }));
 
   // Also add a "No preference" option if the product itself has stock (base product)
@@ -369,13 +378,14 @@ async function sendVariantPicker(to, product, promotion) {
 // ── Session (interactive) messages — require 24h conversation window ──────────
 
 async function sendPromoMessage(to, product, promotion, loyaltyPoints) {
+  const currency = await getCurrency();
   const discounted = (product.basePrice * (1 - promotion.discountPercent / 100)).toFixed(2);
   let bodyText = `🏷️ *${promotion.name}*\n\n*${product.name}*\n`;
-  bodyText += `Was $${product.basePrice.toFixed(2)} → Now *$${discounted} AUD* (${promotion.discountPercent}% OFF!)`;
+  bodyText += `Was ${money(product.basePrice, currency)} → Now *${money(discounted, currency)}* (${promotion.discountPercent}% OFF!)`;
   if (product.description) bodyText += `\n\n${product.description}`;
   if (loyaltyPoints > 0) {
     const worth = (loyaltyPoints / 10).toFixed(2);
-    bodyText += `\n\n💎 You have *${loyaltyPoints} loyalty points* ($${worth}) — use them on this order!`;
+    bodyText += `\n\n💎 You have *${loyaltyPoints} loyalty points* (${money(worth, currency)}) — use them on this order!`;
   }
 
   const interactive = {
@@ -404,14 +414,15 @@ async function sendCatalog(to, products, promotion) {
   const isPoints   = promotion?.customerType === 'points';
   const pointsPrice = promotion?.pointsPrice || 0;
   const disc       = isPoints ? 1 : 1 - (promotion?.discountPercent || 0) / 100;
+  const currency   = await getCurrency();
 
   if (products.length <= 10) {
     const rows = products.map(p => ({
       id:          `cart_${p._id}`,
       title:       p.name.slice(0, 24),
       description: isPoints
-        ? `${pointsPrice} pts (worth $${p.basePrice.toFixed(2)} AUD)`.slice(0, 72)
-        : `$${(p.basePrice * disc).toFixed(2)} AUD (was $${p.basePrice.toFixed(2)})`.slice(0, 72),
+        ? `${pointsPrice} pts (worth ${money(p.basePrice, currency)})`.slice(0, 72)
+        : `${money(p.basePrice * disc, currency)} (was ${money(p.basePrice, currency)})`.slice(0, 72),
     }));
     return waPost({
       messaging_product: 'whatsapp',
@@ -440,8 +451,8 @@ async function sendCatalog(to, products, promotion) {
     : `🛍️ *${promotion.name}* — *${promotion.discountPercent}% OFF*\n\nReply with the number(s) to add to your cart:\n\n`;
   products.forEach((p, i) => {
     text += isPoints
-      ? `${i + 1}. *${p.name}* — ${pointsPrice} pts _(worth $${p.basePrice.toFixed(2)} AUD)_\n`
-      : `${i + 1}. *${p.name}* — $${(p.basePrice * disc).toFixed(2)} AUD _(was $${p.basePrice.toFixed(2)})_\n`;
+      ? `${i + 1}. *${p.name}* — ${pointsPrice} pts _(worth ${money(p.basePrice, currency)})_\n`
+      : `${i + 1}. *${p.name}* — ${money(p.basePrice * disc, currency)} _(was ${money(p.basePrice, currency)})_\n`;
   });
   text += '\nExamples: "1" · "1,3" · "all"';
   return waPost({ messaging_product: 'whatsapp', to, type: 'text', text: { body: text } });
@@ -449,13 +460,14 @@ async function sendCatalog(to, products, promotion) {
 
 async function sendLoyaltyReminder(to, customerName, loyaltyPoints) {
   const worth = (loyaltyPoints / 10).toFixed(2);
+  const currency = await getCurrency();
   return waPost({
     messaging_product: 'whatsapp',
     to,
     type: 'interactive',
     interactive: {
       type: 'button',
-      body: { text: `👋 Hi *${customerName}*!\n\nYou have *${loyaltyPoints} loyalty points* worth *$${worth} AUD*! 🎁\n\nPop in and redeem them on your next purchase. We'd love to see you! 🛍️` },
+      body: { text: `👋 Hi *${customerName}*!\n\nYou have *${loyaltyPoints} loyalty points* worth *${money(worth, currency)}*! 🎁\n\nPop in and redeem them on your next purchase. We'd love to see you! 🛍️` },
       action: { buttons: [{ type: 'reply', reply: { id: 'shop_now', title: 'Shop Now! 🛍️' } }] },
     },
   });
@@ -504,9 +516,10 @@ async function sendServiceSlots(to, service, slots, promoId, isFree) {
 async function sendServicePromoMessage(to, customer, service, promotion) {
   const firstName = customer.firstname || 'Valued Customer';
   const isPoints  = promotion.customerType === 'points';
+  const currency  = await getCurrency();
   const priceStr  = isPoints
     ? `💎 ${promotion.pointsPrice} pts`
-    : `💰 $${service.basePrice.toFixed(2)} AUD (${promotion.discountPercent}% OFF — was $${service.basePrice.toFixed(2)})`;
+    : `💰 ${money(service.basePrice, currency)} (${promotion.discountPercent}% OFF — was ${money(service.basePrice, currency)})`;
 
   const bodyText =
     `Hi ${firstName}! ✨\n\n` +

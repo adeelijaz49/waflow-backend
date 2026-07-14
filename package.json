@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "seed": "node seed/seed.js",
+    "seed:demo": "node seed/seed-demo.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

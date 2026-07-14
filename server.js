@@ -11,6 +11,8 @@ const mongoose = require("mongoose");
 
 const { PORT, APP_URL } = require("./utils/config");
 const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pendingSlotSelections, pendingServiceCheckouts, pendingVariantSelections } = require("./utils/state");
+const { money } = require("./utils/currency");
+const { getCurrency } = require("./utils/settingsCache");
 
 const app  = express();
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
@@ -121,17 +123,17 @@ function generateProductId() {
 const pendingProducts = new Map(); // randomId → { name, priceAud, description }
 
 // ─── Stripe helpers ──────────────────────────────────────────────────────────
-function buildCartSummary(cart) {
-  return cart.map((item, i) => `${i + 1}. ${item.name} — $${item.priceAud.toFixed(2)} AUD`).join("\n");
+function buildCartSummary(cart, currency) {
+  return cart.map((item, i) => `${i + 1}. ${item.name} — ${money(item.priceAud, currency)}`).join("\n");
 }
 
-const SHIPPING_COST_AUD = 0.5;
+const SHIPPING_COST = 0.5;
 
-async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, address) {
+async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, address, currency) {
   const total = +(subtotal + shippingCost).toFixed(2);
   return stripe.paymentIntents.create({
     amount: Math.round(total * 100),
-    currency: "aud",
+    currency: currency.toLowerCase(),
     automatic_payment_methods: { enabled: true },
     metadata: {
       buyerPhone,
@@ -143,15 +145,16 @@ async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, add
 }
 
 async function proceedToPayment(from, customer, cart) {
+  const currency = await getCurrency();
   const subtotal = +cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
-  const total    = +(subtotal + SHIPPING_COST_AUD).toFixed(2);
+  const total    = +(subtotal + SHIPPING_COST).toFixed(2);
 
   try {
-    const pi = await createPaymentIntent(from, cart, SHIPPING_COST_AUD, subtotal, customer.address);
+    const pi = await createPaymentIntent(from, cart, SHIPPING_COST, subtotal, customer.address, currency);
     await waPost({
       messaging_product: "whatsapp", to: from, type: "text",
       text: {
-        body: `🛒 *Your Order Summary*\n\n${buildCartSummary(cart)}\n\nSubtotal: $${subtotal.toFixed(2)} AUD\nShipping: $${SHIPPING_COST_AUD.toFixed(2)} AUD\n*Total: $${total.toFixed(2)} AUD*\n\n📍 Delivering to:\n${customer.address}\n\nPay securely:\n${APP_URL}/pay/${pi.id}`,
+        body: `🛒 *Your Order Summary*\n\n${buildCartSummary(cart, currency)}\n\nSubtotal: ${money(subtotal, currency)}\nShipping: ${money(SHIPPING_COST, currency)}\n*Total: ${money(total, currency)}*\n\n📍 Delivering to:\n${customer.address}\n\nPay securely:\n${APP_URL}/pay/${pi.id}`,
       },
     });
     pendingCatalogs.delete(from);
@@ -191,6 +194,7 @@ async function handleStripeWebhook(req, res) {
     const pi          = event.data.object;
     const buyerPhone   = pi.metadata?.buyerPhone;
     const amountAud    = (pi.amount / 100).toFixed(2);
+    const currency     = await getCurrency();
 
     // ── Service booking payment ───────────────────────────────────────────────
     if (pi.metadata?.bookingType === "service") {
@@ -214,7 +218,7 @@ async function handleStripeWebhook(req, res) {
             stripePaymentIntentId: pi.id,
           });
           await waPost({ messaging_product: "whatsapp", to: buyerPhone, type: "text",
-            text: { body: `✅ *Booking Confirmed!*\n\n📋 ${serviceName}\n📅 ${slotLabel}\n💰 $${amountAud} AUD paid\n\nSee you then! 🎉` },
+            text: { body: `✅ *Booking Confirmed!*\n\n📋 ${serviceName}\n📅 ${slotLabel}\n💰 ${money(amountAud, currency)} paid\n\nSee you then! 🎉` },
           }).catch(err => console.error("Service booking WA error:", err.message));
         } catch (err) {
           console.error("Service booking post-payment error:", err.message);
@@ -268,7 +272,7 @@ async function handleStripeWebhook(req, res) {
         messaging_product: "whatsapp",
         to: buyerPhone,
         type: "text",
-        text: { body: `✅ Payment of $${amountAud} AUD received! Your order is confirmed.\n\n🎁 You've earned *${points} loyalty points*! Thank you for shopping with us! 🎉` },
+        text: { body: `✅ Payment of ${money(amountAud, currency)} received! Your order is confirmed.\n\n🎁 You've earned *${points} loyalty points*! Thank you for shopping with us! 🎉` },
       }).catch(err => console.error("Payment confirmation error:", err.message));
     }
   }
@@ -362,8 +366,9 @@ async function handleProductSelection(from, productId, variantLabel) {
       const totalPts = cart.reduce((s, i) => s + (i.pointsCost || 0), 0);
       bodyText = `✅ *${displayName}* added!\n💎 ${pointsCost} pts\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · ${totalPts} pts total\n\n_Keep tapping cards to add more, or checkout when ready._`;
     } else {
+      const currency = await getCurrency();
       const total = cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
-      bodyText = `✅ *${displayName}* added!\n💰 $${salePrice.toFixed(2)} AUD${promo?.discountPercent ? ` (${promo.discountPercent}% OFF)` : ""}\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · $${total} AUD total\n\n_Keep tapping cards to add more, or checkout when ready._`;
+      bodyText = `✅ *${displayName}* added!\n💰 ${money(salePrice, currency)}${promo?.discountPercent ? ` (${promo.discountPercent}% OFF)` : ""}\n\n🛒 Cart: ${cart.length} item${cart.length !== 1 ? "s" : ""} · ${money(total, currency)} total\n\n_Keep tapping cards to add more, or checkout when ready._`;
     }
 
     await waPost({
@@ -476,10 +481,11 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
         text: { body: `💎 *Booking Summary*\n\n📋 ${service.name}\n📅 ${slot.date} at ${slot.startTime}–${slot.endTime}\n\n*${pointsCost} points will be deducted*\nYou have: ${customer?.loyaltyPoints || 0} pts → after: ${remaining} pts\n\nReply *YES* to confirm or *NO* to cancel.` } });
     } else {
       // Cash — create Stripe payment intent for the service
+      const currency = await getCurrency();
       const amount = service.basePrice || 0;
       const pi = await stripe.paymentIntents.create({
         amount:   Math.round(amount * 100),
-        currency: "aud",
+        currency: currency.toLowerCase(),
         automatic_payment_methods: { enabled: true },
         metadata: {
           bookingType: "service",
@@ -493,7 +499,7 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
 
       pendingSlotSelections.delete(from);
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
-        text: { body: `📋 *${service.name}*\n📅 ${slot.date} at ${slot.startTime}–${slot.endTime}\n💰 $${amount.toFixed(2)} AUD\n\nPay securely to confirm your booking:\n${APP_URL}/pay/${pi.id}` } });
+        text: { body: `📋 *${service.name}*\n📅 ${slot.date} at ${slot.startTime}–${slot.endTime}\n💰 ${money(amount, currency)}\n\nPay securely to confirm your booking:\n${APP_URL}/pay/${pi.id}` } });
     }
   } catch (err) {
     console.error("handleSlotSelection error:", err.message);

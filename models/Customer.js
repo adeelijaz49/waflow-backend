@@ -7,6 +7,7 @@ const schema = new mongoose.Schema({
   email:     { type: String },
   address:   { type: String },
   loyaltyPoints: { type: Number, default: 0 },
+  isDemo:    { type: Boolean, default: false }, // flags seeded demo customers (see seed/seed-demo.js)
 }, { timestamps: true });
 
 module.exports = mongoose.model('Customer', schema);

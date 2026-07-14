@@ -16,6 +16,7 @@ const schema = new mongoose.Schema({
   status:          { type: String, enum: ['draft', 'active', 'expired'], default: 'draft' },
   sentAt:          Date,
   sentCount:       { type: Number, default: 0 },
+  isDemo:          { type: Boolean, default: false }, // flags seeded demo promotions (see seed/seed-demo.js)
 }, { timestamps: true });
 
 module.exports = mongoose.model('Promotion', schema);

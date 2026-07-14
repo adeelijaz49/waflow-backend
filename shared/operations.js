@@ -19,9 +19,12 @@ const {
 } = require('../utils/whatsapp');
 const { carts } = require('../utils/state');
 const { APP_URL } = require('../utils/config');
+const { money } = require('../utils/currency');
+const settingsCache = require('../utils/settingsCache');
+const { getCurrency } = settingsCache;
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
-const SHIPPING_COST_AUD = 0.5; // matches server.js's WhatsApp checkout flow
+const SHIPPING_COST = 0.5; // flat rate, matches server.js's WhatsApp checkout flow
 
 // ─── Products ────────────────────────────────────────────────────────────────
 
@@ -250,29 +253,30 @@ async function createOrder({ customerId, items, shippingAddress }) {
     }
   }
 
+  const currency = await getCurrency();
   const subtotal = +cartItems.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
-  const total = +(subtotal + SHIPPING_COST_AUD).toFixed(2);
+  const total = +(subtotal + SHIPPING_COST).toFixed(2);
 
   const pi = await stripe.paymentIntents.create({
     amount: Math.round(total * 100),
-    currency: 'aud',
+    currency: currency.toLowerCase(),
     automatic_payment_methods: { enabled: true },
-    metadata: { buyerPhone: customer.phone, subtotal: String(subtotal), shippingCost: String(SHIPPING_COST_AUD), address },
+    metadata: { buyerPhone: customer.phone, subtotal: String(subtotal), shippingCost: String(SHIPPING_COST), address },
   });
 
   // Shared with routes/pay.js and the Stripe webhook in server.js — this is what lets
   // payment_intent.succeeded build the real Order with line items once the customer pays.
   carts.set(customer.phone, cartItems);
 
-  const summary = cartItems.map((it, i) => `${i + 1}. ${it.name} — $${it.priceAud.toFixed(2)} AUD`).join('\n');
+  const summary = cartItems.map((it, i) => `${i + 1}. ${it.name} — ${money(it.priceAud, currency)}`).join('\n');
   await waPost({
     messaging_product: 'whatsapp', to: customer.phone, type: 'text',
     text: {
-      body: `🛒 *Your Order Summary*\n\n${summary}\n\nSubtotal: $${subtotal.toFixed(2)} AUD\nShipping: $${SHIPPING_COST_AUD.toFixed(2)} AUD\n*Total: $${total.toFixed(2)} AUD*\n\n📍 Delivering to:\n${address}\n\nPay securely:\n${APP_URL}/pay/${pi.id}`,
+      body: `🛒 *Your Order Summary*\n\n${summary}\n\nSubtotal: ${money(subtotal, currency)}\nShipping: ${money(SHIPPING_COST, currency)}\n*Total: ${money(total, currency)}*\n\n📍 Delivering to:\n${address}\n\nPay securely:\n${APP_URL}/pay/${pi.id}`,
     },
   });
 
-  return { success: true, paymentIntentId: pi.id, paymentLink: `${APP_URL}/pay/${pi.id}`, subtotal, shippingCost: SHIPPING_COST_AUD, total, itemCount: cartItems.length };
+  return { success: true, paymentIntentId: pi.id, paymentLink: `${APP_URL}/pay/${pi.id}`, subtotal, shippingCost: SHIPPING_COST, total, itemCount: cartItems.length };
 }
 
 async function getPaymentStatus({ paymentIntentId }) {
@@ -451,6 +455,7 @@ async function updateLoyaltySettings(data) {
   if (data.minPointsPerPurchase != null) s.minPointsPerPurchase = data.minPointsPerPurchase;
   if (data.currency) s.currency = data.currency;
   await s.save();
+  settingsCache.invalidate();
   return s;
 }
 
