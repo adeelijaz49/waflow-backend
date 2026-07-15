@@ -331,8 +331,13 @@ async function getCampaignReport({ promotionId }) {
       delivered:    { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read']] }, 1, 0] } },
       read:         { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
       failed:       { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
-      clicked:      { $sum: { $cond: [{ $ne: ['$clickedAt', null] }, 1, 0] } },
-      ordered:      { $sum: { $cond: [{ $ne: ['$order', null] }, 1, 0] } },
+      // $gt (not $ne) against null — in aggregation expressions a genuinely
+      // missing field is its own BSON type, distinct from and NOT equal to
+      // null, so $ne incorrectly counts every message that's never been
+      // clicked/ordered. $gt follows BSON comparison order, where missing
+      // and null both sort lowest, so it correctly excludes both.
+      clicked:      { $sum: { $cond: [{ $gt: ['$clickedAt', null] }, 1, 0] } },
+      ordered:      { $sum: { $cond: [{ $gt: ['$order', null] }, 1, 0] } },
       revenue:      { $sum: '$revenue' },
       pointsIssued: { $sum: '$pointsIssued' },
     } },
