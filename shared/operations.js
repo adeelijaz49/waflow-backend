@@ -219,8 +219,10 @@ async function updateCustomer({ id, ...data }) {
 
 // ─── Orders ──────────────────────────────────────────────────────────────────
 
-async function listOrders({ status, page = 1, limit = 50 } = {}) {
-  const filter = status ? { status } : {};
+async function listOrders({ status, source, page = 1, limit = 50 } = {}) {
+  const filter = {};
+  if (status) filter.status = status;
+  if (source) filter.source = source;
   const skip = (page - 1) * limit;
   const [orders, total] = await Promise.all([
     Order.find(filter).populate('customer', 'firstname lastname phone').sort({ createdAt: -1 }).skip(skip).limit(limit),
@@ -238,6 +240,17 @@ async function getOrder({ id }) {
 async function updateOrderStatus({ id, status }) {
   const order = await Order.findByIdAndUpdate(id, { status }, { new: true });
   if (!order) throw new Error('Order not found');
+  return order;
+}
+
+async function refundOrder({ id }) {
+  const order = await Order.findById(id);
+  if (!order) throw new Error('Order not found');
+  if (order.paymentStatus !== 'paid') throw new Error('Only paid orders can be refunded');
+  if (!order.stripePaymentIntentId) throw new Error('This order has no Stripe payment to refund');
+  await stripe.refunds.create({ payment_intent: order.stripePaymentIntentId });
+  order.paymentStatus = 'refunded';
+  await order.save();
   return order;
 }
 
@@ -710,7 +723,7 @@ module.exports = {
   listServices, getService, createService, updateService, deactivateService,
   createTimeSlot, listBookings, cancelBooking, rescheduleBooking, completeBooking,
   listCustomers, getCustomer, createCustomer, updateCustomer,
-  listOrders, getOrder, updateOrderStatus, getOrderStats, createOrder, getPaymentStatus,
+  listOrders, getOrder, updateOrderStatus, refundOrder, getOrderStats, createOrder, getPaymentStatus,
   listPromotions, getPromotion, createPromotion, updatePromotion, deletePromotion,
   getRecommendedCustomers, sendPromotion, sendLoyaltyReminders, getCampaignReport,
   previewPromotionMessage, sendTestMessage,

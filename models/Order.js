@@ -31,6 +31,7 @@ const schema = new mongoose.Schema({
   campaignMessage:        { type: mongoose.Schema.Types.ObjectId, ref: 'CampaignMessage' },
   stripePaymentIntentId:  String,
   paymentStatus:          { type: String, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
+  paidAt:                 Date,
 }, { timestamps: true });
 
 module.exports = mongoose.model('Order', schema);

@@ -243,6 +243,7 @@ function buildOpenApiSpec() {
           summary: 'List orders, optionally filtered by status',
           parameters: [
             { name: 'status', in: 'query', schema: { type: 'string' } },
+            { name: 'source', in: 'query', schema: { type: 'string', enum: ['campaign', 'manual', 'booking', 'product'] } },
             { name: 'page', in: 'query', schema: { type: 'integer' } },
             { name: 'limit', in: 'query', schema: { type: 'integer' } },
           ],
@@ -289,6 +290,14 @@ function buildOpenApiSpec() {
             type: 'object', required: ['status'], properties: { status: { type: 'string', enum: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled'] } },
           } } } },
           responses: { 200: { description: 'Updated' } },
+        },
+      },
+      '/orders/{id}/refund': {
+        post: {
+          operationId: 'refundOrder',
+          summary: 'Issue a real Stripe refund for a paid order and mark it refunded. Irreversible — only works on orders with paymentStatus "paid".',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Refunded' } },
         },
       },
 

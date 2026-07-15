@@ -316,7 +316,7 @@ async function handleStripeWebhook(req, res) {
             customer: customer?._id,
             items: [{ productName: serviceName, category: 'Service', quantity: 1, unitPrice: bookingAmount }],
             subtotal: bookingAmount, total: bookingAmount,
-            status: 'confirmed', paymentStatus: 'paid', source: promotionId ? 'campaign' : 'booking',
+            status: 'confirmed', paymentStatus: 'paid', paidAt: new Date(), source: promotionId ? 'campaign' : 'booking',
             promotion: promotionId, campaignMessage: campaignMessageId,
             stripePaymentIntentId: pi.id, loyaltyPointsEarned: bookingPoints,
           });
@@ -368,7 +368,7 @@ async function handleStripeWebhook(req, res) {
         // older in-flight payment from before pending-order creation existed).
         let order = await Order.findOneAndUpdate(
           { stripePaymentIntentId: pi.id },
-          { status: 'confirmed', paymentStatus: 'paid', loyaltyPointsEarned: points },
+          { status: 'confirmed', paymentStatus: 'paid', paidAt: new Date(), loyaltyPointsEarned: points },
           { new: true },
         );
         if (!order && customer && cartItems.length) {
@@ -386,6 +386,7 @@ async function handleStripeWebhook(req, res) {
             total:               pi.amount / 100,
             status:              'confirmed',
             paymentStatus:       'paid',
+            paidAt:              new Date(),
             source:              promotionId ? 'campaign' : 'product',
             promotion:           promotionId,
             campaignMessage:     campaignMessageId,
@@ -930,6 +931,7 @@ app.post("/webhook", async (req, res) => {
               loyaltyDiscount:    pending.totalPointsCost,
               status:           'confirmed',
               paymentStatus:    'paid',
+              paidAt:           new Date(),
               source:           pending.promotion ? 'campaign' : 'product',
               promotion:        pending.promotion?._id,
               campaignMessage:  pending.campaignMessageId,

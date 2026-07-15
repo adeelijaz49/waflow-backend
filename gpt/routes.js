@@ -51,6 +51,7 @@ router.get('/orders', h(req => ops.listOrders(req.query)));
 router.get('/orders/stats', h(() => ops.getOrderStats()));
 router.get('/orders/:id', h(req => ops.getOrder({ id: req.params.id })));
 router.patch('/orders/:id/status', h(req => ops.updateOrderStatus({ id: req.params.id, status: req.body.status })));
+router.post('/orders/:id/refund', h(req => ops.refundOrder({ id: req.params.id })));
 router.post('/orders', h(req => ops.createOrder(req.body)));
 
 router.get('/payments/:paymentIntentId', h(req => ops.getPaymentStatus({ paymentIntentId: req.params.paymentIntentId })));

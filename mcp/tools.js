@@ -188,8 +188,8 @@ function createMcpServer() {
   // ─── Orders ──────────────────────────────────────────────────────────────
   server.registerTool('list_orders', {
     title: 'List orders',
-    description: 'List orders, optionally filtered by status.',
-    inputSchema: { status: z.string().optional(), page: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(200).optional() },
+    description: 'List orders, optionally filtered by status and/or source (campaign, manual, booking, product).',
+    inputSchema: { status: z.string().optional(), source: z.enum(['campaign', 'manual', 'booking', 'product']).optional(), page: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(200).optional() },
   }, wrap(ops.listOrders));
 
   server.registerTool('get_order', {
@@ -203,6 +203,12 @@ function createMcpServer() {
     description: 'Change an order\'s status (e.g. confirmed, shipped, cancelled).',
     inputSchema: { id: z.string(), status: z.string() },
   }, wrap(ops.updateOrderStatus));
+
+  server.registerTool('refund_order', {
+    title: 'Refund a paid order (real Stripe refund)',
+    description: 'Issues a real Stripe refund for a paid order\'s payment and marks it refunded. Only works on orders with paymentStatus "paid". This is irreversible — confirm with the merchant before calling.',
+    inputSchema: { id: z.string() },
+  }, wrap(ops.refundOrder));
 
   server.registerTool('get_order_stats', {
     title: 'Get order stats',
