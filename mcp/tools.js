@@ -184,6 +184,12 @@ function createMcpServer() {
     inputSchema: { id: z.string() },
   }, wrap(ops.getCustomer));
 
+  server.registerTool('get_customer_whatsapp_history', {
+    title: 'Get customer WhatsApp history',
+    description: 'Timeline of promotional sends, loyalty reminders, and booking notifications sent to this customer.',
+    inputSchema: { customerId: z.string() },
+  }, wrap(ops.getCustomerWhatsAppHistory));
+
   server.registerTool('create_customer', {
     title: 'Create customer',
     description: 'Create a new customer record.',

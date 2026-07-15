@@ -101,10 +101,13 @@ async function createTimeSlot({ serviceId, ...data }) {
   return TimeSlot.create({ ...data, serviceId });
 }
 
-async function listBookings({ serviceId } = {}) {
-  const filter = serviceId ? { serviceId } : {};
+async function listBookings({ serviceId, customerId } = {}) {
+  const filter = {};
+  if (serviceId) filter.serviceId = serviceId;
+  if (customerId) filter.customerId = customerId;
   return Booking.find(filter).sort({ createdAt: -1 }).limit(200)
     .populate('serviceId', 'name category')
+    .populate('slotId')
     .populate('customerId', 'firstname lastname phone');
 }
 
@@ -261,6 +264,16 @@ async function getCustomer({ id }) {
   const orders = await Order.find({ customer: id }).sort({ createdAt: -1 });
   const totalSpent = orders.reduce((s, o) => s + (o.total || 0), 0);
   return { ...customer.toObject(), orders, totalSpent };
+}
+
+// The lighter WhatsApp history: reuses CampaignMessage (already written for every
+// promotion/loyalty/booking-notification send) rather than a full chat transcript.
+async function getCustomerWhatsAppHistory({ customerId }) {
+  return CampaignMessage.find({ customer: customerId })
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .populate('promotion', 'name')
+    .populate('booking');
 }
 
 async function createCustomer(data) {
@@ -779,7 +792,7 @@ module.exports = {
   listServices, getService, createService, updateService, deactivateService,
   createTimeSlot, listBookings, cancelBooking, rescheduleBooking, completeBooking,
   confirmBooking, declineBooking, markNoShow,
-  listCustomers, getCustomer, createCustomer, updateCustomer,
+  listCustomers, getCustomer, createCustomer, updateCustomer, getCustomerWhatsAppHistory,
   listOrders, getOrder, updateOrderStatus, refundOrder, getOrderStats, createOrder, getPaymentStatus,
   listPromotions, getPromotion, createPromotion, updatePromotion, deletePromotion,
   getRecommendedCustomers, sendPromotion, sendLoyaltyReminders, getCampaignReport,

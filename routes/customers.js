@@ -19,6 +19,22 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+router.get('/:id/whatsapp-history', async (req, res) => {
+  try {
+    res.json(await ops.getCustomerWhatsAppHistory({ customerId: req.params.id }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/:id/bookings', async (req, res) => {
+  try {
+    res.json(await ops.listBookings({ customerId: req.params.id }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/', async (req, res) => {
   try {
     res.status(201).json(await ops.createCustomer(req.body));

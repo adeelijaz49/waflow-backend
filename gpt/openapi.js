@@ -260,6 +260,22 @@ function buildOpenApiSpec() {
           responses: { 200: { description: 'Updated' } },
         },
       },
+      '/customers/{id}/whatsapp-history': {
+        get: {
+          operationId: 'getCustomerWhatsAppHistory',
+          summary: 'Timeline of promotional sends, loyalty reminders, and booking notifications sent to this customer',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/customers/{id}/bookings': {
+        get: {
+          operationId: 'getCustomerBookings',
+          summary: "List a customer's service bookings",
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
 
       '/orders': {
         get: {

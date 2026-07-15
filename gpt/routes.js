@@ -46,6 +46,8 @@ router.post('/bookings/:id/no-show', h(req => ops.markNoShow({ bookingId: req.pa
 // ─── Customers ───────────────────────────────────────────────────────────────
 router.get('/customers', h(req => ops.listCustomers(req.query)));
 router.get('/customers/:id', h(req => ops.getCustomer({ id: req.params.id })));
+router.get('/customers/:id/whatsapp-history', h(req => ops.getCustomerWhatsAppHistory({ customerId: req.params.id })));
+router.get('/customers/:id/bookings', h(req => ops.listBookings({ customerId: req.params.id })));
 router.post('/customers', h(req => ops.createCustomer(req.body)));
 router.patch('/customers/:id', h(req => ops.updateCustomer({ id: req.params.id, ...req.body })));
 
