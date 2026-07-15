@@ -220,6 +220,7 @@ function buildOpenApiSpec() {
           summary: 'Search/list customers with pagination and order stats',
           parameters: [
             { name: 'search', in: 'query', schema: { type: 'string' } },
+            { name: 'isDemo', in: 'query', schema: { type: 'boolean' } },
             { name: 'page', in: 'query', schema: { type: 'integer' } },
             { name: 'limit', in: 'query', schema: { type: 'integer' } },
           ],
@@ -354,6 +355,7 @@ function buildOpenApiSpec() {
         get: {
           operationId: 'listPromotions',
           summary: 'List all promotions (product and service)',
+          parameters: [{ name: 'isDemo', in: 'query', schema: { type: 'boolean' } }],
           responses: { 200: { description: 'OK' } },
         },
         post: {

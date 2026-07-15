@@ -174,8 +174,8 @@ function createMcpServer() {
   // ─── Customers ───────────────────────────────────────────────────────────
   server.registerTool('list_customers', {
     title: 'List customers',
-    description: 'Search/list customers with pagination and order stats.',
-    inputSchema: { search: z.string().optional(), page: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(200).optional() },
+    description: 'Search/list customers with pagination and order stats. Set isDemo to filter to the tagged demo customers.',
+    inputSchema: { search: z.string().optional(), isDemo: z.boolean().optional(), page: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(200).optional() },
   }, wrap(ops.listCustomers));
 
   server.registerTool('get_customer', {
@@ -259,8 +259,8 @@ function createMcpServer() {
   // ─── Promotions ──────────────────────────────────────────────────────────
   server.registerTool('list_promotions', {
     title: 'List promotions',
-    description: 'List all promotions (product and service).',
-    inputSchema: {},
+    description: 'List all promotions (product and service). Set isDemo to filter to the tagged demo promotions.',
+    inputSchema: { isDemo: z.boolean().optional() },
   }, wrap(ops.listPromotions));
 
   server.registerTool('get_promotion', {

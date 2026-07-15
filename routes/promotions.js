@@ -5,7 +5,7 @@ const ops = require('../shared/operations');
 
 router.get('/', async (req, res) => {
   try {
-    res.json(await ops.listPromotions());
+    res.json(await ops.listPromotions({ isDemo: req.query.isDemo }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

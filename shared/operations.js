@@ -223,13 +223,14 @@ async function markNoShow({ bookingId }) {
 
 // ─── Customers ───────────────────────────────────────────────────────────────
 
-async function listCustomers({ search, page = 1, limit = 50 } = {}) {
+async function listCustomers({ search, isDemo, page = 1, limit = 50 } = {}) {
   const filter = {};
   if (search) filter.$or = [
     { firstname: { $regex: search, $options: 'i' } },
     { lastname: { $regex: search, $options: 'i' } },
     { phone: { $regex: search, $options: 'i' } },
   ];
+  if (isDemo !== undefined) filter.isDemo = isDemo === true || isDemo === 'true';
   const skip = (page - 1) * limit;
   const [customers, total] = await Promise.all([
     Customer.find(filter).sort({ firstname: 1 }).skip(skip).limit(limit),
@@ -508,8 +509,10 @@ async function getPaymentStatus({ paymentIntentId }) {
 
 // ─── Promotions ──────────────────────────────────────────────────────────────
 
-async function listPromotions() {
-  return Promotion.find().populate('products', 'name basePrice images').populate('services', 'name basePrice duration').sort({ createdAt: -1 });
+async function listPromotions({ isDemo } = {}) {
+  const filter = {};
+  if (isDemo !== undefined) filter.isDemo = isDemo === true || isDemo === 'true';
+  return Promotion.find(filter).populate('products', 'name basePrice images').populate('services', 'name basePrice duration').sort({ createdAt: -1 });
 }
 
 async function getPromotion({ id }) {

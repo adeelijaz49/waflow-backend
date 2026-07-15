@@ -62,7 +62,7 @@ router.post('/orders', h(req => ops.createOrder(req.body)));
 router.get('/payments/:paymentIntentId', h(req => ops.getPaymentStatus({ paymentIntentId: req.params.paymentIntentId })));
 
 // ─── Promotions ──────────────────────────────────────────────────────────────
-router.get('/promotions', h(() => ops.listPromotions()));
+router.get('/promotions', h(req => ops.listPromotions(req.query)));
 router.get('/promotions/:id', h(req => ops.getPromotion({ id: req.params.id })));
 router.post('/promotions', h(req => ops.createPromotion(req.body)));
 router.patch('/promotions/:id', h(req => ops.updatePromotion({ id: req.params.id, ...req.body })));

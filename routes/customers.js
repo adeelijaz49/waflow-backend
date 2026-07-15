@@ -3,8 +3,8 @@ const ops = require('../shared/operations');
 
 router.get('/', async (req, res) => {
   try {
-    const { search, page = 1, limit = 50 } = req.query;
-    res.json(await ops.listCustomers({ search, page: +page, limit: +limit }));
+    const { search, isDemo, page = 1, limit = 50 } = req.query;
+    res.json(await ops.listCustomers({ search, isDemo, page: +page, limit: +limit }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
