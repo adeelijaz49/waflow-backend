@@ -162,6 +162,62 @@ async function completeBooking({ bookingId }) {
   return { success: true };
 }
 
+// A "Reserve — Pay in Person" booking sits as 'requested' until the merchant
+// reviews it — these three transitions are that review action.
+async function confirmBooking({ bookingId }) {
+  const booking = await Booking.findById(bookingId).populate('serviceId').populate('slotId');
+  if (!booking) throw new Error('Booking not found');
+  if (booking.status !== 'requested') throw new Error('Only requested bookings can be confirmed');
+  booking.status = 'confirmed';
+  await booking.save();
+  try {
+    const result = await waPost({
+      messaging_product: 'whatsapp', to: booking.phone, type: 'text',
+      text: { body: `✅ *Booking Confirmed!*\n\n📋 ${booking.serviceId?.name}\n📅 ${booking.slotId?.date} at ${booking.slotId?.startTime}\n\nSee you then! 🎉` },
+    });
+    if (booking.customerId) {
+      await CampaignMessage.create({
+        kind: 'booking_notification', booking: booking._id, customer: booking.customerId, phone: booking.phone,
+        wamid: wamidOf(result), messageType: 'text', status: 'sent', sentAt: new Date(),
+      }).catch(() => {});
+    }
+  } catch (_) { /* best-effort notification — booking is already confirmed either way */ }
+  return booking;
+}
+
+async function declineBooking({ bookingId }) {
+  const booking = await Booking.findById(bookingId).populate('serviceId').populate('slotId');
+  if (!booking) throw new Error('Booking not found');
+  if (booking.status !== 'requested') throw new Error('Only requested bookings can be declined');
+  booking.status = 'cancelled';
+  await booking.save();
+  await TimeSlot.findByIdAndUpdate(booking.slotId._id, { $inc: { bookedCount: -1 } });
+  try {
+    const result = await waPost({
+      messaging_product: 'whatsapp', to: booking.phone, type: 'text',
+      text: { body: `We're sorry, we're unable to accommodate your request for *${booking.serviceId?.name}* on *${booking.slotId?.date} at ${booking.slotId?.startTime}*. Please pick another time — we'd love to see you!` },
+    });
+    if (booking.customerId) {
+      await CampaignMessage.create({
+        kind: 'booking_notification', booking: booking._id, customer: booking.customerId, phone: booking.phone,
+        wamid: wamidOf(result), messageType: 'text', status: 'sent', sentAt: new Date(),
+      }).catch(() => {});
+    }
+  } catch (_) { /* best-effort notification — decline already applied either way */ }
+  return booking;
+}
+
+// Manual, post-hoc — the customer never showed for a confirmed slot. No slot-capacity
+// change (the slot already happened) and no customer notification (nothing to tell them).
+async function markNoShow({ bookingId }) {
+  const booking = await Booking.findById(bookingId);
+  if (!booking) throw new Error('Booking not found');
+  if (booking.status !== 'confirmed') throw new Error('Only confirmed bookings can be marked no-show');
+  booking.status = 'no-show';
+  await booking.save();
+  return booking;
+}
+
 // ─── Customers ───────────────────────────────────────────────────────────────
 
 async function listCustomers({ search, page = 1, limit = 50 } = {}) {
@@ -722,6 +778,7 @@ module.exports = {
   listProducts, getProduct, createProduct, updateProduct, deactivateProduct,
   listServices, getService, createService, updateService, deactivateService,
   createTimeSlot, listBookings, cancelBooking, rescheduleBooking, completeBooking,
+  confirmBooking, declineBooking, markNoShow,
   listCustomers, getCustomer, createCustomer, updateCustomer,
   listOrders, getOrder, updateOrderStatus, refundOrder, getOrderStats, createOrder, getPaymentStatus,
   listPromotions, getPromotion, createPromotion, updatePromotion, deletePromotion,

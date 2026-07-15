@@ -39,6 +39,9 @@ router.get('/bookings', h(req => ops.listBookings(req.query)));
 router.post('/bookings/:id/cancel', h(req => ops.cancelBooking({ bookingId: req.params.id })));
 router.post('/bookings/:id/reschedule', h(req => ops.rescheduleBooking({ bookingId: req.params.id, newSlotId: req.body.newSlotId })));
 router.post('/bookings/:id/complete', h(req => ops.completeBooking({ bookingId: req.params.id })));
+router.post('/bookings/:id/confirm', h(req => ops.confirmBooking({ bookingId: req.params.id })));
+router.post('/bookings/:id/decline', h(req => ops.declineBooking({ bookingId: req.params.id })));
+router.post('/bookings/:id/no-show', h(req => ops.markNoShow({ bookingId: req.params.id })));
 
 // ─── Customers ───────────────────────────────────────────────────────────────
 router.get('/customers', h(req => ops.listCustomers(req.query)));

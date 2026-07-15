@@ -189,6 +189,30 @@ function buildOpenApiSpec() {
           responses: { 200: { description: 'OK' } },
         },
       },
+      '/bookings/{id}/confirm': {
+        post: {
+          operationId: 'confirmBooking',
+          summary: 'Approve a "requested" (Reserve, Pay in Person) booking and notify the customer',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/bookings/{id}/decline': {
+        post: {
+          operationId: 'declineBooking',
+          summary: 'Decline a "requested" (Reserve, Pay in Person) booking, free its slot, and notify the customer',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/bookings/{id}/no-show': {
+        post: {
+          operationId: 'markNoShow',
+          summary: 'Mark a confirmed booking as a no-show (manual, after the fact)',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
 
       '/customers': {
         get: {

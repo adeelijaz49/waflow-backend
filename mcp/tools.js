@@ -153,6 +153,24 @@ function createMcpServer() {
     inputSchema: { bookingId: z.string() },
   }, wrap(ops.completeBooking));
 
+  server.registerTool('confirm_booking', {
+    title: 'Confirm a requested booking',
+    description: 'Approve a "requested" (Reserve, Pay in Person) booking, moving it to confirmed, and notify the customer.',
+    inputSchema: { bookingId: z.string() },
+  }, wrap(ops.confirmBooking));
+
+  server.registerTool('decline_booking', {
+    title: 'Decline a requested booking',
+    description: 'Decline a "requested" (Reserve, Pay in Person) booking, free its slot, and notify the customer.',
+    inputSchema: { bookingId: z.string() },
+  }, wrap(ops.declineBooking));
+
+  server.registerTool('mark_no_show', {
+    title: 'Mark booking as no-show',
+    description: 'Mark a confirmed booking as a no-show. Manual, after the fact — no customer notification, no slot change.',
+    inputSchema: { bookingId: z.string() },
+  }, wrap(ops.markNoShow));
+
   // ─── Customers ───────────────────────────────────────────────────────────
   server.registerTool('list_customers', {
     title: 'List customers',

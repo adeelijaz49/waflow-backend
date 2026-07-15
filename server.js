@@ -10,7 +10,7 @@ const Stripe   = require("stripe");
 const mongoose = require("mongoose");
 
 const { PORT, APP_URL } = require("./utils/config");
-const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pendingSlotSelections, pendingServiceCheckouts, pendingVariantSelections } = require("./utils/state");
+const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pendingSlotSelections, pendingServiceCheckouts, pendingVariantSelections, pendingPayLaterSlots } = require("./utils/state");
 const { money } = require("./utils/currency");
 const { getCurrency } = require("./utils/settingsCache");
 const CampaignMessage = require("./models/CampaignMessage");
@@ -637,9 +637,58 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
       pendingSlotSelections.delete(from);
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: `📋 *${service.name}*\n📅 ${slot.date} at ${slot.startTime}–${slot.endTime}\n💰 ${money(amount, currency)}\n\nPay securely to confirm your booking:\n${APP_URL}/pay/${pi.id}` } });
+
+      // Second option — hold the slot without paying online; the merchant reviews and confirms.
+      pendingPayLaterSlots.set(from, { service, slot });
+      await waPost({
+        messaging_product: "whatsapp", to: from, type: "interactive",
+        interactive: {
+          type:   "button",
+          body:   { text: "Prefer to pay when you arrive?" },
+          action: { buttons: [{ type: "reply", reply: { id: `paylater_${slot._id}`, title: "Reserve, Pay in Person" } }] },
+        },
+      }).catch(err => console.error("pay-later offer error:", err.message));
     }
   } catch (err) {
     console.error("handleSlotSelection error:", err.message);
+  }
+}
+
+async function handlePayLaterReservation(from, slotId) {
+  try {
+    const pending = pendingPayLaterSlots.get(from);
+    if (!pending || pending.slot._id.toString() !== slotId) return;
+    pendingPayLaterSlots.delete(from);
+
+    const TimeSlot = require("./models/TimeSlot");
+    const Customer = require("./models/Customer");
+    const Booking  = require("./models/Booking");
+
+    const { service, slot } = pending;
+    const freshSlot = await TimeSlot.findById(slot._id);
+    if (!freshSlot || freshSlot.bookedCount >= freshSlot.capacity) {
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: "⚠️ Sorry, that slot just got booked up. Please pick another time." } });
+      return;
+    }
+
+    await TimeSlot.findByIdAndUpdate(slot._id, { $inc: { bookedCount: 1 } });
+    const customer = await Customer.findOne({ phone: from });
+    await Booking.create({
+      serviceId:    service._id,
+      slotId:       slot._id,
+      customerId:   customer?._id,
+      phone:        from,
+      customerName: customer ? `${customer.firstname || ''} ${customer.lastname || ''}`.trim() : from,
+      status:       'requested',
+      paymentType:  'pay_later',
+      amount:       service.basePrice || 0,
+    });
+
+    await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+      text: { body: `📝 *Reservation Requested!*\n\n📋 ${service.name}\n📅 ${slot.date} at ${slot.startTime}\n\nWe'll confirm your slot shortly. Pay in person on the day.` } });
+  } catch (err) {
+    console.error("handlePayLaterReservation error:", err.message);
   }
 }
 
@@ -739,6 +788,10 @@ app.post("/webhook", async (req, res) => {
         const serviceId = parts[0];
         const bookingId = parts[1];
         await handleRebookRequest(from, serviceId, bookingId);
+
+      } else if (buttonId.startsWith("paylater_")) {
+        // Customer tapped "Reserve, Pay in Person" instead of the Stripe link
+        await handlePayLaterReservation(from, buttonId.slice(9));
 
       } else if (buttonId.startsWith("promo_")) {
         // "Shop Now" / "Book Now" tapped on promo message → show catalog or slots

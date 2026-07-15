@@ -125,6 +125,36 @@ router.post('/bookings/:bookingId/complete', async (req, res) => {
   }
 });
 
+// Approve a "Reserve — Pay in Person" request
+router.post('/bookings/:bookingId/confirm', async (req, res) => {
+  try {
+    res.json(await ops.confirmBooking({ bookingId: req.params.bookingId }));
+  } catch (err) {
+    if (err.message === 'Booking not found') return res.status(404).json({ error: 'Booking not found' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Decline a "Reserve — Pay in Person" request — frees the slot
+router.post('/bookings/:bookingId/decline', async (req, res) => {
+  try {
+    res.json(await ops.declineBooking({ bookingId: req.params.bookingId }));
+  } catch (err) {
+    if (err.message === 'Booking not found') return res.status(404).json({ error: 'Booking not found' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Manually mark a confirmed booking as a no-show
+router.post('/bookings/:bookingId/no-show', async (req, res) => {
+  try {
+    res.json(await ops.markNoShow({ bookingId: req.params.bookingId }));
+  } catch (err) {
+    if (err.message === 'Booking not found') return res.status(404).json({ error: 'Booking not found' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // All bookings (cross-service, for dashboard)
 router.get('/bookings/all', async (req, res) => {
   try {

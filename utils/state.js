@@ -7,6 +7,7 @@ const pendingPointsCheckouts = new Map(); // phone → { cart, promotion, totalP
 const pendingSlotSelections   = new Map(); // phone → { service, promotion, slots, isFree, oldBookingId }
 const pendingServiceCheckouts = new Map(); // phone → { service, slot, promotion, totalPointsCost }
 const pendingVariantSelections = new Map(); // phone → { product, promotion }
+const pendingPayLaterSlots = new Map(); // phone → { service, slot } — "Reserve, Pay in Person" offer
 
 module.exports = {
   carts,
@@ -16,4 +17,5 @@ module.exports = {
   pendingSlotSelections,
   pendingServiceCheckouts,
   pendingVariantSelections,
+  pendingPayLaterSlots,
 };
