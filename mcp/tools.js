@@ -286,6 +286,18 @@ function createMcpServer() {
     inputSchema: { promotionId: z.string(), limit: z.number().int().min(1).max(500).optional() },
   }, wrap(ops.getRecommendedCustomers));
 
+  server.registerTool('preview_promotion_message', {
+    title: 'Preview promotion message',
+    description: 'Returns the exact WhatsApp message body/button text a customer would receive for this promotion, without sending anything. Use this before send_promotion to show the merchant what will go out.',
+    inputSchema: { promotionId: z.string() },
+  }, wrap(ops.previewPromotionMessage));
+
+  server.registerTool('send_test_message', {
+    title: 'Send a test promotion message (real WhatsApp send)',
+    description: 'Sends the real promotion message to one phone number for testing — confirm the number with the user before calling, since this is a real send.',
+    inputSchema: { promotionId: z.string(), phone: z.string() },
+  }, wrap(ops.sendTestMessage));
+
   server.registerTool('send_promotion', {
     title: 'Send promotion (real WhatsApp send)',
     description: 'Sends a real WhatsApp message to the given customers for this promotion. This messages real customers — confirm scope with the user before calling.',

@@ -391,6 +391,26 @@ function buildOpenApiSpec() {
         },
       },
 
+      '/promotions/{id}/preview': {
+        get: {
+          operationId: 'previewPromotionMessage',
+          summary: 'Returns the exact WhatsApp message a customer would receive for this promotion, without sending anything.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/promotions/{id}/test-send': {
+        post: {
+          operationId: 'sendTestMessage',
+          summary: 'Sends the real promotion message to one phone number for testing. Confirm the number with the user before calling — this is a real send.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: { required: true, content: { 'application/json': { schema: {
+            type: 'object', required: ['phone'], properties: { phone: { type: 'string' } },
+          } } } },
+          responses: { 200: { description: 'Sent' } },
+        },
+      },
+
       '/loyalty/remind': {
         post: {
           operationId: 'sendLoyaltyReminders',

@@ -245,9 +245,9 @@ async function sendLoyaltyTemplate(to, customerName, loyaltyPoints) {
 
 // ── Announcement + Carousel ────────────────────────────────────────────────────
 
-// One announcement per promotion (replaces per-product send).
-// Works as outbound — tries interactive, falls back to template if outside 24h window.
-async function sendPromoAnnouncement(to, customer, promotion, items) {
+// Pure payload builder — no `to`, no API call — so the exact same construction
+// can be reused for a real send, a merchant-facing preview, and a test send.
+function buildPromoAnnouncementPayload(customer, promotion, items) {
   const firstName = customer.firstname || 'there';
   const isPoints  = promotion.customerType === 'points';
   const isService = promotion.scope === 'services';
@@ -276,7 +276,13 @@ async function sendPromoAnnouncement(to, customer, promotion, items) {
     action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: cta } }] },
   };
   if (firstImage) interactive.header = { type: 'image', image: { link: firstImage } };
+  return interactive;
+}
 
+// One announcement per promotion (replaces per-product send).
+// Works as outbound — tries interactive, falls back to template if outside 24h window.
+async function sendPromoAnnouncement(to, customer, promotion, items) {
+  const interactive = buildPromoAnnouncementPayload(customer, promotion, items);
   return waPost({ messaging_product: 'whatsapp', to, type: 'interactive', interactive });
 }
 
@@ -570,8 +576,8 @@ async function sendRebookMessage(to, customerName, serviceName, slot, serviceId,
   }
 }
 
-// One message per customer for points promotions — shows all products at once
-async function sendPointsPromoMessage(to, customer, promotion, products) {
+// Pure payload builder — see buildPromoAnnouncementPayload for why this is split out.
+function buildPointsPromoPayload(customer, promotion, products) {
   const firstName  = customer.firstname || 'Valued Customer';
   const pts        = customer.loyaltyPoints || 0;
   const pointsPrice = promotion.pointsPrice || 0;
@@ -584,25 +590,24 @@ async function sendPointsPromoMessage(to, customer, promotion, products) {
     `${itemNames}${more}\n\n` +
     `Tap below to browse and choose what you'd like!`;
 
+  return {
+    interactive: {
+      type:   'button',
+      body:   { text: bodyText },
+      action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: 'Shop Now! 💎' } }] },
+    },
+    textFallback: bodyText + '\n\nReply *SHOP* or tap our link to browse.',
+  };
+}
+
+// One message per customer for points promotions — shows all products at once
+async function sendPointsPromoMessage(to, customer, promotion, products) {
+  const { interactive, textFallback } = buildPointsPromoPayload(customer, promotion, products);
   try {
-    return await waPost({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'interactive',
-      interactive: {
-        type:   'button',
-        body:   { text: bodyText },
-        action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: 'Shop Now! 💎' } }] },
-      },
-    });
+    return await waPost({ messaging_product: 'whatsapp', to, type: 'interactive', interactive });
   } catch (_) {
     // Fallback plain text when outside the 24-hour window
-    return waPost({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body: bodyText + '\n\nReply *SHOP* or tap our link to browse.' },
-    });
+    return waPost({ messaging_product: 'whatsapp', to, type: 'text', text: { body: textFallback } });
   }
 }
 
@@ -644,12 +649,14 @@ module.exports = {
   sendCatalog,
   // Announcement + carousel
   sendPromoAnnouncement,
+  buildPromoAnnouncementPayload,
   sendProductCarousel,
   sendProductCards,
   sendVariantPicker,
   // Session messages (require 24h window)
   sendPromoMessage,
   sendPointsPromoMessage,
+  buildPointsPromoPayload,
   sendServicePromoMessage,
   sendServiceSlots,
   sendRebookMessage,

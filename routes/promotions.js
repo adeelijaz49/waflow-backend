@@ -68,6 +68,27 @@ router.get('/:id/report', async (req, res) => {
   }
 });
 
+// ─── Message preview + test send ─────────────────────────────────────────────
+
+router.get('/:id/preview', async (req, res) => {
+  try {
+    res.json(await ops.previewPromotionMessage({ promotionId: req.params.id }));
+  } catch (err) {
+    if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/:id/test-send', async (req, res) => {
+  try {
+    res.json(await ops.sendTestMessage({ promotionId: req.params.id, phone: req.body.phone }));
+  } catch (err) {
+    if (err.message === 'phone required') return res.status(400).json({ error: err.message });
+    if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Send WhatsApp promotion ─────────────────────────────────────────────────
 
 router.post('/:id/send', async (req, res) => {

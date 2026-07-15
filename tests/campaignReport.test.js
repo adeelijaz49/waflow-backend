@@ -1,6 +1,7 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 
+const { connectOnce } = require('./dbSetup');
 const ops              = require('../shared/operations');
 const Customer         = require('../models/Customer');
 const Promotion        = require('../models/Promotion');
@@ -12,9 +13,7 @@ describe('getCampaignReport', () => {
   let customer, promotion;
 
   beforeAll(async () => {
-    if (mongoose.connection.readyState === 0) {
-      await mongoose.connect(process.env.MONGODB_URI);
-    }
+    await connectOnce();
     customer = await Customer.create({ firstname: 'Report', lastname: 'Test', phone: TEST_PHONE });
     promotion = await Promotion.create({ name: '__test_report_campaign__', scope: 'products', customerType: 'cash' });
   });
@@ -23,7 +22,6 @@ describe('getCampaignReport', () => {
     await CampaignMessage.deleteMany({ promotion: promotion._id });
     await Promotion.findByIdAndDelete(promotion._id);
     await Customer.findByIdAndDelete(customer._id);
-    await mongoose.disconnect();
   });
 
   // Regression test: a genuinely missing field is a distinct BSON type from

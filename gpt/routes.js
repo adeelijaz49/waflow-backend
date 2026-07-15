@@ -64,6 +64,8 @@ router.delete('/promotions/:id', h(req => ops.deletePromotion({ id: req.params.i
 router.get('/promotions/:id/recommended-customers', h(req => ops.getRecommendedCustomers({ promotionId: req.params.id, limit: req.query.limit ? +req.query.limit : undefined })));
 router.post('/promotions/:id/send', h(req => ops.sendPromotion({ promotionId: req.params.id, customerIds: req.body.customerIds })));
 router.get('/promotions/:id/report', h(req => ops.getCampaignReport({ promotionId: req.params.id })));
+router.get('/promotions/:id/preview', h(req => ops.previewPromotionMessage({ promotionId: req.params.id })));
+router.post('/promotions/:id/test-send', h(req => ops.sendTestMessage({ promotionId: req.params.id, phone: req.body.phone })));
 
 router.post('/loyalty/remind', h(req => ops.sendLoyaltyReminders(req.body)));
 

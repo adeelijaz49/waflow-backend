@@ -18,6 +18,7 @@ const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
   sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
   PROMO_TEMPLATE, LOYALTY_TEMPLATE,
+  buildPromoAnnouncementPayload, buildPointsPromoPayload,
 } = require('../utils/whatsapp');
 const { carts } = require('../utils/state');
 const { APP_URL } = require('../utils/config');
@@ -556,6 +557,56 @@ function segmentFor(s) {
   return 'Best customers to target';
 }
 
+// Same "what items does this promotion cover" resolution used by sending,
+// previewing, and test-sending — store-wide/no-explicit-picks promotions fall
+// back to the first 10 active products/services.
+async function resolvePromoItems(promotion) {
+  if (promotion.scope === 'services') {
+    return promotion.services?.length ? promotion.services : Service.find({ active: true }).limit(10);
+  }
+  return promotion.products?.length ? promotion.products : Product.find({ active: true }).limit(10);
+}
+
+async function previewPromotionMessage({ promotionId }) {
+  const promotion = await Promotion.findById(promotionId).populate('products').populate('services');
+  if (!promotion) throw new Error('Promotion not found');
+  const items = await resolvePromoItems(promotion);
+  const sampleCustomer = {}; // generic — matches what a customer with no name on file would see
+
+  if (promotion.customerType === 'points') {
+    const { interactive, textFallback } = buildPointsPromoPayload(sampleCustomer, promotion, items);
+    return {
+      messageType: 'interactive',
+      body: interactive.body.text,
+      buttonLabel: interactive.action.buttons[0].reply.title,
+      fallbackText: textFallback,
+    };
+  }
+
+  const interactive = buildPromoAnnouncementPayload(sampleCustomer, promotion, items);
+  return {
+    messageType: 'interactive',
+    body: interactive.body.text,
+    header: interactive.header?.image?.link || null,
+    buttonLabel: interactive.action.buttons[0].reply.title,
+  };
+}
+
+async function sendTestMessage({ promotionId, phone }) {
+  if (!phone) throw new Error('phone required');
+  const promotion = await Promotion.findById(promotionId).populate('products').populate('services');
+  if (!promotion) throw new Error('Promotion not found');
+  const items = await resolvePromoItems(promotion);
+  const testCustomer = { firstname: 'Test', phone, loyaltyPoints: promotion.pointsPrice || 100 };
+
+  if (promotion.customerType === 'points') {
+    await sendPointsPromoMessage(phone, testCustomer, promotion, items);
+  } else {
+    await sendPromoAnnouncement(phone, testCustomer, promotion, items);
+  }
+  return { success: true };
+}
+
 async function sendPromotion({ promotionId, customerIds }) {
   if (!customerIds?.length) throw new Error('customerIds required');
   const promotion = await Promotion.findById(promotionId).populate('products').populate('services');
@@ -564,12 +615,7 @@ async function sendPromotion({ promotionId, customerIds }) {
   const customers = requested.filter(c => !c.optedOut);
   const skippedOptedOut = requested.length - customers.length;
 
-  let items = [];
-  if (promotion.scope === 'services') {
-    items = promotion.services?.length ? promotion.services : await Service.find({ active: true }).limit(10);
-  } else {
-    items = promotion.products?.length ? promotion.products : await Product.find({ active: true }).limit(10);
-  }
+  const items = await resolvePromoItems(promotion);
 
   let sentCount = 0;
   const errors = [];
@@ -667,5 +713,6 @@ module.exports = {
   listOrders, getOrder, updateOrderStatus, getOrderStats, createOrder, getPaymentStatus,
   listPromotions, getPromotion, createPromotion, updatePromotion, deletePromotion,
   getRecommendedCustomers, sendPromotion, sendLoyaltyReminders, getCampaignReport,
+  previewPromotionMessage, sendTestMessage,
   getLoyaltySettings, updateLoyaltySettings,
 };

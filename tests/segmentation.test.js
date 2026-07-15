@@ -1,6 +1,6 @@
 require('dotenv').config();
-const mongoose = require('mongoose');
 
+const { connectOnce } = require('./dbSetup');
 const ops       = require('../shared/operations');
 const Customer  = require('../models/Customer');
 const Order     = require('../models/Order');
@@ -23,9 +23,7 @@ describe('getRecommendedCustomers segment labels', () => {
   let customers = {};
 
   beforeAll(async () => {
-    if (mongoose.connection.readyState === 0) {
-      await mongoose.connect(process.env.MONGODB_URI);
-    }
+    await connectOnce();
     promotion = await Promotion.create({ name: '__test_segments__', scope: 'products', customerType: 'cash', type: 'store_wide' });
 
     const specs = {
@@ -64,7 +62,6 @@ describe('getRecommendedCustomers segment labels', () => {
     await Order.deleteMany({ customer: { $in: ids } });
     await Customer.deleteMany({ _id: { $in: ids } });
     await Promotion.findByIdAndDelete(promotion._id);
-    await mongoose.disconnect();
   });
 
   test('assigns all four segment labels correctly', async () => {
