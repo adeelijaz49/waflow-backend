@@ -6,6 +6,8 @@ const schema = new mongoose.Schema({
   customerType:    { type: String, enum: ['cash', 'points'], default: 'cash' },
   scope:           { type: String, enum: ['products', 'services'], default: 'products' },
   type:            { type: String, enum: ['specific_products', 'store_wide', 'specific_services'], default: 'specific_products' },
+  // Which guided path the merchant used to create this — drives suggested defaults/copy in the UI, not read elsewhere.
+  campaignType:    { type: String, enum: ['product_promotion', 'service_booking_campaign', 'loyalty_reminder', 'inactive_customer_comeback', 'store_wide_offer'] },
   products:        [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
   services:        [{ type: mongoose.Schema.Types.ObjectId, ref: 'Service' }],
   categories:      [String],

@@ -265,8 +265,9 @@ function buildPromoAnnouncementPayload(customer, promotion, items) {
       : `🏷️ ${promotion.discountPercent}% OFF all items`;
   }
 
-  const cta   = isService ? 'Book Now! 📅' : 'Shop Now! 🛍️';
-  const body  = `Hi ${firstName}! ✨\n\n*${promotion.name}*\n\n${preview}${moreNote}\n\n${priceNote}\n\nTap below to browse and ${isService ? 'book your slot' : 'add to cart'}.`;
+  const cta     = isService ? 'Book Now! 📅' : 'Shop Now! 🛍️';
+  const tagline = promotion.description ? `\n${promotion.description.trim().slice(0, 200)}` : '';
+  const body    = `Hi ${firstName}! ✨\n\n*${promotion.name}*${tagline}\n\n${preview}${moreNote}\n\n${priceNote}\n\nTap below to browse and ${isService ? 'book your slot' : 'add to cart'}.`;
 
   const firstImage = items.find(i => i.images?.[0] && isSupportedImageLink(i.images[0]))?.images?.[0];
 
@@ -584,8 +585,10 @@ function buildPointsPromoPayload(customer, promotion, products) {
   const itemNames  = products.slice(0, 5).map(p => `• ${p.name}`).join('\n');
   const more       = products.length > 5 ? `\n_...and ${products.length - 5} more items_` : '';
 
+  const tagline = promotion.description ? `${promotion.description.trim().slice(0, 200)}\n\n` : '';
   const bodyText =
     `Hi ${firstName}! 💎 You have *${pts} loyalty points*!\n\n` +
+    tagline +
     `Redeem *${pointsPrice} pts per item* in our *${promotion.name}* — no cash needed:\n\n` +
     `${itemNames}${more}\n\n` +
     `Tap below to browse and choose what you'd like!`;

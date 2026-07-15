@@ -318,6 +318,7 @@ function buildOpenApiSpec() {
               customerType: { type: 'string', enum: ['cash', 'points'] },
               scope: { type: 'string', enum: ['products', 'services'] },
               type: { type: 'string', enum: ['specific_products', 'store_wide', 'specific_services'] },
+              campaignType: { type: 'string', enum: ['product_promotion', 'service_booking_campaign', 'loyalty_reminder', 'inactive_customer_comeback', 'store_wide_offer'] },
               productIds: { type: 'array', items: { type: 'string' } },
               serviceIds: { type: 'array', items: { type: 'string' } },
               discountPercent: { type: 'number', minimum: 0, maximum: 100 },
@@ -343,6 +344,7 @@ function buildOpenApiSpec() {
             type: 'object',
             properties: {
               name: { type: 'string' }, description: { type: 'string' },
+              campaignType: { type: 'string', enum: ['product_promotion', 'service_booking_campaign', 'loyalty_reminder', 'inactive_customer_comeback', 'store_wide_offer'] },
               discountPercent: { type: 'number' }, pointsPrice: { type: 'number' },
               status: { type: 'string', enum: ['draft', 'active', 'expired'] },
               startDate: { type: 'string' }, endDate: { type: 'string' },
