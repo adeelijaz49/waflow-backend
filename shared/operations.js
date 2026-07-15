@@ -486,14 +486,14 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
   if (promotion.customerType === 'points') {
     const all = await Customer.find({ optedOut: { $ne: true } }).sort({ loyaltyPoints: -1 }).limit(topN).lean();
     return all.map(c => ({
-      ...c, rfmScore: 0, orderCount: 0, totalSpent: 0,
+      ...c, rfmScore: 0, segment: 'Best customers to target', orderCount: 0, totalSpent: 0,
       hasEnoughPoints: c.loyaltyPoints >= (promotion.pointsPrice || 0),
     }));
   }
 
   if (!stats.length) {
     const all = await Customer.find({ optedOut: { $ne: true } }).limit(topN).lean();
-    return all.map(c => ({ ...c, rfmScore: 0, orderCount: 0, totalSpent: 0 }));
+    return all.map(c => ({ ...c, rfmScore: 0, segment: 'Best customers to target', orderCount: 0, totalSpent: 0 }));
   }
 
   const now = Date.now();
@@ -514,7 +514,7 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
     }
 
     const rfmScore = 0.30 * recency + 0.25 * frequency + 0.30 * monetary + 0.15 * affinity;
-    return { customerId: s._id, rfmScore, orderCount: s.orderCount, totalSpent: s.totalSpent };
+    return { customerId: s._id, rfmScore, recency, frequency, monetary, orderCount: s.orderCount, totalSpent: s.totalSpent };
   });
 
   scored.sort((a, b) => b.rfmScore - a.rfmScore);
@@ -522,15 +522,38 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
   const scoreMap = Object.fromEntries(scored.map(s => [s.customerId.toString(), s]));
 
   const customers = await Customer.find({ _id: { $in: topIds }, optedOut: { $ne: true } }).lean();
-  const enriched = customers.map(c => ({
-    ...c,
-    rfmScore:   +(scoreMap[c._id.toString()]?.rfmScore  * 100).toFixed(1),
-    orderCount: scoreMap[c._id.toString()]?.orderCount ?? 0,
-    totalSpent: +(scoreMap[c._id.toString()]?.totalSpent ?? 0).toFixed(2),
-  }));
+  const enriched = customers.map(c => {
+    const s = scoreMap[c._id.toString()];
+    return {
+      ...c,
+      rfmScore:   +(s?.rfmScore * 100).toFixed(1),
+      segment:    segmentFor(s),
+      orderCount: s?.orderCount ?? 0,
+      totalSpent: +(s?.totalSpent ?? 0).toFixed(2),
+    };
+  });
   enriched.sort((a, b) => b.rfmScore - a.rfmScore);
 
   return enriched;
+}
+
+// Turns the raw recency/frequency/monetary sub-scores (0-1, relative to this
+// customer pool) into one merchant-friendly label instead of a raw RFM number.
+// Order matters — most specific match wins:
+//   1. Gone quiet, but used to be a good customer  -> win-back candidate
+//   2. Gone quiet, never really engaged            -> just inactive
+//   3. Still active, spends often and a lot         -> high-value
+//   4. Everyone else worth targeting                -> general recommendation
+const RFM_HIGH = 0.6;
+const RFM_LOW  = 0.35;
+function segmentFor(s) {
+  if (!s) return 'Best customers to target';
+  const { recency, frequency, monetary } = s;
+  if (recency < RFM_LOW) {
+    return (frequency >= RFM_HIGH || monetary >= RFM_HIGH) ? 'Customers likely to return' : 'Inactive customers';
+  }
+  if (monetary >= RFM_HIGH && frequency >= RFM_HIGH) return 'High-value customers';
+  return 'Best customers to target';
 }
 
 async function sendPromotion({ promotionId, customerIds }) {
