@@ -25,6 +25,12 @@ const schema = new mongoose.Schema({
     default: 'delivered',
   },
   loyaltyPointsEarned: { type: Number, default: 0 },
+  // What originated this order, and its live Stripe payment state.
+  source:                { type: String, enum: ['campaign', 'manual', 'booking', 'product'], default: 'product' },
+  promotion:              { type: mongoose.Schema.Types.ObjectId, ref: 'Promotion' },
+  campaignMessage:        { type: mongoose.Schema.Types.ObjectId, ref: 'CampaignMessage' },
+  stripePaymentIntentId:  String,
+  paymentStatus:          { type: String, enum: ['pending', 'paid', 'failed', 'refunded'], default: 'pending' },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Order', schema);

@@ -13,9 +13,11 @@ const Promotion  = require('../models/Promotion');
 const Settings   = require('../models/Settings');
 const TimeSlot   = require('../models/TimeSlot');
 const Booking    = require('../models/Booking');
+const CampaignMessage = require('../models/CampaignMessage');
 const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
   sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
+  PROMO_TEMPLATE, LOYALTY_TEMPLATE,
 } = require('../utils/whatsapp');
 const { carts } = require('../utils/state');
 const { APP_URL } = require('../utils/config');
@@ -25,6 +27,10 @@ const { getCurrency } = settingsCache;
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const SHIPPING_COST = 0.5; // flat rate, matches server.js's WhatsApp checkout flow
+
+function wamidOf(sendResult) {
+  return sendResult?.messages?.[0]?.id;
+}
 
 // ─── Products ────────────────────────────────────────────────────────────────
 
@@ -108,11 +114,19 @@ async function cancelBooking({ bookingId }) {
   booking.status = 'cancelled';
   await booking.save();
   await TimeSlot.findByIdAndUpdate(booking.slotId._id, { $inc: { bookedCount: -1 } });
-  await sendRebookMessage(
-    booking.phone, booking.customerName || 'Valued Customer',
-    booking.serviceId?.name || 'your service', booking.slotId,
-    booking.serviceId?._id?.toString(), booking._id.toString(),
-  ).catch(() => {});
+  try {
+    const result = await sendRebookMessage(
+      booking.phone, booking.customerName || 'Valued Customer',
+      booking.serviceId?.name || 'your service', booking.slotId,
+      booking.serviceId?._id?.toString(), booking._id.toString(),
+    );
+    if (booking.customerId) {
+      await CampaignMessage.create({
+        kind: 'booking_notification', booking: booking._id, customer: booking.customerId, phone: booking.phone,
+        wamid: wamidOf(result), messageType: 'interactive', status: 'sent', sentAt: new Date(),
+      }).catch(() => {});
+    }
+  } catch (_) { /* best-effort notification — booking is already cancelled either way */ }
   return { success: true };
 }
 
@@ -127,10 +141,18 @@ async function rescheduleBooking({ bookingId, newSlotId }) {
   booking.slotId = newSlotId;
   booking.status = 'confirmed';
   await booking.save();
-  await waPost({
-    messaging_product: 'whatsapp', to: booking.phone, type: 'text',
-    text: { body: `📅 Your booking for *${booking.serviceId?.name}* has been rescheduled to *${newSlot.date} at ${newSlot.startTime}*. See you then! 🎉` },
-  }).catch(() => {});
+  try {
+    const result = await waPost({
+      messaging_product: 'whatsapp', to: booking.phone, type: 'text',
+      text: { body: `📅 Your booking for *${booking.serviceId?.name}* has been rescheduled to *${newSlot.date} at ${newSlot.startTime}*. See you then! 🎉` },
+    });
+    if (booking.customerId) {
+      await CampaignMessage.create({
+        kind: 'booking_notification', booking: booking._id, customer: booking.customerId, phone: booking.phone,
+        wamid: wamidOf(result), messageType: 'text', status: 'sent', sentAt: new Date(),
+      }).catch(() => {});
+    }
+  } catch (_) { /* best-effort notification — reschedule already applied either way */ }
   return { success: true };
 }
 
@@ -218,9 +240,40 @@ async function updateOrderStatus({ id, status }) {
   return order;
 }
 
+// Counts customers whose orders show a >60-day gap immediately before an order
+// with source:'campaign' — i.e. they'd gone quiet and a campaign brought them back.
+// Done in JS rather than a single aggregation pipeline: order volumes here are
+// small (a real small business, not an enterprise catalog), and the "gap between
+// consecutive orders per customer" shape is much easier to get right as a loop
+// than as a $map/$range aggregation expression.
+async function countInactiveRecovered() {
+  const orders = await Order.find({ status: { $ne: 'cancelled' } }, 'customer createdAt source')
+    .sort({ customer: 1, createdAt: 1 }).lean();
+  const byCustomer = new Map();
+  for (const o of orders) {
+    const key = o.customer.toString();
+    if (!byCustomer.has(key)) byCustomer.set(key, []);
+    byCustomer.get(key).push(o);
+  }
+  const INACTIVE_MS = 60 * 24 * 60 * 60 * 1000;
+  let recovered = 0;
+  for (const list of byCustomer.values()) {
+    for (let i = 1; i < list.length; i++) {
+      if (list[i].source === 'campaign' && (new Date(list[i].createdAt) - new Date(list[i - 1].createdAt)) > INACTIVE_MS) {
+        recovered++;
+        break; // count each customer at most once
+      }
+    }
+  }
+  return recovered;
+}
+
 async function getOrderStats() {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-  const [totalOrders, totalCustomers, recentRevenue, statusBreakdown, recentOrders] = await Promise.all([
+  const [
+    totalOrders, totalCustomers, recentRevenue, statusBreakdown, recentOrders,
+    repeatAgg, campaignRevenueAgg, campaignOrdersAgg, messagesSent, pointsAgg, inactiveRecovered,
+  ] = await Promise.all([
     Order.countDocuments(),
     Customer.countDocuments(),
     Order.aggregate([
@@ -229,8 +282,78 @@ async function getOrderStats() {
     ]),
     Order.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
     Order.find().populate('customer', 'firstname lastname').sort({ createdAt: -1 }).limit(10),
+    Order.aggregate([
+      { $match: { status: { $ne: 'cancelled' } } },
+      { $group: { _id: '$customer', count: { $sum: 1 } } },
+      { $match: { count: { $gt: 1 } } },
+      { $count: 'repeatCustomers' },
+    ]),
+    Order.aggregate([
+      { $match: { source: 'campaign', status: { $ne: 'cancelled' } } },
+      { $group: { _id: null, revenue: { $sum: '$total' } } },
+    ]),
+    Order.aggregate([
+      { $match: { source: 'campaign', status: { $ne: 'cancelled' } } },
+      { $count: 'count' },
+    ]),
+    CampaignMessage.countDocuments({ kind: 'promotion', status: { $in: ['sent', 'delivered', 'read'] } }),
+    Order.aggregate([
+      { $match: { status: { $ne: 'cancelled' } } },
+      { $group: { _id: null, points: { $sum: '$loyaltyPointsEarned' } } },
+    ]),
+    countInactiveRecovered(),
   ]);
-  return { totalOrders, totalCustomers, recentRevenue: recentRevenue[0]?.revenue ?? 0, statusBreakdown, recentOrders };
+
+  const campaignOrders = campaignOrdersAgg[0]?.count ?? 0;
+  const conversionRate = messagesSent > 0 ? +((campaignOrders / messagesSent) * 100).toFixed(1) : 0;
+
+  return {
+    totalOrders, totalCustomers, recentRevenue: recentRevenue[0]?.revenue ?? 0, statusBreakdown, recentOrders,
+    repeatCustomers: repeatAgg[0]?.repeatCustomers ?? 0,
+    campaignRevenue: campaignRevenueAgg[0]?.revenue ?? 0,
+    inactiveCustomersRecovered: inactiveRecovered,
+    messagesSent,
+    loyaltyPointsIssued: pointsAgg[0]?.points ?? 0,
+    conversionRate,
+  };
+}
+
+// Per-campaign funnel: sent → delivered → read → clicked → ordered → revenue/points.
+async function getCampaignReport({ promotionId }) {
+  const promotion = await Promotion.findById(promotionId);
+  if (!promotion) throw new Error('Promotion not found');
+
+  const agg = await CampaignMessage.aggregate([
+    { $match: { promotion: promotion._id, kind: 'promotion' } },
+    { $group: {
+      _id: null,
+      sent:         { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read']] }, 1, 0] } },
+      delivered:    { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read']] }, 1, 0] } },
+      read:         { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
+      failed:       { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
+      clicked:      { $sum: { $cond: [{ $ne: ['$clickedAt', null] }, 1, 0] } },
+      ordered:      { $sum: { $cond: [{ $ne: ['$order', null] }, 1, 0] } },
+      revenue:      { $sum: '$revenue' },
+      pointsIssued: { $sum: '$pointsIssued' },
+    } },
+  ]);
+
+  const c = agg[0] || { sent: 0, delivered: 0, read: 0, failed: 0, clicked: 0, ordered: 0, revenue: 0, pointsIssued: 0 };
+  const conversionRate = c.sent > 0 ? +((c.ordered / c.sent) * 100).toFixed(1) : 0;
+
+  return {
+    promotionId: promotion._id,
+    name: promotion.name,
+    messagesSent: c.sent,
+    messagesDelivered: c.delivered,
+    messagesRead: c.read,
+    messagesFailed: c.failed,
+    clicked: c.clicked,
+    ordersCreated: c.ordered,
+    revenue: +c.revenue.toFixed(2),
+    pointsIssued: c.pointsIssued,
+    conversionRate,
+  };
 }
 
 async function createOrder({ customerId, items, shippingAddress }) {
@@ -264,8 +387,19 @@ async function createOrder({ customerId, items, shippingAddress }) {
     metadata: { buyerPhone: customer.phone, subtotal: String(subtotal), shippingCost: String(SHIPPING_COST), address },
   });
 
+  // Visible in the dashboard immediately as pending — the Stripe webhook updates
+  // this same document (matched by stripePaymentIntentId) to paid/failed rather
+  // than creating a second one.
+  await Order.create({
+    customer: customer._id,
+    items: cartItems.map(it => ({ productName: it.name, category: it.description || 'General', quantity: 1, unitPrice: it.priceAud })),
+    subtotal, shippingCost: SHIPPING_COST, shippingAddress: address, total,
+    status: 'pending', paymentStatus: 'pending', source: 'manual',
+    stripePaymentIntentId: pi.id,
+  });
+
   // Shared with routes/pay.js and the Stripe webhook in server.js — this is what lets
-  // payment_intent.succeeded build the real Order with line items once the customer pays.
+  // payment_intent.succeeded update the Order above with the final payment state.
   carts.set(customer.phone, cartItems);
 
   const summary = cartItems.map((it, i) => `${i + 1}. ${it.name} — ${money(it.priceAud, currency)}`).join('\n');
@@ -345,7 +479,7 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
   ]);
 
   if (promotion.customerType === 'points') {
-    const all = await Customer.find().sort({ loyaltyPoints: -1 }).limit(topN).lean();
+    const all = await Customer.find({ optedOut: { $ne: true } }).sort({ loyaltyPoints: -1 }).limit(topN).lean();
     return all.map(c => ({
       ...c, rfmScore: 0, orderCount: 0, totalSpent: 0,
       hasEnoughPoints: c.loyaltyPoints >= (promotion.pointsPrice || 0),
@@ -353,7 +487,7 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
   }
 
   if (!stats.length) {
-    const all = await Customer.find().limit(topN).lean();
+    const all = await Customer.find({ optedOut: { $ne: true } }).limit(topN).lean();
     return all.map(c => ({ ...c, rfmScore: 0, orderCount: 0, totalSpent: 0 }));
   }
 
@@ -382,7 +516,7 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
   const topIds = scored.slice(0, topN).map(s => s.customerId);
   const scoreMap = Object.fromEntries(scored.map(s => [s.customerId.toString(), s]));
 
-  const customers = await Customer.find({ _id: { $in: topIds } }).lean();
+  const customers = await Customer.find({ _id: { $in: topIds }, optedOut: { $ne: true } }).lean();
   const enriched = customers.map(c => ({
     ...c,
     rfmScore:   +(scoreMap[c._id.toString()]?.rfmScore  * 100).toFixed(1),
@@ -398,7 +532,9 @@ async function sendPromotion({ promotionId, customerIds }) {
   if (!customerIds?.length) throw new Error('customerIds required');
   const promotion = await Promotion.findById(promotionId).populate('products').populate('services');
   if (!promotion) throw new Error('Promotion not found');
-  const customers = await Customer.find({ _id: { $in: customerIds } });
+  const requested = await Customer.find({ _id: { $in: customerIds } });
+  const customers = requested.filter(c => !c.optedOut);
+  const skippedOptedOut = requested.length - customers.length;
 
   let items = [];
   if (promotion.scope === 'services') {
@@ -411,36 +547,72 @@ async function sendPromotion({ promotionId, customerIds }) {
   const errors = [];
   for (const customer of customers) {
     let sent = false;
+    let result = null;
+    let messageType = 'interactive';
+    let templateName;
+    let failReason;
+
     try {
-      if (promotion.customerType === 'points') await sendPointsPromoMessage(customer.phone, customer, promotion, items);
-      else await sendPromoAnnouncement(customer.phone, customer, promotion, items);
+      if (promotion.customerType === 'points') result = await sendPointsPromoMessage(customer.phone, customer, promotion, items);
+      else result = await sendPromoAnnouncement(customer.phone, customer, promotion, items);
       sent = true; sentCount++;
     } catch (_) { /* fall through to template fallback */ }
 
     if (!sent && promotion.customerType !== 'points' && items.length && promotion.scope !== 'services') {
-      try { await sendPromoTemplate(customer.phone, customer, items[0], promotion); sentCount++; }
-      catch (err) { errors.push({ customer: customer._id, error: err.message }); }
+      try {
+        result = await sendPromoTemplate(customer.phone, customer, items[0], promotion);
+        sentCount++; sent = true; messageType = 'template'; templateName = PROMO_TEMPLATE;
+      } catch (err) {
+        failReason = err.message;
+        errors.push({ customer: customer._id, error: err.message });
+      }
     } else if (!sent) {
-      errors.push({ customer: customer._id, error: 'Send failed' });
+      failReason = 'Send failed';
+      errors.push({ customer: customer._id, error: failReason });
     }
+
+    await CampaignMessage.create({
+      kind: 'promotion', promotion: promotion._id, customer: customer._id, phone: customer.phone,
+      wamid: wamidOf(result), messageType, templateName,
+      status: sent ? 'sent' : 'failed', sentAt: sent ? new Date() : undefined, statusReason: sent ? undefined : failReason,
+    }).catch(() => {}); // best-effort — a tracking-write failure shouldn't break the send loop
+
     await new Promise(r => setTimeout(r, 300));
   }
 
   await Promotion.findByIdAndUpdate(promotionId, { sentAt: new Date(), sentCount, status: 'active' });
-  return { success: true, sentCount, errors };
+  return { success: true, sentCount, skippedOptedOut, errors };
 }
 
 async function sendLoyaltyReminders({ customerIds } = {}) {
   const filter = customerIds?.length ? { _id: { $in: customerIds } } : { loyaltyPoints: { $gt: 0 } };
-  const customers = await Customer.find(filter);
+  const requested = await Customer.find(filter);
+  const customers = requested.filter(c => !c.optedOut);
+  const skippedOptedOut = requested.filter(c => c.optedOut).length;
   let sentCount = 0;
   for (const c of customers) {
     if (!c.loyaltyPoints) continue;
-    try { await sendLoyaltyTemplate(c.phone, c.firstname, c.loyaltyPoints); sentCount++; }
-    catch { try { await sendLoyaltyReminder(c.phone, c.firstname, c.loyaltyPoints); sentCount++; } catch (_) {} }
+    let result = null;
+    let sent = false;
+    let messageType = 'template';
+    let templateName = LOYALTY_TEMPLATE;
+    try {
+      result = await sendLoyaltyTemplate(c.phone, c.firstname, c.loyaltyPoints);
+      sent = true; sentCount++;
+    } catch {
+      try {
+        result = await sendLoyaltyReminder(c.phone, c.firstname, c.loyaltyPoints);
+        sent = true; sentCount++; messageType = 'interactive'; templateName = undefined;
+      } catch (_) {}
+    }
+    await CampaignMessage.create({
+      kind: 'loyalty_reminder', customer: c._id, phone: c.phone,
+      wamid: wamidOf(result), messageType, templateName,
+      status: sent ? 'sent' : 'failed', sentAt: sent ? new Date() : undefined,
+    }).catch(() => {});
     await new Promise(r => setTimeout(r, 300));
   }
-  return { success: true, sentCount };
+  return { success: true, sentCount, skippedOptedOut };
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────
@@ -466,6 +638,6 @@ module.exports = {
   listCustomers, getCustomer, createCustomer, updateCustomer,
   listOrders, getOrder, updateOrderStatus, getOrderStats, createOrder, getPaymentStatus,
   listPromotions, getPromotion, createPromotion, updatePromotion, deletePromotion,
-  getRecommendedCustomers, sendPromotion, sendLoyaltyReminders,
+  getRecommendedCustomers, sendPromotion, sendLoyaltyReminders, getCampaignReport,
   getLoyaltySettings, updateLoyaltySettings,
 };

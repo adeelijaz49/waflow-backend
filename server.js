@@ -13,6 +13,7 @@ const { PORT, APP_URL } = require("./utils/config");
 const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pendingSlotSelections, pendingServiceCheckouts, pendingVariantSelections } = require("./utils/state");
 const { money } = require("./utils/currency");
 const { getCurrency } = require("./utils/settingsCache");
+const CampaignMessage = require("./models/CampaignMessage");
 
 const app  = express();
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
@@ -122,6 +123,60 @@ function generateProductId() {
 // carts / pendingCatalogs / pendingAddressReqs live in ./utils/state (shared with routes/pay.js)
 const pendingProducts = new Map(); // randomId → { name, priceAud, description }
 
+// ─── Campaign message tracking (delivery status + click correlation) ────────
+// Rank for monotonic status updates — never let an out-of-order webhook event
+// downgrade an already-more-advanced status (e.g. a late "sent" arriving after
+// "read" already landed).
+const STATUS_RANK = { queued: 0, sent: 1, failed: 1, delivered: 2, read: 3 };
+
+async function handleStatusCallbacks(statuses) {
+  for (const s of statuses) {
+    try {
+      const cm = await CampaignMessage.findOne({ wamid: s.id });
+      if (!cm) continue;
+      if ((STATUS_RANK[s.status] ?? 0) < (STATUS_RANK[cm.status] ?? 0)) continue;
+
+      const update = { status: s.status };
+      const ts = s.timestamp ? new Date(+s.timestamp * 1000) : new Date();
+      if (s.status === "sent")      update.sentAt = ts;
+      if (s.status === "delivered") update.deliveredAt = ts;
+      if (s.status === "read")      update.readAt = ts;
+      if (s.status === "failed")    update.statusReason = s.errors?.[0]?.title || s.errors?.[0]?.message;
+
+      await CampaignMessage.findByIdAndUpdate(cm._id, update);
+    } catch (err) {
+      console.error("handleStatusCallbacks error:", err.message);
+    }
+  }
+}
+
+// Correlates an inbound button tap back to the CampaignMessage that prompted it —
+// precise match via the wamid in `context.id` (the message being replied to), with
+// a (promotion, customer, most-recent-sent) fallback if context is unavailable.
+async function correlateClick({ from, wamid, promotionId }) {
+  try {
+    let cm = null;
+    if (wamid) {
+      cm = await CampaignMessage.findOneAndUpdate({ wamid }, { clickedAt: new Date() }, { new: true });
+    }
+    if (!cm && promotionId) {
+      const Customer = require("./models/Customer");
+      const customer = await Customer.findOne({ phone: from });
+      if (customer) {
+        cm = await CampaignMessage.findOneAndUpdate(
+          { promotion: promotionId, customer: customer._id, status: { $in: ["sent", "delivered", "read"] } },
+          { clickedAt: new Date() },
+          { sort: { createdAt: -1 }, new: true },
+        );
+      }
+    }
+    return cm;
+  } catch (err) {
+    console.error("correlateClick error:", err.message);
+    return null;
+  }
+}
+
 // ─── Stripe helpers ──────────────────────────────────────────────────────────
 function buildCartSummary(cart, currency) {
   return cart.map((item, i) => `${i + 1}. ${item.name} — ${money(item.priceAud, currency)}`).join("\n");
@@ -129,7 +184,7 @@ function buildCartSummary(cart, currency) {
 
 const SHIPPING_COST = 0.5;
 
-async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, address, currency) {
+async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, address, currency, promotionId, campaignMessageId) {
   const total = +(subtotal + shippingCost).toFixed(2);
   return stripe.paymentIntents.create({
     amount: Math.round(total * 100),
@@ -140,6 +195,8 @@ async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, add
       subtotal:     String(subtotal),
       shippingCost: String(shippingCost),
       address:      address || "",
+      promotionId:       promotionId ? String(promotionId) : "",
+      campaignMessageId: campaignMessageId ? String(campaignMessageId) : "",
     },
   });
 }
@@ -148,9 +205,27 @@ async function proceedToPayment(from, customer, cart) {
   const currency = await getCurrency();
   const subtotal = +cart.reduce((s, i) => s + i.priceAud, 0).toFixed(2);
   const total    = +(subtotal + SHIPPING_COST).toFixed(2);
+  const catalog  = pendingCatalogs.get(from);
+  const promotion = catalog?.promotion || null;
+  const campaignMessageId = catalog?.campaignMessageId || null;
+  const source = promotion ? "campaign" : "product";
 
   try {
-    const pi = await createPaymentIntent(from, cart, SHIPPING_COST, subtotal, customer.address, currency);
+    const pi = await createPaymentIntent(from, cart, SHIPPING_COST, subtotal, customer.address, currency, promotion?._id, campaignMessageId);
+
+    // Visible in the dashboard immediately as pending — the Stripe webhook updates
+    // this same document (matched by stripePaymentIntentId) to paid/failed.
+    const Order = require("./models/Order");
+    await Order.create({
+      customer: customer._id,
+      items: cart.map(item => ({ productName: item.name, category: item.description || "General", quantity: 1, unitPrice: item.priceAud })),
+      subtotal, shippingCost: SHIPPING_COST, shippingAddress: customer.address, total,
+      status: "pending", paymentStatus: "pending", source,
+      promotion: promotion?._id || undefined,
+      campaignMessage: campaignMessageId || undefined,
+      stripePaymentIntentId: pi.id,
+    });
+
     await waPost({
       messaging_product: "whatsapp", to: from, type: "text",
       text: {
@@ -165,14 +240,17 @@ async function proceedToPayment(from, customer, cart) {
   }
 }
 
-async function proceedToPointsConfirmation(from, customer, cart, promotion) {
+async function proceedToPointsConfirmation(from, customer, cart) {
+  const catalog = pendingCatalogs.get(from);
+  const promotion = catalog?.promotion || null;
+  const campaignMessageId = catalog?.campaignMessageId || null;
   const totalPointsCost = cart.reduce((s, i) => s + (i.pointsCost || 0), 0) || (promotion?.pointsPrice || 0) * cart.length;
   if (customer.loyaltyPoints < totalPointsCost) {
     await waPost({ messaging_product: "whatsapp", to: from, type: "text",
       text: { body: `⚠️ You need ${totalPointsCost} pts but only have ${customer.loyaltyPoints} pts. Add fewer items or earn more points first.` } }).catch(() => {});
     return;
   }
-  pendingPointsCheckouts.set(from, { cart, promotion, totalPointsCost, address: customer.address });
+  pendingPointsCheckouts.set(from, { cart, promotion, campaignMessageId, totalPointsCost, address: customer.address });
   const itemList  = cart.map(i => `• ${i.name}`).join("\n");
   const remaining = customer.loyaltyPoints - totalPointsCost;
   await waPost({
@@ -190,6 +268,13 @@ async function handleStripeWebhook(req, res) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  if (event.type === "payment_intent.payment_failed") {
+    const pi = event.data.object;
+    const Order = require('./models/Order');
+    await Order.findOneAndUpdate({ stripePaymentIntentId: pi.id }, { paymentStatus: 'failed' }).catch(() => {});
+    return res.sendStatus(200);
+  }
+
   if (event.type === "payment_intent.succeeded") {
     const pi          = event.data.object;
     const buyerPhone   = pi.metadata?.buyerPhone;
@@ -204,6 +289,7 @@ async function handleStripeWebhook(req, res) {
           const Customer = require('./models/Customer');
           const TimeSlot = require('./models/TimeSlot');
           const Booking  = require('./models/Booking');
+          const Order    = require('./models/Order');
           const customer = await Customer.findOne({ phone: buyerPhone });
           await TimeSlot.findByIdAndUpdate(slotId, { $inc: { bookedCount: 1 } });
           await Booking.create({
@@ -217,6 +303,32 @@ async function handleStripeWebhook(req, res) {
             amount:        pi.amount / 100,
             stripePaymentIntentId: pi.id,
           });
+
+          // Shadow order so paid bookings show up in the same revenue/points
+          // reporting as product orders (services otherwise never touch Order).
+          let loyaltySettings = { loyaltyPointsPerUnit: 100, minPointsPerPurchase: 100 };
+          try { loyaltySettings = (await require('./models/Settings').findOne()) || loyaltySettings; } catch (_) {}
+          const bookingAmount = pi.amount / 100;
+          const bookingPoints = Math.max(loyaltySettings.minPointsPerPurchase, Math.round(bookingAmount * loyaltySettings.loyaltyPointsPerUnit));
+          const promotionId = pi.metadata?.promotionId || undefined;
+          const campaignMessageId = pi.metadata?.campaignMessageId || undefined;
+          const order = await Order.create({
+            customer: customer?._id,
+            items: [{ productName: serviceName, category: 'Service', quantity: 1, unitPrice: bookingAmount }],
+            subtotal: bookingAmount, total: bookingAmount,
+            status: 'confirmed', paymentStatus: 'paid', source: promotionId ? 'campaign' : 'booking',
+            promotion: promotionId, campaignMessage: campaignMessageId,
+            stripePaymentIntentId: pi.id, loyaltyPointsEarned: bookingPoints,
+          });
+          if (customer) {
+            await Customer.findByIdAndUpdate(customer._id, { $inc: { loyaltyPoints: bookingPoints } });
+          }
+          if (campaignMessageId) {
+            await CampaignMessage.findByIdAndUpdate(campaignMessageId, {
+              order: order._id, revenue: bookingAmount, pointsIssued: bookingPoints,
+            }).catch(() => {});
+          }
+
           await waPost({ messaging_product: "whatsapp", to: buyerPhone, type: "text",
             text: { body: `✅ *Booking Confirmed!*\n\n📋 ${serviceName}\n📅 ${slotLabel}\n💰 ${money(amountAud, currency)} paid\n\nSee you then! 🎉` },
           }).catch(err => console.error("Service booking WA error:", err.message));
@@ -230,6 +342,8 @@ async function handleStripeWebhook(req, res) {
     const subtotal     = parseFloat(pi.metadata?.subtotal || '0');
     const shippingCost = parseFloat(pi.metadata?.shippingCost || '0');
     const address      = pi.metadata?.address || '';
+    const promotionId       = pi.metadata?.promotionId || undefined;
+    const campaignMessageId = pi.metadata?.campaignMessageId || undefined;
     let loyaltySettings = { loyaltyPointsPerUnit: 100, minPointsPerPurchase: 100 };
     try { loyaltySettings = (await require('./models/Settings').findOne()) || loyaltySettings; } catch (_) {}
     const points = Math.max(loyaltySettings.minPointsPerPurchase, Math.round(subtotal * loyaltySettings.loyaltyPointsPerUnit));
@@ -238,7 +352,7 @@ async function handleStripeWebhook(req, res) {
     carts.delete(buyerPhone);
 
     if (buyerPhone) {
-      // Persist loyalty points + create order in MongoDB
+      // Persist loyalty points + update/create the order in MongoDB
       try {
         const Customer = require('./models/Customer');
         const Order    = require('./models/Order');
@@ -247,8 +361,18 @@ async function handleStripeWebhook(req, res) {
           { $inc: { loyaltyPoints: points } },
           { new: true }
         );
-        if (customer && cartItems.length) {
-          await Order.create({
+
+        // The pending Order created at checkout time (proceedToPayment /
+        // shared/operations.js#createOrder) is the normal path — update it in
+        // place. Fall back to creating one fresh if none is found (e.g. an
+        // older in-flight payment from before pending-order creation existed).
+        let order = await Order.findOneAndUpdate(
+          { stripePaymentIntentId: pi.id },
+          { status: 'confirmed', paymentStatus: 'paid', loyaltyPointsEarned: points },
+          { new: true },
+        );
+        if (!order && customer && cartItems.length) {
+          order = await Order.create({
             customer: customer._id,
             items: cartItems.map(item => ({
               productName: item.name,
@@ -261,8 +385,18 @@ async function handleStripeWebhook(req, res) {
             shippingAddress:     address,
             total:               pi.amount / 100,
             status:              'confirmed',
+            paymentStatus:       'paid',
+            source:              promotionId ? 'campaign' : 'product',
+            promotion:           promotionId,
+            campaignMessage:     campaignMessageId,
+            stripePaymentIntentId: pi.id,
             loyaltyPointsEarned: points,
           });
+        }
+        if (order && campaignMessageId) {
+          await CampaignMessage.findByIdAndUpdate(campaignMessageId, {
+            order: order._id, revenue: order.total, pointsIssued: points,
+          }).catch(() => {});
         }
       } catch (err) {
         console.error("MongoDB post-payment update error:", err.message);
@@ -290,7 +424,7 @@ app.get("/webhook", (req, res) => {
 // ─── Promo catalog helpers ────────────────────────────────────────────────────
 const { sendCatalog, sendProductCarousel, sendVariantPicker, sendPromoAnnouncement, sendServiceSlots } = require("./utils/whatsapp");
 
-async function handlePromoInterest(from, promoId) {
+async function handlePromoInterest(from, promoId, campaignMessageId) {
   try {
     const Promotion = require("./models/Promotion");
     const Product   = require("./models/Product");
@@ -299,7 +433,7 @@ async function handlePromoInterest(from, promoId) {
     if (!promo) return;
 
     if (promo.scope === "services") {
-      return handleServicePromoInterest(from, promo);
+      return handleServicePromoInterest(from, promo, campaignMessageId);
     }
 
     let products = promo.products || [];
@@ -313,7 +447,7 @@ async function handlePromoInterest(from, promoId) {
       return;
     }
 
-    pendingCatalogs.set(from, { products, promotion: promo, batchStart: 0 });
+    pendingCatalogs.set(from, { products, promotion: promo, batchStart: 0, campaignMessageId });
     await sendProductCarousel(from, products, promo, 0);
   } catch (err) {
     console.error("handlePromoInterest error:", err.message);
@@ -390,7 +524,7 @@ async function handleProductSelection(from, productId, variantLabel) {
 }
 
 // Shows available time slots when a customer taps a service promotion
-async function handleServicePromoInterest(from, promo) {
+async function handleServicePromoInterest(from, promo, campaignMessageId) {
   try {
     const Service  = require("./models/Service");
     const TimeSlot = require("./models/TimeSlot");
@@ -411,7 +545,7 @@ async function handleServicePromoInterest(from, promo) {
       $expr:       { $lt: ["$bookedCount", "$capacity"] },
     }).sort({ date: 1, startTime: 1 }).limit(10);
 
-    pendingSlotSelections.set(from, { service, promotion: promo, slots, isFree: false });
+    pendingSlotSelections.set(from, { service, promotion: promo, slots, isFree: false, campaignMessageId });
     await sendServiceSlots(from, service, slots, promo._id.toString(), false);
   } catch (err) {
     console.error("handleServicePromoInterest error:", err.message);
@@ -494,6 +628,8 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
           slotId:      slot._id.toString(),
           serviceName: service.name,
           slotLabel:   `${slot.date} at ${slot.startTime}`,
+          promotionId:       promotion?._id ? String(promotion._id) : "",
+          campaignMessageId: pending?.campaignMessageId ? String(pending.campaignMessageId) : "",
         },
       });
 
@@ -532,7 +668,15 @@ async function handleRebookRequest(from, serviceId, oldBookingId) {
 // ─── WhatsApp incoming messages ──────────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
-  const message = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+
+  // Delivery/read/failed callbacks for outbound messages — no inbound message here.
+  if (value?.statuses?.length) {
+    await handleStatusCallbacks(value.statuses);
+    return;
+  }
+
+  const message = value?.messages?.[0];
   if (!message) return;
 
   const from = message.from;
@@ -542,7 +686,9 @@ app.post("/webhook", async (req, res) => {
   if (message.type === "button") {
     const payload = message.button?.payload || "";
     if (payload.startsWith("promo_")) {
-      await handlePromoInterest(from, payload.slice(6));
+      const promoId = payload.slice(6);
+      const cm = await correlateClick({ from, wamid: message.context?.id, promotionId: promoId });
+      await handlePromoInterest(from, promoId, cm?._id);
     }
     return;
   }
@@ -595,7 +741,9 @@ app.post("/webhook", async (req, res) => {
 
       } else if (buttonId.startsWith("promo_")) {
         // "Shop Now" / "Book Now" tapped on promo message → show catalog or slots
-        await handlePromoInterest(from, buttonId.slice(6));
+        const promoId = buttonId.slice(6);
+        const cm = await correlateClick({ from, wamid: message.context?.id, promotionId: promoId });
+        await handlePromoInterest(from, promoId, cm?._id);
 
       } else if (buttonId.startsWith("int_")) {
         // Legacy: manual single-product send from /send-message endpoint
@@ -668,10 +816,8 @@ app.post("/webhook", async (req, res) => {
             text: { body: "We couldn't find your profile. Please contact support." } }).catch(() => {});
           return;
         }
-        const catalog   = pendingCatalogs.get(from);
-        const promotion = catalog?.promotion;
         if (customer.address) {
-          await proceedToPointsConfirmation(from, customer, cart, promotion);
+          await proceedToPointsConfirmation(from, customer, cart);
         } else {
           pendingAddressReqs.set(from, 'points');
           await waPost({ messaging_product: "whatsapp", to: from, type: "text",
@@ -685,6 +831,24 @@ app.post("/webhook", async (req, res) => {
   // ── Text message ──────────────────────────────────────────────────────────────
   if (message.type === "text") {
     const text = message.text?.body?.trim() || "";
+    const upperText = text.toUpperCase();
+
+    // Opt-out / opt-back-in — checked first, ahead of any pending flow, per
+    // the "Reply STOP to unsubscribe" promise already in the promo template footer.
+    if (upperText === "STOP" || upperText === "UNSUBSCRIBE") {
+      const Customer = require("./models/Customer");
+      await Customer.findOneAndUpdate({ phone: from }, { optedOut: true, optedOutAt: new Date() });
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: "You've been unsubscribed from promotional messages. Reply START to opt back in anytime." } }).catch(() => {});
+      return;
+    }
+    if (upperText === "START" || upperText === "SUBSCRIBE") {
+      const Customer = require("./models/Customer");
+      await Customer.findOneAndUpdate({ phone: from }, { optedOut: false, optedOutAt: null });
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: "You're subscribed to promotional messages again. Welcome back! 🎉" } }).catch(() => {});
+      return;
+    }
 
     // Awaiting YES/NO for points service booking confirmation
     if (pendingServiceCheckouts.has(from)) {
@@ -755,7 +919,7 @@ app.post("/webhook", async (req, res) => {
             return;
           }
           if (pending.cart.length) {
-            await Order.create({
+            const order = await Order.create({
               customer:         customer._id,
               items:            pending.cart.map(i => ({ productName: i.name, category: i.description || 'General', quantity: 1, unitPrice: 0 })),
               subtotal:         0,
@@ -765,8 +929,15 @@ app.post("/webhook", async (req, res) => {
               loyaltyPointsUsed:  pending.totalPointsCost,
               loyaltyDiscount:    pending.totalPointsCost,
               status:           'confirmed',
+              paymentStatus:    'paid',
+              source:           pending.promotion ? 'campaign' : 'product',
+              promotion:        pending.promotion?._id,
+              campaignMessage:  pending.campaignMessageId,
               loyaltyPointsEarned: 0,
             });
+            if (pending.campaignMessageId) {
+              await CampaignMessage.findByIdAndUpdate(pending.campaignMessageId, { order: order._id }).catch(() => {});
+            }
           }
           await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
             text: { body: `✅ *Order Confirmed!*\n\n💎 ${pending.totalPointsCost} points redeemed successfully.\n📍 Delivering to: ${pending.address}\n\nRemaining points: ${customer.loyaltyPoints} pts\n\nThank you for shopping with us! 🎉` } }).catch(() => {});
@@ -801,8 +972,7 @@ app.post("/webhook", async (req, res) => {
         return;
       }
       if (addrType === 'points') {
-        const catalog = pendingCatalogs.get(from);
-        await proceedToPointsConfirmation(from, customer, cart, catalog?.promotion);
+        await proceedToPointsConfirmation(from, customer, cart);
       } else {
         await proceedToPayment(from, customer, cart);
       }
@@ -863,7 +1033,13 @@ app.post("/send-message", upload.array("images"), async (req, res) => {
 
 app.get("/", (req, res) => res.send("Waflow backend running"));
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  tokenManager.init(); // validate + auto-refresh WA token in background
-});
+// Guarded so tests can `require('./server')` for its exported `app` (Supertest)
+// without also binding a port or kicking off the WA token refresh.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+    tokenManager.init(); // validate + auto-refresh WA token in background
+  });
+}
+
+module.exports = app;

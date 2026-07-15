@@ -298,6 +298,12 @@ function createMcpServer() {
     inputSchema: { customerIds: z.array(z.string()).optional() },
   }, wrap(ops.sendLoyaltyReminders));
 
+  server.registerTool('get_campaign_report', {
+    title: 'Get campaign report',
+    description: 'Funnel report for a sent promotion: messages sent/delivered/read/failed, clicks, orders created, revenue, points issued, conversion rate.',
+    inputSchema: { promotionId: z.string() },
+  }, wrap(ops.getCampaignReport));
+
   // ─── Settings ────────────────────────────────────────────────────────────
   server.registerTool('get_loyalty_settings', {
     title: 'Get loyalty settings',

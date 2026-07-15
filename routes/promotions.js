@@ -57,6 +57,17 @@ router.get('/:id/recommended-customers', async (req, res) => {
   }
 });
 
+// ─── Campaign report (sent/delivered/read/clicked/orders/revenue/points) ─────
+
+router.get('/:id/report', async (req, res) => {
+  try {
+    res.json(await ops.getCampaignReport({ promotionId: req.params.id }));
+  } catch (err) {
+    if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Send WhatsApp promotion ─────────────────────────────────────────────────
 
 router.post('/:id/send', async (req, res) => {

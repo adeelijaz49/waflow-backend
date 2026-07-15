@@ -63,6 +63,7 @@ router.patch('/promotions/:id', h(req => ops.updatePromotion({ id: req.params.id
 router.delete('/promotions/:id', h(req => ops.deletePromotion({ id: req.params.id })));
 router.get('/promotions/:id/recommended-customers', h(req => ops.getRecommendedCustomers({ promotionId: req.params.id, limit: req.query.limit ? +req.query.limit : undefined })));
 router.post('/promotions/:id/send', h(req => ops.sendPromotion({ promotionId: req.params.id, customerIds: req.body.customerIds })));
+router.get('/promotions/:id/report', h(req => ops.getCampaignReport({ promotionId: req.params.id })));
 
 router.post('/loyalty/remind', h(req => ops.sendLoyaltyReminders(req.body)));
 

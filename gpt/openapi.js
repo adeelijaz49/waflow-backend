@@ -382,6 +382,15 @@ function buildOpenApiSpec() {
         },
       },
 
+      '/promotions/{id}/report': {
+        get: {
+          operationId: 'getCampaignReport',
+          summary: 'Funnel report for a sent promotion: messages sent/delivered/read/failed, clicks, orders created, revenue, points issued, conversion rate.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+
       '/loyalty/remind': {
         post: {
           operationId: 'sendLoyaltyReminders',
