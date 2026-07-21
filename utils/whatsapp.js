@@ -14,6 +14,7 @@ const PROMO_TEMPLATE   = process.env.WA_PROMO_TEMPLATE   || 'waflow_promo';
 const LOYALTY_TEMPLATE = process.env.WA_LOYALTY_TEMPLATE || 'waflow_loyalty';
 const WINBACK_TEMPLATE = process.env.WA_WINBACK_TEMPLATE || 'waflow_winback';
 const POST_PURCHASE_TEMPLATE = process.env.WA_POST_PURCHASE_TEMPLATE || 'waflow_post_purchase';
+const POINTS_NUDGE_TEMPLATE = process.env.WA_POINTS_NUDGE_TEMPLATE || 'waflow_points_nudge';
 
 let cachedWabaId = process.env.WA_WABA_ID || null;
 
@@ -232,6 +233,27 @@ async function createPostPurchaseTemplate() {
   return res.data;
 }
 
+async function createPointsNudgeTemplate() {
+  // Variables: {{1}} first name, {{2}} loyalty points
+  const body = 'Hi {{1}}! 💎 You still have *{{2}} loyalty points* waiting to be used.\n\nCome in and redeem them before you forget!';
+  const wabaId = await getWabaId();
+  const res = await axios.post(
+    `${WA_BASE}/${wabaId}/message_templates`,
+    {
+      name: POINTS_NUDGE_TEMPLATE,
+      language: 'en',
+      category: 'MARKETING',
+      components: [
+        { type: 'BODY', text: body },
+        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
+      ],
+    },
+    { headers: getHeaders() },
+  );
+  return res.data;
+}
+
 // ── Template sending ──────────────────────────────────────────────────────────
 
 async function sendPromoTemplate(to, customer, product, promotion) {
@@ -325,6 +347,33 @@ async function sendPostPurchaseTemplate(to, customerName, loyaltyPoints, flowId,
     type: 'template',
     template: {
       name:     POST_PURCHASE_TEMPLATE,
+      language: { code: 'en' },
+      components: [
+        {
+          type: 'body',
+          parameters: [
+            { type: 'text', text: customerName || 'Valued Customer' },
+            { type: 'text', text: String(loyaltyPoints) },
+          ],
+        },
+        {
+          type: 'button',
+          sub_type: 'quick_reply',
+          index: '0',
+          parameters: [{ type: 'payload', payload: `flowbrowse_${flowId}_${enrollmentId}` }],
+        },
+      ],
+    },
+  });
+}
+
+async function sendPointsNudgeTemplate(to, customerName, loyaltyPoints, flowId, enrollmentId) {
+  return waPost({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name:     POINTS_NUDGE_TEMPLATE,
       language: { code: 'en' },
       components: [
         {
@@ -756,11 +805,13 @@ module.exports = {
   createLoyaltyTemplate,
   createWinbackTemplate,
   createPostPurchaseTemplate,
+  createPointsNudgeTemplate,
   deleteTemplate,
   sendPromoTemplate,
   sendLoyaltyTemplate,
   sendWinbackTemplate,
   sendPostPurchaseTemplate,
+  sendPointsNudgeTemplate,
   // Catalog
   sendCatalog,
   // Announcement + carousel
@@ -783,4 +834,5 @@ module.exports = {
   LOYALTY_TEMPLATE,
   WINBACK_TEMPLATE,
   POST_PURCHASE_TEMPLATE,
+  POINTS_NUDGE_TEMPLATE,
 };

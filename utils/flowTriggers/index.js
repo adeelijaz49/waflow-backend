@@ -1,5 +1,6 @@
 const inactiveCustomer = require('./inactiveCustomer');
 const postPurchasePoints = require('./postPurchasePoints');
+const pointsBalanceReminder = require('./pointsBalanceReminder');
 
 // Registry mapping Flow.triggerType -> a plugin exposing exactly three
 // functions. utils/flowScheduler.js (the engine) is entirely trigger-agnostic
@@ -25,6 +26,6 @@ const postPurchasePoints = require('./postPurchasePoints');
 module.exports = {
   inactive_customer: inactiveCustomer,
   post_purchase_points: postPurchasePoints,
-  // points_balance_reminder: added in Phase 3
+  points_balance_reminder: pointsBalanceReminder,
   // booking_no_show: added in Phase 4
 };

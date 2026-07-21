@@ -7,6 +7,7 @@ const schema = new mongoose.Schema({
   email:     { type: String },
   address:   { type: String },
   loyaltyPoints: { type: Number, default: 0 },
+  loyaltyPointsUpdatedAt: { type: Date }, // set whenever loyaltyPoints changes — drives the points_balance_reminder flow trigger
   isDemo:    { type: Boolean, default: false }, // flags seeded demo customers (see seed/seed-demo.js)
   optedOut:    { type: Boolean, default: false }, // replied STOP — blocks marketing sends (promotions, loyalty reminders)
   optedOutAt:  { type: Date },

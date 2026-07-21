@@ -484,7 +484,7 @@ function buildOpenApiSpec() {
         },
         post: {
           operationId: 'createFlow',
-          summary: 'Create a new automated flow (starts paused). Only inactive_customer and post_purchase_points are supported so far.',
+          summary: 'Create a new automated flow (starts paused). Only inactive_customer, post_purchase_points, and points_balance_reminder are supported so far.',
           requestBody: { required: true, content: { 'application/json': { schema: {
             type: 'object',
             required: ['name', 'triggerType'],

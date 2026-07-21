@@ -6,6 +6,7 @@
     "start": "node server.js",
     "seed": "node seed/seed.js",
     "seed:demo": "node seed/seed-demo.js",
+    "seed:backfill-loyalty": "node seed/backfill-loyalty-updated-at.js",
     "test": "jest --runInBand --forceExit"
   },
   "keywords": [],

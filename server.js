@@ -323,7 +323,7 @@ async function handleStripeWebhook(req, res) {
             stripePaymentIntentId: pi.id, loyaltyPointsEarned: bookingPoints,
           });
           if (customer) {
-            await Customer.findByIdAndUpdate(customer._id, { $inc: { loyaltyPoints: bookingPoints } });
+            await Customer.findByIdAndUpdate(customer._id, { $inc: { loyaltyPoints: bookingPoints }, $set: { loyaltyPointsUpdatedAt: new Date() } });
           }
           if (campaignMessageId) {
             const cm = await CampaignMessage.findByIdAndUpdate(campaignMessageId, {
@@ -363,7 +363,7 @@ async function handleStripeWebhook(req, res) {
         const Order    = require('./models/Order');
         const customer = await Customer.findOneAndUpdate(
           { phone: buyerPhone },
-          { $inc: { loyaltyPoints: points } },
+          { $inc: { loyaltyPoints: points }, $set: { loyaltyPointsUpdatedAt: new Date() } },
           { new: true }
         );
 
@@ -950,7 +950,7 @@ app.post("/webhook", async (req, res) => {
 
           const customer = await Customer.findOneAndUpdate(
             { phone: from, loyaltyPoints: { $gte: pending.totalPointsCost } },
-            { $inc: { loyaltyPoints: -pending.totalPointsCost } },
+            { $inc: { loyaltyPoints: -pending.totalPointsCost }, $set: { loyaltyPointsUpdatedAt: new Date() } },
             { new: true }
           );
           if (!customer) {
@@ -996,7 +996,7 @@ app.post("/webhook", async (req, res) => {
           const Order    = require('./models/Order');
           const customer = await Customer.findOneAndUpdate(
             { phone: from, loyaltyPoints: { $gte: pending.totalPointsCost } },
-            { $inc: { loyaltyPoints: -pending.totalPointsCost } },
+            { $inc: { loyaltyPoints: -pending.totalPointsCost }, $set: { loyaltyPointsUpdatedAt: new Date() } },
             { new: true }
           );
           if (!customer) {

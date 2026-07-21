@@ -28,6 +28,7 @@ router.get('/templates', async (req, res) => {
       [wa.LOYALTY_TEMPLATE]: 'loyalty',
       [wa.WINBACK_TEMPLATE]: 'winback',
       [wa.POST_PURCHASE_TEMPLATE]: 'post_purchase',
+      [wa.POINTS_NUDGE_TEMPLATE]: 'points_nudge',
     };
     const annotated = templates.map(t => ({ ...t, waflowRole: roleByName[t.name] || null }));
     res.json({
@@ -36,6 +37,7 @@ router.get('/templates', async (req, res) => {
       loyaltyTemplate: wa.LOYALTY_TEMPLATE,
       winbackTemplate: wa.WINBACK_TEMPLATE,
       postPurchaseTemplate: wa.POST_PURCHASE_TEMPLATE,
+      pointsNudgeTemplate: wa.POINTS_NUDGE_TEMPLATE,
     });
   } catch (err) {
     res.status(500).json({ error: err.response?.data ?? err.message });
@@ -72,6 +74,15 @@ router.post('/create-winback-template', async (req, res) => {
 router.post('/create-post-purchase-template', async (req, res) => {
   try {
     const result = await wa.createPostPurchaseTemplate();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.response?.data ?? err.message });
+  }
+});
+
+router.post('/create-points-nudge-template', async (req, res) => {
+  try {
+    const result = await wa.createPointsNudgeTemplate();
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.response?.data ?? err.message });
