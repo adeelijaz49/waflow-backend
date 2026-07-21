@@ -623,6 +623,10 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
         amount:       0,
       });
 
+      if (pending?.flowEnrollmentId) {
+        await FlowEnrollment.findByIdAndUpdate(pending.flowEnrollmentId, { state: 'completed', booking: booking._id }).catch(() => {});
+      }
+
       pendingSlotSelections.delete(from);
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: `✅ *Booked!* Your appointment for *${service.name}* on *${slot.date} at ${slot.startTime}* is confirmed.\n\nSee you then! 🎉` } });
@@ -721,8 +725,13 @@ async function handlePayLaterReservation(from, slotId) {
   }
 }
 
-// Shows available slots for a rebook (free, initiated from cancellation WA message)
-async function handleRebookRequest(from, serviceId, oldBookingId) {
+// Shows available slots for a rebook (free, initiated from a cancellation or
+// no-show WA message). flowEnrollmentId is only set for the no-show flow —
+// threaded through to pendingSlotSelections so handleSlotSelection can mark
+// that FlowEnrollment 'completed' once the customer actually rebooks (this
+// converts via a new Booking, not an Order, so the generic Stripe-webhook
+// completion hook used by the other flow triggers doesn't cover it).
+async function handleRebookRequest(from, serviceId, oldBookingId, flowEnrollmentId) {
   try {
     const Service  = require("./models/Service");
     const TimeSlot = require("./models/TimeSlot");
@@ -737,7 +746,7 @@ async function handleRebookRequest(from, serviceId, oldBookingId) {
       $expr: { $lt: ["$bookedCount", "$capacity"] },
     }).sort({ date: 1, startTime: 1 }).limit(10);
 
-    pendingSlotSelections.set(from, { service, promotion: null, slots, isFree: true, oldBookingId });
+    pendingSlotSelections.set(from, { service, promotion: null, slots, isFree: true, oldBookingId, flowEnrollmentId });
     await sendServiceSlots(from, service, slots, null, true);
   } catch (err) {
     console.error("handleRebookRequest error:", err.message);
@@ -771,6 +780,12 @@ app.post("/webhook", async (req, res) => {
     } else if (payload.startsWith("flowbrowse_")) {
       const cm = await correlateClick({ from, wamid: message.context?.id });
       await handleFlowBrowse(from, cm?._id);
+    } else if (payload.startsWith("flownoshow_")) {
+      const parts     = payload.slice(11).split("_");
+      const serviceId = parts[0];
+      const bookingId = parts[1];
+      const cm = await correlateClick({ from, wamid: message.context?.id });
+      await handleRebookRequest(from, serviceId, bookingId, cm?.flowEnrollment);
     }
     return;
   }

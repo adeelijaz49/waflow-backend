@@ -15,6 +15,7 @@ const LOYALTY_TEMPLATE = process.env.WA_LOYALTY_TEMPLATE || 'waflow_loyalty';
 const WINBACK_TEMPLATE = process.env.WA_WINBACK_TEMPLATE || 'waflow_winback';
 const POST_PURCHASE_TEMPLATE = process.env.WA_POST_PURCHASE_TEMPLATE || 'waflow_post_purchase';
 const POINTS_NUDGE_TEMPLATE = process.env.WA_POINTS_NUDGE_TEMPLATE || 'waflow_points_nudge';
+const NO_SHOW_TEMPLATE = process.env.WA_NO_SHOW_TEMPLATE || 'waflow_no_show';
 
 let cachedWabaId = process.env.WA_WABA_ID || null;
 
@@ -254,6 +255,27 @@ async function createPointsNudgeTemplate() {
   return res.data;
 }
 
+async function createNoShowTemplate() {
+  // Variables: {{1}} first name, {{2}} service name
+  const body = 'Hi {{1}}! We missed you at your *{{2}}* appointment.\n\nNo worries — tap below to grab a new time, on us!';
+  const wabaId = await getWabaId();
+  const res = await axios.post(
+    `${WA_BASE}/${wabaId}/message_templates`,
+    {
+      name: NO_SHOW_TEMPLATE,
+      language: 'en',
+      category: 'MARKETING',
+      components: [
+        { type: 'BODY', text: body },
+        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Rebook Free' }] },
+      ],
+    },
+    { headers: getHeaders() },
+  );
+  return res.data;
+}
+
 // ── Template sending ──────────────────────────────────────────────────────────
 
 async function sendPromoTemplate(to, customer, product, promotion) {
@@ -388,6 +410,36 @@ async function sendPointsNudgeTemplate(to, customerName, loyaltyPoints, flowId, 
           sub_type: 'quick_reply',
           index: '0',
           parameters: [{ type: 'payload', payload: `flowbrowse_${flowId}_${enrollmentId}` }],
+        },
+      ],
+    },
+  });
+}
+
+// booking_no_show routes via serviceId/bookingId (not flowId/enrollmentId like the
+// other 3) so the webhook can call handleRebookRequest directly — the originating
+// FlowEnrollment is instead recovered via wamid correlation on the button tap.
+async function sendNoShowTemplate(to, customerName, serviceName, serviceId, bookingId) {
+  return waPost({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name:     NO_SHOW_TEMPLATE,
+      language: { code: 'en' },
+      components: [
+        {
+          type: 'body',
+          parameters: [
+            { type: 'text', text: customerName || 'Valued Customer' },
+            { type: 'text', text: serviceName || 'your appointment' },
+          ],
+        },
+        {
+          type: 'button',
+          sub_type: 'quick_reply',
+          index: '0',
+          parameters: [{ type: 'payload', payload: `flownoshow_${serviceId}_${bookingId}` }],
         },
       ],
     },
@@ -806,12 +858,14 @@ module.exports = {
   createWinbackTemplate,
   createPostPurchaseTemplate,
   createPointsNudgeTemplate,
+  createNoShowTemplate,
   deleteTemplate,
   sendPromoTemplate,
   sendLoyaltyTemplate,
   sendWinbackTemplate,
   sendPostPurchaseTemplate,
   sendPointsNudgeTemplate,
+  sendNoShowTemplate,
   // Catalog
   sendCatalog,
   // Announcement + carousel
@@ -835,4 +889,5 @@ module.exports = {
   WINBACK_TEMPLATE,
   POST_PURCHASE_TEMPLATE,
   POINTS_NUDGE_TEMPLATE,
+  NO_SHOW_TEMPLATE,
 };

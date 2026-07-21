@@ -365,7 +365,7 @@ function createMcpServer() {
 
   server.registerTool('create_flow', {
     title: 'Create flow',
-    description: 'Create a new automated flow (starts paused — activate separately). Only inactive_customer, post_purchase_points, and points_balance_reminder are supported so far.',
+    description: 'Create a new automated flow (starts paused — activate separately). Supported triggerTypes: inactive_customer, post_purchase_points, points_balance_reminder, booking_no_show.',
     inputSchema: {
       name: z.string(),
       triggerType: z.enum(FLOW_TRIGGER_TYPES),

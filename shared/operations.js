@@ -19,7 +19,7 @@ const FlowEnrollment  = require('../models/FlowEnrollment');
 const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
   sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
-  PROMO_TEMPLATE, LOYALTY_TEMPLATE, WINBACK_TEMPLATE, POST_PURCHASE_TEMPLATE, POINTS_NUDGE_TEMPLATE,
+  PROMO_TEMPLATE, LOYALTY_TEMPLATE, WINBACK_TEMPLATE, POST_PURCHASE_TEMPLATE, POINTS_NUDGE_TEMPLATE, NO_SHOW_TEMPLATE,
   buildPromoAnnouncementPayload, buildPointsPromoPayload,
 } = require('../utils/whatsapp');
 const { carts } = require('../utils/state');
@@ -804,7 +804,7 @@ const FLOW_TYPE_DEFAULTS = {
   inactive_customer:       { inactivityDays: 60, templateName: WINBACK_TEMPLATE },
   post_purchase_points:    { delayHours: 2, templateName: POST_PURCHASE_TEMPLATE },
   points_balance_reminder: { inactivityDays: 30, templateName: POINTS_NUDGE_TEMPLATE },
-  // booking_no_show: added in Phase 4
+  booking_no_show:         { delayHours: 1, templateName: NO_SHOW_TEMPLATE },
 };
 
 async function listFlows({ status } = {}) {
