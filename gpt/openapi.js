@@ -475,6 +475,96 @@ function buildOpenApiSpec() {
         },
       },
 
+      '/flows': {
+        get: {
+          operationId: 'listFlows',
+          summary: 'List automated lifecycle-messaging flows',
+          parameters: [{ name: 'status', in: 'query', schema: { type: 'string', enum: ['active', 'paused'] } }],
+          responses: { 200: { description: 'OK' } },
+        },
+        post: {
+          operationId: 'createFlow',
+          summary: 'Create a new automated flow (starts paused). Only inactive_customer is supported so far.',
+          requestBody: { required: true, content: { 'application/json': { schema: {
+            type: 'object',
+            required: ['name', 'triggerType'],
+            properties: {
+              name: { type: 'string' },
+              triggerType: { type: 'string', enum: ['inactive_customer', 'post_purchase_points', 'points_balance_reminder', 'booking_no_show'] },
+              inactivityDays: { type: 'integer' },
+              delayHours: { type: 'number' },
+              cooldownDaysOverride: { type: 'number' },
+            },
+          } } } },
+          responses: { 200: { description: 'Created' } },
+        },
+      },
+      '/flows/{id}': {
+        get: {
+          operationId: 'getFlow',
+          summary: 'Fetch a single flow by id',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+        patch: {
+          operationId: 'updateFlow',
+          summary: 'Update a flow\'s name/config. triggerType cannot be changed after creation.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: { content: { 'application/json': { schema: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              inactivityDays: { type: 'integer' },
+              delayHours: { type: 'number' },
+              cooldownDaysOverride: { type: 'number' },
+            },
+          } } } },
+          responses: { 200: { description: 'Updated' } },
+        },
+        delete: {
+          operationId: 'deleteFlow',
+          summary: 'Permanently delete a flow',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Deleted' } },
+        },
+      },
+      '/flows/{id}/activate': {
+        post: {
+          operationId: 'activateFlow',
+          summary: 'Turn a flow on. It will begin enrolling and messaging eligible customers on the next scheduler tick — results in real WhatsApp sends over time. Confirm with the merchant before calling.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/flows/{id}/pause': {
+        post: {
+          operationId: 'pauseFlow',
+          summary: 'Turn a flow off. Stops new enrollments and sends, keeps all history.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/flows/{id}/enrollments': {
+        get: {
+          operationId: 'listFlowEnrollments',
+          summary: 'List the customers a flow has enrolled, with their state (enrolled/messaged/exited/completed)',
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+            { name: 'page', in: 'query', schema: { type: 'integer' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer' } },
+          ],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/flows/{id}/report': {
+        get: {
+          operationId: 'getFlowReport',
+          summary: 'Funnel report for a flow: enrolled/messaged/exited/completed counts, messages sent/delivered/read/failed, clicks, orders created, revenue, points issued, conversion rate.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+
       '/settings/loyalty': {
         get: {
           operationId: 'getLoyaltySettings',

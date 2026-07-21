@@ -12,6 +12,7 @@ const WA_MSGS_URL = `${WA_BASE}/${WA_PHONE_ID}/messages`;
 // Template names — override via env vars
 const PROMO_TEMPLATE   = process.env.WA_PROMO_TEMPLATE   || 'waflow_promo';
 const LOYALTY_TEMPLATE = process.env.WA_LOYALTY_TEMPLATE || 'waflow_loyalty';
+const WINBACK_TEMPLATE = process.env.WA_WINBACK_TEMPLATE || 'waflow_winback';
 
 let cachedWabaId = process.env.WA_WABA_ID || null;
 
@@ -184,6 +185,31 @@ async function createLoyaltyTemplate() {
   return createTemplate(LOYALTY_TEMPLATE, body, 'MARKETING');
 }
 
+// Automated Flows templates (utils/flowScheduler.js) — proactive, time/inactivity
+// triggered sends where the customer has almost certainly not messaged recently,
+// so these must go out as pre-approved templates, never the interactive-message
+// path used by manual campaigns.
+async function createWinbackTemplate() {
+  // Variables: {{1}} first name
+  const body = 'Hi {{1}}! 👋 It\'s been a while since we\'ve seen you.\n\nCome back and check out what\'s new — we\'d love to have you again! 🛍️';
+  const wabaId = await getWabaId();
+  const res = await axios.post(
+    `${WA_BASE}/${wabaId}/message_templates`,
+    {
+      name: WINBACK_TEMPLATE,
+      language: 'en',
+      category: 'MARKETING',
+      components: [
+        { type: 'BODY', text: body },
+        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
+      ],
+    },
+    { headers: getHeaders() },
+  );
+  return res.data;
+}
+
 // ── Template sending ──────────────────────────────────────────────────────────
 
 async function sendPromoTemplate(to, customer, product, promotion) {
@@ -239,6 +265,33 @@ async function sendLoyaltyTemplate(to, customerName, loyaltyPoints) {
           { type: 'text', text: currency },
         ],
       }],
+    },
+  });
+}
+
+// Dynamic quick-reply payload carries flowId+enrollmentId back via webhook so
+// the click can be correlated to the exact FlowEnrollment (see server.js's
+// `flowbrowse_` button routing).
+async function sendWinbackTemplate(to, customerName, flowId, enrollmentId) {
+  return waPost({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name:     WINBACK_TEMPLATE,
+      language: { code: 'en' },
+      components: [
+        {
+          type: 'body',
+          parameters: [{ type: 'text', text: customerName || 'Valued Customer' }],
+        },
+        {
+          type: 'button',
+          sub_type: 'quick_reply',
+          index: '0',
+          parameters: [{ type: 'payload', payload: `flowbrowse_${flowId}_${enrollmentId}` }],
+        },
+      ],
     },
   });
 }
@@ -340,7 +393,9 @@ async function sendProductCarousel(to, products, promotion, batchStart = 0) {
       interactive: {
         type:   'button',
         body:   { text: `${remaining} more item${remaining !== 1 ? 's' : ''} in this promotion.` },
-        action: { buttons: [{ type: 'reply', reply: { id: `more_${batchStart + batch.length}_${promotion._id}`, title: `See Next ${Math.min(remaining, 10)} →` } }] },
+        // promotion is optional (flow-triggered browsing has none) — the id embedded here is
+        // never actually parsed back out (handleMoreProducts uses pendingCatalogs' own state).
+        action: { buttons: [{ type: 'reply', reply: { id: `more_${batchStart + batch.length}_${promotion?._id || 'none'}`, title: `See Next ${Math.min(remaining, 10)} →` } }] },
       },
     }).catch(() => {});
   }
@@ -423,6 +478,15 @@ async function sendCatalog(to, products, promotion) {
   const disc       = isPoints ? 1 : 1 - (promotion?.discountPercent || 0) / 100;
   const currency   = await getCurrency();
 
+  // No promotion (e.g. flow-triggered browsing, see server.js's `flowbrowse_`
+  // handler) gets plain "browse" copy instead of referencing a promotion that
+  // doesn't exist.
+  const label = !promotion
+    ? '🛍️ Browse Products'
+    : isPoints
+      ? `💎 ${promotion.name} — ${pointsPrice} pts per item`
+      : `🏷️ ${promotion.name} — ${promotion.discountPercent}% OFF`;
+
   if (products.length <= 10) {
     const rows = products.map(p => ({
       id:          `cart_${p._id}`,
@@ -437,9 +501,7 @@ async function sendCatalog(to, products, promotion) {
       type: 'interactive',
       interactive: {
         type:   'list',
-        header: { type: 'text', text: isPoints
-          ? `💎 ${promotion.name} — ${pointsPrice} pts per item`
-          : `🏷️ ${promotion.name} — ${promotion.discountPercent}% OFF` },
+        header: { type: 'text', text: label },
         body:   { text: isPoints
           ? 'Tap a product to redeem your points. You can add multiple items.'
           : 'Tap a product to add it to your cart. You can select multiple items one by one.' },
@@ -453,9 +515,7 @@ async function sendCatalog(to, products, promotion) {
   }
 
   // Text fallback for large catalogs
-  let text = isPoints
-    ? `💎 *${promotion.name}* — *${pointsPrice} pts per item*\n\nReply with the number(s) to redeem:\n\n`
-    : `🛍️ *${promotion.name}* — *${promotion.discountPercent}% OFF*\n\nReply with the number(s) to add to your cart:\n\n`;
+  let text = `*${label}*\n\n${isPoints ? 'Reply with the number(s) to redeem:' : 'Reply with the number(s) to add to your cart:'}\n\n`;
   products.forEach((p, i) => {
     text += isPoints
       ? `${i + 1}. *${p.name}* — ${pointsPrice} pts _(worth ${money(p.basePrice, currency)})_\n`
@@ -645,9 +705,11 @@ module.exports = {
   getTemplate,
   createPromoTemplate,
   createLoyaltyTemplate,
+  createWinbackTemplate,
   deleteTemplate,
   sendPromoTemplate,
   sendLoyaltyTemplate,
+  sendWinbackTemplate,
   // Catalog
   sendCatalog,
   // Announcement + carousel
@@ -668,4 +730,5 @@ module.exports = {
   // Template names (for status checks)
   PROMO_TEMPLATE,
   LOYALTY_TEMPLATE,
+  WINBACK_TEMPLATE,
 };

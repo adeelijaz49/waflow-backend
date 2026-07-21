@@ -14,6 +14,7 @@ const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pend
 const { money } = require("./utils/currency");
 const { getCurrency } = require("./utils/settingsCache");
 const CampaignMessage = require("./models/CampaignMessage");
+const FlowEnrollment  = require("./models/FlowEnrollment");
 
 const app  = express();
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
@@ -36,6 +37,7 @@ app.use("/api/products",   require("./routes/products"));
 app.use("/api/customers",  require("./routes/customers"));
 app.use("/api/orders",     require("./routes/orders"));
 app.use("/api/promotions", require("./routes/promotions"));
+app.use("/api/flows",      require("./routes/flows"));
 app.use("/api/services",   require("./routes/services"));
 app.use("/api/whatsapp",   require("./routes/whatsapp"));
 app.use("/api/settings",  require("./routes/settings"));
@@ -324,9 +326,12 @@ async function handleStripeWebhook(req, res) {
             await Customer.findByIdAndUpdate(customer._id, { $inc: { loyaltyPoints: bookingPoints } });
           }
           if (campaignMessageId) {
-            await CampaignMessage.findByIdAndUpdate(campaignMessageId, {
+            const cm = await CampaignMessage.findByIdAndUpdate(campaignMessageId, {
               order: order._id, revenue: bookingAmount, pointsIssued: bookingPoints,
-            }).catch(() => {});
+            }, { new: true }).catch(() => null);
+            if (cm?.flowEnrollment) {
+              await FlowEnrollment.findByIdAndUpdate(cm.flowEnrollment, { state: 'completed', order: order._id }).catch(() => {});
+            }
           }
 
           await waPost({ messaging_product: "whatsapp", to: buyerPhone, type: "text",
@@ -395,9 +400,12 @@ async function handleStripeWebhook(req, res) {
           });
         }
         if (order && campaignMessageId) {
-          await CampaignMessage.findByIdAndUpdate(campaignMessageId, {
+          const cm = await CampaignMessage.findByIdAndUpdate(campaignMessageId, {
             order: order._id, revenue: order.total, pointsIssued: points,
-          }).catch(() => {});
+          }, { new: true }).catch(() => null);
+          if (cm?.flowEnrollment) {
+            await FlowEnrollment.findByIdAndUpdate(cm.flowEnrollment, { state: 'completed', order: order._id }).catch(() => {});
+          }
         }
       } catch (err) {
         console.error("MongoDB post-payment update error:", err.message);
@@ -452,6 +460,27 @@ async function handlePromoInterest(from, promoId, campaignMessageId) {
     await sendProductCarousel(from, products, promo, 0);
   } catch (err) {
     console.error("handlePromoInterest error:", err.message);
+  }
+}
+
+// Tapped "Shop Now" on a Flow-triggered template (win-back, etc.) — there's no
+// Promotion involved, just the general active catalog. campaignMessageId still
+// threads through pendingCatalogs -> proceedToPayment exactly like a promo send,
+// so a resulting order gets attributed back to this CampaignMessage (and from
+// there, via its flowEnrollment, back to the flow — see handleStripeWebhook).
+async function handleFlowBrowse(from, campaignMessageId) {
+  try {
+    const Product = require("./models/Product");
+    const products = await Product.find({ active: true }).limit(50).lean();
+    if (!products.length) {
+      await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+        text: { body: "Sorry, no products are available right now." } });
+      return;
+    }
+    pendingCatalogs.set(from, { products, promotion: null, batchStart: 0, campaignMessageId });
+    await sendProductCarousel(from, products, null, 0);
+  } catch (err) {
+    console.error("handleFlowBrowse error:", err.message);
   }
 }
 
@@ -739,6 +768,9 @@ app.post("/webhook", async (req, res) => {
       const promoId = payload.slice(6);
       const cm = await correlateClick({ from, wamid: message.context?.id, promotionId: promoId });
       await handlePromoInterest(from, promoId, cm?._id);
+    } else if (payload.startsWith("flowbrowse_")) {
+      const cm = await correlateClick({ from, wamid: message.context?.id });
+      await handleFlowBrowse(from, cm?._id);
     }
     return;
   }
@@ -1094,6 +1126,7 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     tokenManager.init(); // validate + auto-refresh WA token in background
+    require("./utils/flowScheduler").startFlowScheduler();
   });
 }
 

@@ -348,6 +348,75 @@ function createMcpServer() {
     inputSchema: { promotionId: z.string() },
   }, wrap(ops.getCampaignReport));
 
+  // ─── Flows (automated lifecycle messaging) ──────────────────────────────
+  const FLOW_TRIGGER_TYPES = ['inactive_customer', 'post_purchase_points', 'points_balance_reminder', 'booking_no_show'];
+
+  server.registerTool('list_flows', {
+    title: 'List flows',
+    description: 'List automated lifecycle-messaging flows, optionally filtered by status.',
+    inputSchema: { status: z.enum(['active', 'paused']).optional() },
+  }, wrap(ops.listFlows));
+
+  server.registerTool('get_flow', {
+    title: 'Get flow',
+    description: 'Fetch a single flow by id.',
+    inputSchema: { id: z.string() },
+  }, wrap(ops.getFlow));
+
+  server.registerTool('create_flow', {
+    title: 'Create flow',
+    description: 'Create a new automated flow (starts paused — activate separately). Only inactive_customer is supported so far.',
+    inputSchema: {
+      name: z.string(),
+      triggerType: z.enum(FLOW_TRIGGER_TYPES),
+      inactivityDays: z.number().int().min(1).optional(),
+      delayHours: z.number().min(0).optional(),
+      cooldownDaysOverride: z.number().min(0).optional(),
+    },
+  }, wrap(ops.createFlow));
+
+  server.registerTool('update_flow', {
+    title: 'Update flow',
+    description: 'Update a flow\'s name/config. triggerType cannot be changed after creation.',
+    inputSchema: {
+      id: z.string(),
+      name: z.string().optional(),
+      inactivityDays: z.number().int().min(1).optional(),
+      delayHours: z.number().min(0).optional(),
+      cooldownDaysOverride: z.number().min(0).optional(),
+    },
+  }, wrap(ops.updateFlow));
+
+  server.registerTool('activate_flow', {
+    title: 'Activate flow',
+    description: 'Turns a flow on — it will begin enrolling and messaging eligible customers on the next scheduler tick. This results in real WhatsApp sends over time; confirm with the merchant before calling.',
+    inputSchema: { id: z.string() },
+  }, wrap(ops.activateFlow));
+
+  server.registerTool('pause_flow', {
+    title: 'Pause flow',
+    description: 'Turns a flow off — stops new enrollments and sends, keeps all history.',
+    inputSchema: { id: z.string() },
+  }, wrap(ops.pauseFlow));
+
+  server.registerTool('delete_flow', {
+    title: 'Delete flow',
+    description: 'Permanently delete a flow and its configuration.',
+    inputSchema: { id: z.string() },
+  }, wrap(ops.deleteFlow));
+
+  server.registerTool('list_flow_enrollments', {
+    title: 'List flow enrollments',
+    description: 'List the customers a flow has enrolled, with their state (enrolled/messaged/exited/completed).',
+    inputSchema: { flowId: z.string(), page: z.number().int().min(1).optional(), limit: z.number().int().min(1).max(200).optional() },
+  }, wrap(ops.listFlowEnrollments));
+
+  server.registerTool('get_flow_report', {
+    title: 'Get flow report',
+    description: 'Funnel report for a flow: enrolled/messaged/exited/completed counts, messages sent/delivered/read/failed, clicks, orders created, revenue, points issued, conversion rate.',
+    inputSchema: { flowId: z.string() },
+  }, wrap(ops.getFlowReport));
+
   // ─── Settings ────────────────────────────────────────────────────────────
   server.registerTool('get_loyalty_settings', {
     title: 'Get loyalty settings',

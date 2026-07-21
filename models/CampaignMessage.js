@@ -8,9 +8,11 @@ const mongoose = require('mongoose');
 // (sent/delivered/clicked/ordered/revenue) and customer WhatsApp history
 // are both built from.
 const schema = new mongoose.Schema({
-  kind:         { type: String, enum: ['promotion', 'booking_notification', 'loyalty_reminder'], required: true, default: 'promotion' },
+  kind:         { type: String, enum: ['promotion', 'booking_notification', 'loyalty_reminder', 'flow'], required: true, default: 'promotion' },
   promotion:    { type: mongoose.Schema.Types.ObjectId, ref: 'Promotion' },
   booking:      { type: mongoose.Schema.Types.ObjectId, ref: 'Booking' },
+  flow:           { type: mongoose.Schema.Types.ObjectId, ref: 'Flow' },
+  flowEnrollment: { type: mongoose.Schema.Types.ObjectId, ref: 'FlowEnrollment' },
   customer:     { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
   phone:        { type: String, required: true }, // denormalized — survives customer deletion, matches webhook `from`
   wamid:        { type: String }, // WhatsApp message id from the send response — join key for status/click correlation
@@ -28,7 +30,9 @@ const schema = new mongoose.Schema({
 }, { timestamps: true });
 
 schema.index({ promotion: 1, customer: 1 });
+schema.index({ flow: 1, customer: 1 });
 schema.index({ customer: 1, createdAt: -1 });
+schema.index({ customer: 1, kind: 1, sentAt: -1 }); // cross-flow cooldown lookup (see utils/flowScheduler.js)
 schema.index({ wamid: 1 }, { unique: true, sparse: true });
 schema.index({ status: 1 });
 

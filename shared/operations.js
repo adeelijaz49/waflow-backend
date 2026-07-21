@@ -14,10 +14,12 @@ const Settings   = require('../models/Settings');
 const TimeSlot   = require('../models/TimeSlot');
 const Booking    = require('../models/Booking');
 const CampaignMessage = require('../models/CampaignMessage');
+const Flow            = require('../models/Flow');
+const FlowEnrollment  = require('../models/FlowEnrollment');
 const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
   sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
-  PROMO_TEMPLATE, LOYALTY_TEMPLATE,
+  PROMO_TEMPLATE, LOYALTY_TEMPLATE, WINBACK_TEMPLATE,
   buildPromoAnnouncementPayload, buildPointsPromoPayload,
 } = require('../utils/whatsapp');
 const { carts } = require('../utils/state');
@@ -790,6 +792,133 @@ async function updateLoyaltySettings(data) {
   return s;
 }
 
+// ─── Flows ───────────────────────────────────────────────────────────────────
+// Automated lifecycle messaging — see utils/flowScheduler.js for the engine
+// that actually enrolls/sends. This section is just CRUD + reporting.
+
+// Per-triggerType sensible defaults, applied at creation (not schema defaults
+// — they differ by type). templateName is fixed per type; v1 doesn't let
+// merchants author custom copy per flow, matching PROMO_TEMPLATE/LOYALTY_TEMPLATE
+// being fixed today.
+const FLOW_TYPE_DEFAULTS = {
+  inactive_customer: { inactivityDays: 60, templateName: WINBACK_TEMPLATE },
+  // post_purchase_points, points_balance_reminder, booking_no_show: added in their own phases
+};
+
+async function listFlows({ status } = {}) {
+  const filter = {};
+  if (status) filter.status = status;
+  return Flow.find(filter).sort({ createdAt: -1 });
+}
+
+async function getFlow({ id }) {
+  const flow = await Flow.findById(id);
+  if (!flow) throw new Error('Flow not found');
+  return flow;
+}
+
+async function createFlow({ name, triggerType, inactivityDays, delayHours, cooldownDaysOverride }) {
+  const defaults = FLOW_TYPE_DEFAULTS[triggerType];
+  if (!defaults) throw new Error('Unknown or not-yet-supported triggerType');
+  return Flow.create({
+    name,
+    triggerType,
+    inactivityDays: inactivityDays ?? defaults.inactivityDays,
+    delayHours: delayHours ?? defaults.delayHours,
+    templateName: defaults.templateName,
+    cooldownDaysOverride,
+  });
+}
+
+async function updateFlow({ id, ...data }) {
+  delete data.triggerType;   // fixed at creation — changing it invalidates templateName/eligibility semantics
+  delete data.templateName;
+  const flow = await Flow.findByIdAndUpdate(id, data, { new: true, runValidators: true });
+  if (!flow) throw new Error('Flow not found');
+  return flow;
+}
+
+async function activateFlow({ id }) {
+  const flow = await Flow.findByIdAndUpdate(id, { status: 'active' }, { new: true });
+  if (!flow) throw new Error('Flow not found');
+  return flow;
+}
+
+async function pauseFlow({ id }) {
+  const flow = await Flow.findByIdAndUpdate(id, { status: 'paused' }, { new: true });
+  if (!flow) throw new Error('Flow not found');
+  return flow;
+}
+
+async function deleteFlow({ id }) {
+  await Flow.findByIdAndDelete(id);
+  return { success: true };
+}
+
+async function listFlowEnrollments({ flowId, page = 1, limit = 50 }) {
+  const filter = { flow: flowId };
+  const skip = (page - 1) * limit;
+  const [enrollments, total] = await Promise.all([
+    FlowEnrollment.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit)
+      .populate('customer', 'firstname lastname phone')
+      .populate('order', 'total')
+      .populate('booking'),
+    FlowEnrollment.countDocuments(filter),
+  ]);
+  return { enrollments, total, page, pages: Math.ceil(total / limit) };
+}
+
+async function getFlowReport({ flowId }) {
+  const flow = await Flow.findById(flowId);
+  if (!flow) throw new Error('Flow not found');
+
+  const [enrollmentCounts, messageAgg] = await Promise.all([
+    FlowEnrollment.aggregate([
+      { $match: { flow: flow._id } },
+      { $group: { _id: '$state', count: { $sum: 1 } } },
+    ]),
+    CampaignMessage.aggregate([
+      { $match: { flow: flow._id, kind: 'flow' } },
+      { $group: {
+        _id: null,
+        sent:      { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read']] }, 1, 0] } },
+        delivered: { $sum: { $cond: [{ $in: ['$status', ['delivered', 'read']] }, 1, 0] } },
+        read:      { $sum: { $cond: [{ $eq: ['$status', 'read'] }, 1, 0] } },
+        failed:    { $sum: { $cond: [{ $eq: ['$status', 'failed'] }, 1, 0] } },
+        // $gt (not $ne) against null — see getCampaignReport above for why.
+        clicked:      { $sum: { $cond: [{ $gt: ['$clickedAt', null] }, 1, 0] } },
+        ordered:      { $sum: { $cond: [{ $gt: ['$order', null] }, 1, 0] } },
+        revenue:      { $sum: '$revenue' },
+        pointsIssued: { $sum: '$pointsIssued' },
+      } },
+    ]),
+  ]);
+
+  const enrollmentMap = Object.fromEntries(enrollmentCounts.map(e => [e._id, e.count]));
+  const m = messageAgg[0] || { sent: 0, delivered: 0, read: 0, failed: 0, clicked: 0, ordered: 0, revenue: 0, pointsIssued: 0 };
+  const conversionRate = m.sent > 0 ? +((m.ordered / m.sent) * 100).toFixed(1) : 0;
+
+  return {
+    flowId: flow._id,
+    name: flow.name,
+    triggerType: flow.triggerType,
+    status: flow.status,
+    enrolled: enrollmentMap.enrolled || 0,
+    messaged: enrollmentMap.messaged || 0,
+    exited: enrollmentMap.exited || 0,
+    completed: enrollmentMap.completed || 0,
+    messagesSent: m.sent,
+    messagesDelivered: m.delivered,
+    messagesRead: m.read,
+    messagesFailed: m.failed,
+    clicked: m.clicked,
+    ordersCreated: m.ordered,
+    revenue: +m.revenue.toFixed(2),
+    pointsIssued: m.pointsIssued,
+    conversionRate,
+  };
+}
+
 module.exports = {
   listProducts, getProduct, createProduct, updateProduct, deactivateProduct,
   listServices, getService, createService, updateService, deactivateService,
@@ -801,4 +930,6 @@ module.exports = {
   getRecommendedCustomers, sendPromotion, sendLoyaltyReminders, getCampaignReport,
   previewPromotionMessage, sendTestMessage,
   getLoyaltySettings, updateLoyaltySettings,
+  listFlows, getFlow, createFlow, updateFlow, activateFlow, pauseFlow, deleteFlow,
+  listFlowEnrollments, getFlowReport,
 };
