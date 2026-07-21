@@ -437,6 +437,7 @@ function createMcpServer() {
       loyaltyPointsPerUnit: z.number().optional(),
       minPointsPerPurchase: z.number().optional(),
       currency: z.string().optional(),
+      flowCooldownDays: z.number().min(0).optional(),
     },
   }, wrap(ops.updateLoyaltySettings));
 

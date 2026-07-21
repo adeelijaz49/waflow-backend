@@ -13,12 +13,13 @@ router.get('/loyalty', async (req, res) => {
 
 router.put('/loyalty', async (req, res) => {
   try {
-    const { loyaltyPointsPerUnit, minPointsPerPurchase, currency } = req.body;
+    const { loyaltyPointsPerUnit, minPointsPerPurchase, currency, flowCooldownDays } = req.body;
     let s = await Settings.findOne();
     if (!s) s = new Settings();
     if (loyaltyPointsPerUnit != null) s.loyaltyPointsPerUnit = +loyaltyPointsPerUnit;
     if (minPointsPerPurchase != null) s.minPointsPerPurchase = +minPointsPerPurchase;
     if (currency) s.currency = currency;
+    if (flowCooldownDays != null) s.flowCooldownDays = +flowCooldownDays;
     await s.save();
     res.json(s);
   } catch (err) {

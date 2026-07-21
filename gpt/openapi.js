@@ -586,6 +586,7 @@ function buildOpenApiSpec() {
             type: 'object',
             properties: {
               loyaltyPointsPerUnit: { type: 'number' }, minPointsPerPurchase: { type: 'number' }, currency: { type: 'string' },
+              flowCooldownDays: { type: 'number' },
             },
           } } } },
           responses: { 200: { description: 'Updated' } },
