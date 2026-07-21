@@ -23,14 +23,20 @@ router.get('/templates', async (req, res) => {
   try {
     const templates = await wa.listTemplates();
     // Annotate which ones Waflow uses
-    const promoName   = wa.PROMO_TEMPLATE;
-    const loyaltyName = wa.LOYALTY_TEMPLATE;
-    const winbackName = wa.WINBACK_TEMPLATE;
-    const annotated   = templates.map(t => ({
-      ...t,
-      waflowRole: t.name === promoName ? 'promo' : t.name === loyaltyName ? 'loyalty' : t.name === winbackName ? 'winback' : null,
-    }));
-    res.json({ templates: annotated, promoTemplate: promoName, loyaltyTemplate: loyaltyName, winbackTemplate: winbackName });
+    const roleByName = {
+      [wa.PROMO_TEMPLATE]: 'promo',
+      [wa.LOYALTY_TEMPLATE]: 'loyalty',
+      [wa.WINBACK_TEMPLATE]: 'winback',
+      [wa.POST_PURCHASE_TEMPLATE]: 'post_purchase',
+    };
+    const annotated = templates.map(t => ({ ...t, waflowRole: roleByName[t.name] || null }));
+    res.json({
+      templates: annotated,
+      promoTemplate: wa.PROMO_TEMPLATE,
+      loyaltyTemplate: wa.LOYALTY_TEMPLATE,
+      winbackTemplate: wa.WINBACK_TEMPLATE,
+      postPurchaseTemplate: wa.POST_PURCHASE_TEMPLATE,
+    });
   } catch (err) {
     res.status(500).json({ error: err.response?.data ?? err.message });
   }
@@ -57,6 +63,15 @@ router.post('/create-loyalty-template', async (req, res) => {
 router.post('/create-winback-template', async (req, res) => {
   try {
     const result = await wa.createWinbackTemplate();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.response?.data ?? err.message });
+  }
+});
+
+router.post('/create-post-purchase-template', async (req, res) => {
+  try {
+    const result = await wa.createPostPurchaseTemplate();
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.response?.data ?? err.message });
