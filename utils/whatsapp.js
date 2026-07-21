@@ -192,9 +192,18 @@ async function createLoyaltyTemplate() {
 // triggered sends where the customer has almost certainly not messaged recently,
 // so these must go out as pre-approved templates, never the interactive-message
 // path used by manual campaigns.
+//
+// Body copy is named here (not inlined below) so shared/operations.js#previewFlowMessage
+// can render the exact same {{n}}-placeholder text a real send would use — no
+// separate copy to fall out of sync when template wording changes.
+const WINBACK_BODY = 'Hi {{1}}! 👋 It\'s been a while since we\'ve seen you.\n\nCome back and check out what\'s new — we\'d love to have you again! 🛍️';
+const POST_PURCHASE_BODY = 'Hi {{1}}! 🎉 Thanks for your order!\n\nYou now have *{{2}} loyalty points* — come back and use them on your next visit!';
+const POINTS_NUDGE_BODY = 'Hi {{1}}! 💎 You still have *{{2}} loyalty points* waiting to be used.\n\nCome in and redeem them before you forget!';
+const NO_SHOW_BODY = 'Hi {{1}}! We missed you at your *{{2}}* appointment.\n\nNo worries — tap below to grab a new time, on us!';
+
 async function createWinbackTemplate() {
   // Variables: {{1}} first name
-  const body = 'Hi {{1}}! 👋 It\'s been a while since we\'ve seen you.\n\nCome back and check out what\'s new — we\'d love to have you again! 🛍️';
+  const body = WINBACK_BODY;
   const wabaId = await getWabaId();
   const res = await axios.post(
     `${WA_BASE}/${wabaId}/message_templates`,
@@ -215,7 +224,7 @@ async function createWinbackTemplate() {
 
 async function createPostPurchaseTemplate() {
   // Variables: {{1}} first name, {{2}} loyalty points
-  const body = 'Hi {{1}}! 🎉 Thanks for your order!\n\nYou now have *{{2}} loyalty points* — come back and use them on your next visit!';
+  const body = POST_PURCHASE_BODY;
   const wabaId = await getWabaId();
   const res = await axios.post(
     `${WA_BASE}/${wabaId}/message_templates`,
@@ -236,7 +245,7 @@ async function createPostPurchaseTemplate() {
 
 async function createPointsNudgeTemplate() {
   // Variables: {{1}} first name, {{2}} loyalty points
-  const body = 'Hi {{1}}! 💎 You still have *{{2}} loyalty points* waiting to be used.\n\nCome in and redeem them before you forget!';
+  const body = POINTS_NUDGE_BODY;
   const wabaId = await getWabaId();
   const res = await axios.post(
     `${WA_BASE}/${wabaId}/message_templates`,
@@ -257,7 +266,7 @@ async function createPointsNudgeTemplate() {
 
 async function createNoShowTemplate() {
   // Variables: {{1}} first name, {{2}} service name
-  const body = 'Hi {{1}}! We missed you at your *{{2}}* appointment.\n\nNo worries — tap below to grab a new time, on us!';
+  const body = NO_SHOW_BODY;
   const wabaId = await getWabaId();
   const res = await axios.post(
     `${WA_BASE}/${wabaId}/message_templates`,
@@ -890,4 +899,9 @@ module.exports = {
   POST_PURCHASE_TEMPLATE,
   POINTS_NUDGE_TEMPLATE,
   NO_SHOW_TEMPLATE,
+  // Body copy (for preview rendering — see shared/operations.js#previewFlowMessage)
+  WINBACK_BODY,
+  POST_PURCHASE_BODY,
+  POINTS_NUDGE_BODY,
+  NO_SHOW_BODY,
 };

@@ -9,6 +9,15 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Registered before /:id so "preview" isn't swallowed as a flow id.
+router.get('/preview', async (req, res) => {
+  try {
+    res.json(await ops.previewFlowMessage({ triggerType: req.query.triggerType }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     res.json(await ops.getFlow({ id: req.params.id }));

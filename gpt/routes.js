@@ -77,6 +77,8 @@ router.post('/loyalty/remind', h(req => ops.sendLoyaltyReminders(req.body)));
 
 // ─── Flows (automated lifecycle messaging) ───────────────────────────────────
 router.get('/flows', h(req => ops.listFlows(req.query)));
+// Registered before /flows/:id so "preview" isn't swallowed as a flow id.
+router.get('/flows/preview', h(req => ops.previewFlowMessage({ triggerType: req.query.triggerType })));
 router.get('/flows/:id', h(req => ops.getFlow({ id: req.params.id })));
 router.post('/flows', h(req => ops.createFlow(req.body)));
 router.patch('/flows/:id', h(req => ops.updateFlow({ id: req.params.id, ...req.body })));

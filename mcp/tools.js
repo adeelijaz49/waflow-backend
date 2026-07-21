@@ -417,6 +417,12 @@ function createMcpServer() {
     inputSchema: { flowId: z.string() },
   }, wrap(ops.getFlowReport));
 
+  server.registerTool('preview_flow_message', {
+    title: 'Preview flow message',
+    description: 'Preview the exact WhatsApp template body a flow of this triggerType will send, with sample values filled in. No flow needs to exist yet — useful before creating one.',
+    inputSchema: { triggerType: z.enum(FLOW_TRIGGER_TYPES) },
+  }, wrap(ops.previewFlowMessage));
+
   // ─── Settings ────────────────────────────────────────────────────────────
   server.registerTool('get_loyalty_settings', {
     title: 'Get loyalty settings',

@@ -7,7 +7,7 @@ const Customer = require('../models/Customer');
 const Flow = require('../models/Flow');
 const FlowEnrollment = require('../models/FlowEnrollment');
 const CampaignMessage = require('../models/CampaignMessage');
-const { WINBACK_TEMPLATE } = require('../utils/whatsapp');
+const { WINBACK_TEMPLATE, POST_PURCHASE_TEMPLATE } = require('../utils/whatsapp');
 
 const TEST_PHONE = '15550006666';
 
@@ -72,6 +72,29 @@ describe('Flow CRUD', () => {
     const f = await ops.createFlow({ name: '__test_flow_delete__', triggerType: 'inactive_customer' });
     await ops.deleteFlow({ id: f._id });
     await expect(ops.getFlow({ id: f._id })).rejects.toThrow('Flow not found');
+  });
+});
+
+describe('previewFlowMessage', () => {
+  test('substitutes sample values into the real template body per triggerType', async () => {
+    const preview = await ops.previewFlowMessage({ triggerType: 'post_purchase_points' });
+    expect(preview.messageType).toBe('template');
+    expect(preview.templateName).toBe(POST_PURCHASE_TEMPLATE);
+    expect(preview.body).not.toMatch(/\{\{\d\}\}/); // no leftover placeholders
+    expect(preview.body).toContain('Alex');
+    expect(preview.body).toContain('250 loyalty points');
+    expect(preview.buttonLabel).toBe('Shop Now');
+  });
+
+  test('booking_no_show gets its own button label and substituted service name', async () => {
+    const preview = await ops.previewFlowMessage({ triggerType: 'booking_no_show' });
+    expect(preview.body).toContain('Haircut');
+    expect(preview.buttonLabel).toBe('Rebook Free');
+  });
+
+  test('rejects an unsupported triggerType', async () => {
+    await expect(ops.previewFlowMessage({ triggerType: 'not_a_real_type' }))
+      .rejects.toThrow('Unknown or not-yet-supported triggerType');
   });
 });
 

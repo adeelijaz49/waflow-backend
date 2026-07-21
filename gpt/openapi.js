@@ -499,6 +499,14 @@ function buildOpenApiSpec() {
           responses: { 200: { description: 'Created' } },
         },
       },
+      '/flows/preview': {
+        get: {
+          operationId: 'previewFlowMessage',
+          summary: 'Preview the exact WhatsApp template body a flow of this triggerType will send, with sample values filled in. No flow needs to exist yet.',
+          parameters: [{ name: 'triggerType', in: 'query', required: true, schema: { type: 'string', enum: ['inactive_customer', 'post_purchase_points', 'points_balance_reminder', 'booking_no_show'] } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
       '/flows/{id}': {
         get: {
           operationId: 'getFlow',

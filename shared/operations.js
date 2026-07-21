@@ -20,6 +20,7 @@ const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
   sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
   PROMO_TEMPLATE, LOYALTY_TEMPLATE, WINBACK_TEMPLATE, POST_PURCHASE_TEMPLATE, POINTS_NUDGE_TEMPLATE, NO_SHOW_TEMPLATE,
+  WINBACK_BODY, POST_PURCHASE_BODY, POINTS_NUDGE_BODY, NO_SHOW_BODY,
   buildPromoAnnouncementPayload, buildPointsPromoPayload,
 } = require('../utils/whatsapp');
 const { carts } = require('../utils/state');
@@ -807,6 +808,30 @@ const FLOW_TYPE_DEFAULTS = {
   booking_no_show:         { delayHours: 1, templateName: NO_SHOW_TEMPLATE },
 };
 
+// Sample {{n}} substitutions for previewFlowMessage — realistic stand-ins for
+// what a real send would fill in (customer first name, points balance, service
+// name). Flow template bodies are fixed per triggerType, not per-flow (unlike
+// Promotion), so preview only needs a triggerType — the create/edit modal can
+// show it before the flow is even saved.
+const FLOW_PREVIEW = {
+  inactive_customer:       { body: WINBACK_BODY, values: ['Alex'], buttonLabel: 'Shop Now' },
+  post_purchase_points:    { body: POST_PURCHASE_BODY, values: ['Alex', '250'], buttonLabel: 'Shop Now' },
+  points_balance_reminder: { body: POINTS_NUDGE_BODY, values: ['Alex', '250'], buttonLabel: 'Shop Now' },
+  booking_no_show:         { body: NO_SHOW_BODY, values: ['Alex', 'Haircut'], buttonLabel: 'Rebook Free' },
+};
+
+async function previewFlowMessage({ triggerType }) {
+  const preview = FLOW_PREVIEW[triggerType];
+  if (!preview) throw new Error('Unknown or not-yet-supported triggerType');
+  const body = preview.values.reduce((text, val, i) => text.split(`{{${i + 1}}}`).join(val), preview.body);
+  return {
+    messageType: 'template',
+    templateName: FLOW_TYPE_DEFAULTS[triggerType].templateName,
+    body,
+    buttonLabel: preview.buttonLabel,
+  };
+}
+
 async function listFlows({ status } = {}) {
   const filter = {};
   if (status) filter.status = status;
@@ -933,5 +958,5 @@ module.exports = {
   previewPromotionMessage, sendTestMessage,
   getLoyaltySettings, updateLoyaltySettings,
   listFlows, getFlow, createFlow, updateFlow, activateFlow, pauseFlow, deleteFlow,
-  listFlowEnrollments, getFlowReport,
+  listFlowEnrollments, getFlowReport, previewFlowMessage,
 };
