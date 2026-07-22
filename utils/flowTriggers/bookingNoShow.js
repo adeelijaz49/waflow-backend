@@ -1,7 +1,7 @@
 const Booking = require('../../models/Booking');
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
-const { sendNoShowTemplate } = require('../whatsapp');
+const { sendNoShowTemplate, sendCustomFlowTemplate } = require('../whatsapp');
 
 const DEFAULT_DELAY_HOURS = 1;
 
@@ -43,9 +43,22 @@ async function revalidate(flow, enrollment) {
   return { outcome: 'proceed' };
 }
 
-async function buildSend(flow, enrollment, customer) {
+// entryNode is the flow's merchant-authored custom entry message (see
+// models/MessageNode.js), already resolved and confirmed 'approved' by the
+// caller (utils/flowScheduler.js#processEnrollment) — undefined/null means
+// this flow has no custom entry configured, so send the fixed default exactly
+// as before. Note the custom path uses the generic msgnode_ button payload
+// (branches per the merchant's configured nextAction), not the fixed
+// flownoshow_ payload the default send uses — that one is hardcoded straight
+// to handleRebookRequest and would bypass branching entirely.
+async function buildSend(flow, enrollment, customer, entryNode) {
   const booking = await Booking.findById(enrollment.sourceRef).populate('serviceId');
   if (!booking) throw new Error('Booking not found for no-show send');
+
+  if (entryNode) {
+    const buttonPayloads = entryNode.buttons.map(b => `msgnode_${entryNode._id}_${b.position}`);
+    return sendCustomFlowTemplate(customer.phone, entryNode.templateName, [customer.firstname || 'Valued Customer', booking.serviceId?.name || 'your appointment'], buttonPayloads);
+  }
   return sendNoShowTemplate(
     customer.phone, customer.firstname, booking.serviceId?.name,
     booking.serviceId?._id?.toString(), booking._id.toString(),

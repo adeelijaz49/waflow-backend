@@ -838,11 +838,14 @@ async function previewFlowMessage({ triggerType }) {
 async function listFlows({ status } = {}) {
   const filter = {};
   if (status) filter.status = status;
-  return Flow.find(filter).sort({ createdAt: -1 });
+  // Populated (not just the id) so the frontend can grey out Activate for a
+  // flow whose custom entry template isn't approved yet, without a second
+  // round-trip per flow — mirrors the activateFlow guard below.
+  return Flow.find(filter).sort({ createdAt: -1 }).populate('entryNodeId', 'templateStatus');
 }
 
 async function getFlow({ id }) {
-  const flow = await Flow.findById(id);
+  const flow = await Flow.findById(id).populate('entryNodeId', 'templateStatus');
   if (!flow) throw new Error('Flow not found');
   return flow;
 }

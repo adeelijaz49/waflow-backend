@@ -1,7 +1,7 @@
 const Order = require('../../models/Order');
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
-const { sendPostPurchaseTemplate } = require('../whatsapp');
+const { sendPostPurchaseTemplate, sendCustomFlowTemplate } = require('../whatsapp');
 
 const DEFAULT_DELAY_HOURS = 2;
 const LOOKBACK_SLACK_MS = 24 * 60 * 60 * 1000; // covers a scheduler outage without ever full-scanning Orders
@@ -45,7 +45,16 @@ async function revalidate(flow, enrollment) {
   return { outcome: 'proceed' };
 }
 
-async function buildSend(flow, enrollment, customer) {
+// entryNode is the flow's merchant-authored custom entry message (see
+// models/MessageNode.js), already resolved and confirmed 'approved' by the
+// caller (utils/flowScheduler.js#processEnrollment) — undefined/null means
+// this flow has no custom entry configured, so send the fixed default exactly
+// as before.
+async function buildSend(flow, enrollment, customer, entryNode) {
+  if (entryNode) {
+    const buttonPayloads = entryNode.buttons.map(b => `msgnode_${entryNode._id}_${b.position}`);
+    return sendCustomFlowTemplate(customer.phone, entryNode.templateName, [customer.firstname || 'Valued Customer', customer.loyaltyPoints], buttonPayloads);
+  }
   return sendPostPurchaseTemplate(customer.phone, customer.firstname, customer.loyaltyPoints, flow._id.toString(), enrollment._id.toString());
 }
 

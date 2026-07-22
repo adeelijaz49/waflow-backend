@@ -26,9 +26,9 @@ const bookingNoShow = require('./bookingNoShow');
 //     in this codebase — the caller extracts the wamid from it. entryNode is
 //     the flow's resolved, approved custom entry MessageNode (see
 //     models/MessageNode.js) if one is configured — undefined otherwise, in
-//     which case buildSend must fall back to its fixed default send. Only
-//     inactive_customer branches on this so far — see utils/flowScheduler.js
-//     for how it's resolved once per enrollment and passed through.
+//     which case buildSend must fall back to its fixed default send. All 4
+//     triggers branch on this — see utils/flowScheduler.js for how it's
+//     resolved once per enrollment and passed through.
 module.exports = {
   inactive_customer: inactiveCustomer,
   post_purchase_points: postPurchasePoints,
