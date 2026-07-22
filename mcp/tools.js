@@ -424,9 +424,11 @@ function createMcpServer() {
   }, wrap(ops.previewFlowMessage));
 
   // ─── Message Nodes (branching entry/follow-up messages — see models/MessageNode.js) ──
-  // v1: only a Flow's entry message is user-editable this way. Only inactive_customer
-  // flows currently branch on entryNodeId — the other 3 trigger types still send their
-  // fixed default even if a MessageNode is attached.
+  // All 4 flow trigger types branch on entryNodeId. Follow-up nodes (reached
+  // via a button's send_message nextAction) can themselves branch further, up
+  // to 3 levels deep (depth) — the frontend only ever creates a *new* node per
+  // button (never relinks to an existing one), so this stays a tree, and
+  // createMessageNode/updateMessageNode enforce that server-side too.
   const nextActionSchema = z.object({
     type: z.enum(['send_message', 'end_flow', 'apply_discount', 'redeem_points']),
     targetNodeId: z.string().optional(),
@@ -439,10 +441,11 @@ function createMcpServer() {
 
   server.registerTool('create_message_node', {
     title: 'Create message node',
-    description: 'Create a branching message (body text + up to 3 buttons) owned by a Flow. Set isEntryNode true to make it a flow\'s custom entry message (needs submit_message_node_template + Meta approval before the flow can be activated with it).',
+    description: 'Create a branching message (body text + up to 3 buttons) owned by a Flow. Set isEntryNode true to make it a flow\'s custom entry message (needs submit_message_node_template + Meta approval before the flow can be activated with it). Set depth to 1+ for a follow-up message reached via another node\'s button (0 = entry node); capped at 3.',
     inputSchema: {
       ownerId: z.string(), isEntryNode: z.boolean().optional(),
       bodyText: z.string(), buttons: z.array(buttonSchema).max(3).optional(),
+      depth: z.number().int().min(0).max(3).optional(),
     },
   }, wrap(ops.createMessageNode));
 

@@ -895,6 +895,8 @@ async function pauseFlow({ id }) {
 }
 
 async function deleteFlow({ id }) {
+  const flow = await Flow.findById(id);
+  if (flow?.entryNodeId) await deleteMessageNodeSubtree(flow.entryNodeId);
   await Flow.findByIdAndDelete(id);
   return { success: true };
 }
@@ -996,16 +998,79 @@ function validateButtons(buttons) {
   }
 }
 
+// The frontend only ever creates *new* target nodes via "+ Create new
+// message," never relinks a button to an already-existing node — so the
+// graph is structurally a tree with no cycle risk, as long as this is
+// enforced server-side too (an MCP/GPT caller isn't bound by the frontend's
+// own discipline). excludeNodeId lets a node keep its own pre-existing,
+// unchanged link to a position without false-flagging itself.
+async function assertTreeOnly(ownerId, excludeNodeId, buttons) {
+  const targeted = (buttons || [])
+    .filter(b => b.nextAction?.type === 'send_message' && b.nextAction.targetNodeId)
+    .map(b => ({ position: b.position, targetNodeId: b.nextAction.targetNodeId.toString() }));
+  if (!targeted.length) return;
+
+  const allNodes = await MessageNode.find({ ownerId });
+  for (const { position, targetNodeId } of targeted) {
+    for (const n of allNodes) {
+      for (const b of n.buttons) {
+        if (b.nextAction?.targetNodeId?.toString() !== targetNodeId) continue;
+        const isSelf = excludeNodeId && n._id.toString() === excludeNodeId.toString() && b.position === position;
+        if (!isSelf) throw new Error('That message is already linked from another button — each follow-up can only be reached from one place.');
+      }
+    }
+  }
+}
+
+// Recursively removes a node and everything reachable through its
+// send_message buttons — used both for a direct delete and for cleaning up
+// whatever a button used to point at once it's retargeted or removed (that
+// old subtree becomes unreachable garbage otherwise, since the tree-only
+// constraint above guarantees nothing else could reference it).
+async function deleteMessageNodeSubtree(nodeId) {
+  const node = await MessageNode.findById(nodeId);
+  if (!node) return;
+  for (const b of node.buttons) {
+    if (b.nextAction?.type === 'send_message' && b.nextAction.targetNodeId) {
+      await deleteMessageNodeSubtree(b.nextAction.targetNodeId);
+    }
+  }
+  await MessageNode.findByIdAndDelete(nodeId);
+}
+
 async function createMessageNode({ ownerType = 'flow', ownerId, isEntryNode = false, bodyText, buttons = [], depth = 0 }) {
-  if (depth > MAX_BRANCH_DEPTH) throw new Error(`Messages can only branch ${MAX_BRANCH_DEPTH} levels deep.`);
+  if (depth > MAX_BRANCH_DEPTH || depth < 0) throw new Error(`Messages can only branch ${MAX_BRANCH_DEPTH} levels deep.`);
   validateButtons(buttons);
+  await assertTreeOnly(ownerId, undefined, buttons);
   return MessageNode.create({ ownerType, ownerId, isEntryNode, bodyText, buttons, depth });
 }
 
 async function updateMessageNode({ id, bodyText, buttons }) {
+  const existing = await MessageNode.findById(id);
+  if (!existing) throw new Error('MessageNode not found');
+
   const data = {};
   if (bodyText != null) data.bodyText = bodyText;
-  if (buttons != null) { validateButtons(buttons); data.buttons = buttons; }
+  if (buttons != null) {
+    validateButtons(buttons);
+    await assertTreeOnly(existing.ownerId, id, buttons);
+
+    // Cascade-delete any button's previous target that this update no longer
+    // references — orphaned the moment it's retargeted or removed, since the
+    // tree-only constraint means nothing else could have pointed to it.
+    const newTargetIds = new Set(
+      buttons.filter(b => b.nextAction?.type === 'send_message' && b.nextAction.targetNodeId)
+        .map(b => b.nextAction.targetNodeId.toString()),
+    );
+    for (const oldButton of existing.buttons) {
+      const oldTarget = oldButton.nextAction?.targetNodeId;
+      if (oldTarget && !newTargetIds.has(oldTarget.toString())) {
+        await deleteMessageNodeSubtree(oldTarget);
+      }
+    }
+
+    data.buttons = buttons;
+  }
   const node = await MessageNode.findByIdAndUpdate(id, data, { new: true, runValidators: true });
   if (!node) throw new Error('MessageNode not found');
   return node;
@@ -1018,7 +1083,7 @@ async function getMessageNode({ id }) {
 }
 
 async function deleteMessageNode({ id }) {
-  await MessageNode.findByIdAndDelete(id);
+  await deleteMessageNodeSubtree(id);
   return { success: true };
 }
 

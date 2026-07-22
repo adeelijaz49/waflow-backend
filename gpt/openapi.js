@@ -604,6 +604,7 @@ function buildOpenApiSpec() {
                   } },
                 },
               } },
+              depth: { type: 'integer', minimum: 0, maximum: 3, description: '0 = entry node; 1+ for a follow-up reached via another node\'s button, capped at 3.' },
             },
           } } } },
           responses: { 200: { description: 'Created' } },
