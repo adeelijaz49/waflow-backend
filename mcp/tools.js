@@ -423,6 +423,65 @@ function createMcpServer() {
     inputSchema: { triggerType: z.enum(FLOW_TRIGGER_TYPES) },
   }, wrap(ops.previewFlowMessage));
 
+  // ─── Message Nodes (branching entry/follow-up messages — see models/MessageNode.js) ──
+  // v1: only a Flow's entry message is user-editable this way. Only inactive_customer
+  // flows currently branch on entryNodeId — the other 3 trigger types still send their
+  // fixed default even if a MessageNode is attached.
+  const nextActionSchema = z.object({
+    type: z.enum(['send_message', 'end_flow', 'apply_discount', 'redeem_points']),
+    targetNodeId: z.string().optional(),
+  });
+  const buttonSchema = z.object({
+    position: z.number().int().min(0).max(2),
+    label: z.string().max(20),
+    nextAction: nextActionSchema,
+  });
+
+  server.registerTool('create_message_node', {
+    title: 'Create message node',
+    description: 'Create a branching message (body text + up to 3 buttons) owned by a Flow. Set isEntryNode true to make it a flow\'s custom entry message (needs submit_message_node_template + Meta approval before the flow can be activated with it).',
+    inputSchema: {
+      ownerId: z.string(), isEntryNode: z.boolean().optional(),
+      bodyText: z.string(), buttons: z.array(buttonSchema).max(3).optional(),
+    },
+  }, wrap(ops.createMessageNode));
+
+  server.registerTool('get_message_node', {
+    title: 'Get message node',
+    description: 'Fetch a single message node by id.',
+    inputSchema: { id: z.string() },
+  }, wrap(ops.getMessageNode));
+
+  server.registerTool('update_message_node', {
+    title: 'Update message node',
+    description: 'Update a message node\'s body text and/or buttons.',
+    inputSchema: { id: z.string(), bodyText: z.string().optional(), buttons: z.array(buttonSchema).max(3).optional() },
+  }, wrap(ops.updateMessageNode));
+
+  server.registerTool('delete_message_node', {
+    title: 'Delete message node',
+    description: 'Permanently delete a message node.',
+    inputSchema: { id: z.string() },
+  }, wrap(ops.deleteMessageNode));
+
+  server.registerTool('submit_message_node_template', {
+    title: 'Submit message node template',
+    description: 'Submits an entry node\'s current body text + button labels to Meta for WhatsApp template approval. Required before a flow using this node as its entryNodeId can be activated.',
+    inputSchema: { nodeId: z.string() },
+  }, wrap(ops.submitMessageNodeTemplate));
+
+  server.registerTool('refresh_message_node_template_status', {
+    title: 'Refresh message node template status',
+    description: 'Pulls the current live Meta approval status (pending/approved/rejected) for a submitted entry node\'s template and syncs it onto the node.',
+    inputSchema: { nodeId: z.string() },
+  }, wrap(ops.refreshMessageNodeTemplateStatus));
+
+  server.registerTool('get_flow_message_variables', {
+    title: 'Get flow message variables',
+    description: 'List the personalization variables available for a custom entry message, by triggerType (e.g. Customer Name, Points Balance) — insert these as {{n}} tokens in the message body.',
+    inputSchema: { triggerType: z.enum(FLOW_TRIGGER_TYPES) },
+  }, wrap(ops.getFlowMessageVariables));
+
   // ─── Settings ────────────────────────────────────────────────────────────
   server.registerTool('get_loyalty_settings', {
     title: 'Get loyalty settings',

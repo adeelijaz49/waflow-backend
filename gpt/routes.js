@@ -77,8 +77,9 @@ router.post('/loyalty/remind', h(req => ops.sendLoyaltyReminders(req.body)));
 
 // ─── Flows (automated lifecycle messaging) ───────────────────────────────────
 router.get('/flows', h(req => ops.listFlows(req.query)));
-// Registered before /flows/:id so "preview" isn't swallowed as a flow id.
+// Registered before /flows/:id so "preview"/"message-variables" aren't swallowed as a flow id.
 router.get('/flows/preview', h(req => ops.previewFlowMessage({ triggerType: req.query.triggerType })));
+router.get('/flows/message-variables', h(req => ops.getFlowMessageVariables({ triggerType: req.query.triggerType })));
 router.get('/flows/:id', h(req => ops.getFlow({ id: req.params.id })));
 router.post('/flows', h(req => ops.createFlow(req.body)));
 router.patch('/flows/:id', h(req => ops.updateFlow({ id: req.params.id, ...req.body })));
@@ -87,6 +88,14 @@ router.post('/flows/:id/activate', h(req => ops.activateFlow({ id: req.params.id
 router.post('/flows/:id/pause', h(req => ops.pauseFlow({ id: req.params.id })));
 router.get('/flows/:id/enrollments', h(req => ops.listFlowEnrollments({ flowId: req.params.id, ...req.query })));
 router.get('/flows/:id/report', h(req => ops.getFlowReport({ flowId: req.params.id })));
+
+// ─── Message Nodes (branching — see models/MessageNode.js) ──────────────────
+router.post('/message-nodes', h(req => ops.createMessageNode(req.body)));
+router.get('/message-nodes/:id', h(req => ops.getMessageNode({ id: req.params.id })));
+router.patch('/message-nodes/:id', h(req => ops.updateMessageNode({ id: req.params.id, ...req.body })));
+router.delete('/message-nodes/:id', h(req => ops.deleteMessageNode({ id: req.params.id })));
+router.post('/message-nodes/:id/submit-template', h(req => ops.submitMessageNodeTemplate({ nodeId: req.params.id })));
+router.post('/message-nodes/:id/refresh-status', h(req => ops.refreshMessageNodeTemplateStatus({ nodeId: req.params.id })));
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 router.get('/settings/loyalty', h(() => ops.getLoyaltySettings()));

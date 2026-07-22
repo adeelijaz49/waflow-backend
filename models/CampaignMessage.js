@@ -27,6 +27,13 @@ const schema = new mongoose.Schema({
   order:        { type: mongoose.Schema.Types.ObjectId, ref: 'Order' },
   revenue:      { type: Number, default: 0 },
   pointsIssued: { type: Number, default: 0 },
+  // Branching (see models/MessageNode.js) — messageNode is the node this send
+  // rendered; respondedAt is the idempotency gate for button-tap handling (null
+  // until tapped, set atomically alongside clickedButtonPosition so a double-tap
+  // or a Meta webhook redelivery can never fire the same next_action twice).
+  messageNode:          { type: mongoose.Schema.Types.ObjectId, ref: 'MessageNode' },
+  respondedAt:          Date,
+  clickedButtonPosition: Number,
 }, { timestamps: true });
 
 schema.index({ promotion: 1, customer: 1 });

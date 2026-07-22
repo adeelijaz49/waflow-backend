@@ -21,6 +21,11 @@ const schema = new mongoose.Schema({
   templateName: String, // auto-set at creation from a fixed triggerType -> template constant map
   cooldownDaysOverride: Number, // optional per-flow override of Settings.flowCooldownDays
   lastRunAt: Date, // bookkeeping only — last scheduler tick that swept this flow
+  // Optional merchant-authored entry message (see models/MessageNode.js). Additive —
+  // when unset, this flow sends its fixed hardcoded triggerType template exactly as
+  // before. When set (and its MessageNode.templateStatus is 'approved'), that custom
+  // template is sent instead, and its buttons can branch to further MessageNodes.
+  entryNodeId: { type: mongoose.Schema.Types.ObjectId, ref: 'MessageNode' },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Flow', schema);

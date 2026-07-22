@@ -525,6 +525,7 @@ function buildOpenApiSpec() {
               inactivityDays: { type: 'integer' },
               delayHours: { type: 'number' },
               cooldownDaysOverride: { type: 'number' },
+              entryNodeId: { type: 'string', description: 'A MessageNode id to use as this flow\'s custom entry message instead of its fixed default. Must have an approved template before the flow can be activated.' },
             },
           } } } },
           responses: { 200: { description: 'Updated' } },
@@ -568,6 +569,82 @@ function buildOpenApiSpec() {
         get: {
           operationId: 'getFlowReport',
           summary: 'Funnel report for a flow: enrolled/messaged/exited/completed counts, messages sent/delivered/read/failed, clicks, orders created, revenue, points issued, conversion rate.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/flows/message-variables': {
+        get: {
+          operationId: 'getFlowMessageVariables',
+          summary: 'List the personalization variables available for a custom entry message, by triggerType (e.g. Customer Name, Points Balance) — insert as {{n}} tokens in the message body.',
+          parameters: [{ name: 'triggerType', in: 'query', required: true, schema: { type: 'string', enum: ['inactive_customer', 'post_purchase_points', 'points_balance_reminder', 'booking_no_show'] } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+
+      '/message-nodes': {
+        post: {
+          operationId: 'createMessageNode',
+          summary: 'Create a branching message (body text + up to 3 buttons) owned by a Flow. Set isEntryNode true to make it a flow\'s custom entry message.',
+          requestBody: { required: true, content: { 'application/json': { schema: {
+            type: 'object',
+            required: ['ownerId', 'bodyText'],
+            properties: {
+              ownerId: { type: 'string' },
+              isEntryNode: { type: 'boolean' },
+              bodyText: { type: 'string' },
+              buttons: { type: 'array', maxItems: 3, items: {
+                type: 'object',
+                properties: {
+                  position: { type: 'integer' },
+                  label: { type: 'string', maxLength: 20 },
+                  nextAction: { type: 'object', properties: {
+                    type: { type: 'string', enum: ['send_message', 'end_flow', 'apply_discount', 'redeem_points'] },
+                    targetNodeId: { type: 'string' },
+                  } },
+                },
+              } },
+            },
+          } } } },
+          responses: { 200: { description: 'Created' } },
+        },
+      },
+      '/message-nodes/{id}': {
+        get: {
+          operationId: 'getMessageNode',
+          summary: 'Fetch a single message node by id',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+        patch: {
+          operationId: 'updateMessageNode',
+          summary: 'Update a message node\'s body text and/or buttons',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          requestBody: { content: { 'application/json': { schema: {
+            type: 'object',
+            properties: { bodyText: { type: 'string' }, buttons: { type: 'array', maxItems: 3, items: { type: 'object' } } },
+          } } } },
+          responses: { 200: { description: 'Updated' } },
+        },
+        delete: {
+          operationId: 'deleteMessageNode',
+          summary: 'Permanently delete a message node',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'Deleted' } },
+        },
+      },
+      '/message-nodes/{id}/submit-template': {
+        post: {
+          operationId: 'submitMessageNodeTemplate',
+          summary: 'Submit an entry node\'s current body text + button labels to Meta for WhatsApp template approval. Required before a flow using it as entryNodeId can be activated.',
+          parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/message-nodes/{id}/refresh-status': {
+        post: {
+          operationId: 'refreshMessageNodeTemplateStatus',
+          summary: 'Pull the current live Meta approval status for a submitted entry node\'s template and sync it onto the node.',
           parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
           responses: { 200: { description: 'OK' } },
         },

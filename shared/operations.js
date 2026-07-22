@@ -16,12 +16,14 @@ const Booking    = require('../models/Booking');
 const CampaignMessage = require('../models/CampaignMessage');
 const Flow            = require('../models/Flow');
 const FlowEnrollment  = require('../models/FlowEnrollment');
+const MessageNode     = require('../models/MessageNode');
 const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
   sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
   PROMO_TEMPLATE, LOYALTY_TEMPLATE, WINBACK_TEMPLATE, POST_PURCHASE_TEMPLATE, POINTS_NUDGE_TEMPLATE, NO_SHOW_TEMPLATE,
   WINBACK_BODY, POST_PURCHASE_BODY, POINTS_NUDGE_BODY, NO_SHOW_BODY,
   buildPromoAnnouncementPayload, buildPointsPromoPayload,
+  createTemplate, getTemplate,
 } = require('../utils/whatsapp');
 const { carts } = require('../utils/state');
 const { APP_URL } = require('../utils/config');
@@ -867,8 +869,19 @@ async function updateFlow({ id, ...data }) {
 }
 
 async function activateFlow({ id }) {
-  const flow = await Flow.findByIdAndUpdate(id, { status: 'active' }, { new: true });
+  const flow = await Flow.findById(id);
   if (!flow) throw new Error('Flow not found');
+  if (flow.entryNodeId) {
+    // processEnrollment marks a FlowEnrollment 'messaged' (terminal) before the
+    // send is attempted — an unapproved template would silently burn enrollments
+    // with no retry, so activation is blocked until Meta has approved it.
+    const node = await MessageNode.findById(flow.entryNodeId);
+    if (!node || node.templateStatus !== 'approved') {
+      throw new Error("This flow's custom entry message needs an approved WhatsApp template before it can be activated.");
+    }
+  }
+  flow.status = 'active';
+  await flow.save();
   return flow;
 }
 
@@ -947,6 +960,103 @@ async function getFlowReport({ flowId }) {
   };
 }
 
+// ─── Message Nodes (branching — see models/MessageNode.js) ───────────────────
+// v1 scope: ownerType is always 'flow'. A Flow's entryNodeId (optional) points
+// at one of these; its buttons' nextAction can branch to further MessageNodes.
+
+const MAX_BUTTONS = 3;
+const MAX_LABEL_LENGTH = 20;
+const MAX_BRANCH_DEPTH = 3;
+
+// Variables available for a custom entry message, per triggerType — the fixed
+// {{n}} slot each maps to matches the existing hardcoded flow bodies exactly
+// (customerName is always {{1}} where present), so switching a flow between a
+// custom and default template never reshuffles positional params.
+const FLOW_MESSAGE_VARIABLES = {
+  inactive_customer:       [{ key: 'customerName', label: 'Customer Name', slot: 1 }],
+  post_purchase_points:    [{ key: 'customerName', label: 'Customer Name', slot: 1 }, { key: 'pointsBalance', label: 'Points Balance', slot: 2 }],
+  points_balance_reminder: [{ key: 'customerName', label: 'Customer Name', slot: 1 }, { key: 'pointsBalance', label: 'Points Balance', slot: 2 }],
+  booking_no_show:         [{ key: 'customerName', label: 'Customer Name', slot: 1 }, { key: 'serviceName', label: 'Service Name', slot: 2 }],
+};
+
+function getFlowMessageVariables({ triggerType }) {
+  return FLOW_MESSAGE_VARIABLES[triggerType] || [];
+}
+
+function validateButtons(buttons) {
+  if (!Array.isArray(buttons)) return;
+  if (buttons.length > MAX_BUTTONS) throw new Error(`A message can have at most ${MAX_BUTTONS} buttons.`);
+  for (const b of buttons) {
+    if (b.label && b.label.length > MAX_LABEL_LENGTH) {
+      throw new Error(`Button label "${b.label}" exceeds ${MAX_LABEL_LENGTH} characters.`);
+    }
+  }
+}
+
+async function createMessageNode({ ownerType = 'flow', ownerId, isEntryNode = false, bodyText, buttons = [], depth = 0 }) {
+  if (depth > MAX_BRANCH_DEPTH) throw new Error(`Messages can only branch ${MAX_BRANCH_DEPTH} levels deep.`);
+  validateButtons(buttons);
+  return MessageNode.create({ ownerType, ownerId, isEntryNode, bodyText, buttons, depth });
+}
+
+async function updateMessageNode({ id, bodyText, buttons }) {
+  const data = {};
+  if (bodyText != null) data.bodyText = bodyText;
+  if (buttons != null) { validateButtons(buttons); data.buttons = buttons; }
+  const node = await MessageNode.findByIdAndUpdate(id, data, { new: true, runValidators: true });
+  if (!node) throw new Error('MessageNode not found');
+  return node;
+}
+
+async function getMessageNode({ id }) {
+  const node = await MessageNode.findById(id);
+  if (!node) throw new Error('MessageNode not found');
+  return node;
+}
+
+async function deleteMessageNode({ id }) {
+  await MessageNode.findByIdAndDelete(id);
+  return { success: true };
+}
+
+// Dynamically builds and submits a Meta template creation request from a
+// merchant-authored entry node's current bodyText/buttons — the same
+// createTemplate() call the 4 fixed flow templates already go through, just
+// parameterized instead of hardcoded. Only entry nodes need a template; every
+// other node sends free-form (see utils/whatsapp.js#sendMessageNodeFollowUp).
+async function submitMessageNodeTemplate({ nodeId }) {
+  const node = await MessageNode.findById(nodeId);
+  if (!node) throw new Error('MessageNode not found');
+  if (!node.isEntryNode) throw new Error('Only entry nodes need a template.');
+
+  const templateName = node.templateName || `waflow_flow_${node._id.toString().slice(-10)}`;
+  const buttonLabels = node.buttons.map(b => b.label);
+  await createTemplate(templateName, node.bodyText, 'MARKETING', buttonLabels);
+
+  node.templateName = templateName;
+  node.templateStatus = 'pending';
+  await node.save();
+  return node;
+}
+
+// Meta reviews a submitted template asynchronously — nothing pushes that
+// outcome back to us, so this pulls the current live status on demand (same
+// on-demand-fetch pattern Settings already uses for the 4 fixed flow
+// templates, not a new polling mechanism) and syncs it onto the node.
+async function refreshMessageNodeTemplateStatus({ nodeId }) {
+  const node = await MessageNode.findById(nodeId);
+  if (!node) throw new Error('MessageNode not found');
+  if (!node.templateName) return node; // never submitted yet
+
+  const template = await getTemplate(node.templateName);
+  if (template) {
+    const statusMap = { APPROVED: 'approved', PENDING: 'pending', REJECTED: 'rejected', PAUSED: 'rejected' };
+    node.templateStatus = statusMap[template.status?.toUpperCase()] || node.templateStatus;
+    await node.save();
+  }
+  return node;
+}
+
 module.exports = {
   listProducts, getProduct, createProduct, updateProduct, deactivateProduct,
   listServices, getService, createService, updateService, deactivateService,
@@ -960,4 +1070,6 @@ module.exports = {
   getLoyaltySettings, updateLoyaltySettings,
   listFlows, getFlow, createFlow, updateFlow, activateFlow, pauseFlow, deleteFlow,
   listFlowEnrollments, getFlowReport, previewFlowMessage,
+  createMessageNode, updateMessageNode, getMessageNode, deleteMessageNode,
+  submitMessageNodeTemplate, refreshMessageNodeTemplateStatus, getFlowMessageVariables,
 };

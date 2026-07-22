@@ -1,7 +1,7 @@
 const Order = require('../../models/Order');
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
-const { sendWinbackTemplate } = require('../whatsapp');
+const { sendWinbackTemplate, sendCustomFlowTemplate } = require('../whatsapp');
 
 const DEFAULT_INACTIVITY_DAYS = 60;
 
@@ -57,7 +57,16 @@ async function revalidate(flow, enrollment) {
   return { outcome: 'proceed' };
 }
 
-async function buildSend(flow, enrollment, customer) {
+// entryNode is the flow's merchant-authored custom entry message (see
+// models/MessageNode.js), already resolved and confirmed 'approved' by the
+// caller (utils/flowScheduler.js#processEnrollment) — undefined/null means
+// this flow has no custom entry configured, so send the fixed default exactly
+// as before.
+async function buildSend(flow, enrollment, customer, entryNode) {
+  if (entryNode) {
+    const buttonPayloads = entryNode.buttons.map(b => `msgnode_${entryNode._id}_${b.position}`);
+    return sendCustomFlowTemplate(customer.phone, entryNode.templateName, [customer.firstname || 'Valued Customer'], buttonPayloads);
+  }
   return sendWinbackTemplate(customer.phone, customer.firstname, flow._id.toString(), enrollment._id.toString());
 }
 

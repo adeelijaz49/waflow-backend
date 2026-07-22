@@ -15,6 +15,7 @@ const SchedulerLock = require('../models/SchedulerLock');
 const Customer = require('../models/Customer');
 const CampaignMessage = require('../models/CampaignMessage');
 const Settings = require('../models/Settings');
+const MessageNode = require('../models/MessageNode');
 const triggers = require('./flowTriggers');
 
 const FLOW_SCHEDULER_INTERVAL_MS = +(process.env.FLOW_SCHEDULER_INTERVAL_MS || 5 * 60 * 1000);
@@ -107,11 +108,23 @@ async function processEnrollment(flow, enrollment) {
   );
   if (!claimed) return; // another tick/instance already claimed this enrollment
 
+  // Resolve the flow's optional custom entry message once here (not inside
+  // buildSend) — this is the one real reader of "what template did we send,"
+  // so it's also the one place that decides messageNode/templateName below.
+  // Only an *approved* template is ever used; activateFlow already blocks
+  // activation otherwise, but this re-checks in case approval was revoked
+  // after the flow went active.
+  let entryNode = null;
+  if (flow.entryNodeId) {
+    const node = await MessageNode.findById(flow.entryNodeId);
+    if (node && node.templateStatus === 'approved') entryNode = node;
+  }
+
   let status = 'sent';
   let statusReason;
   let wamid;
   try {
-    const result = await trigger.buildSend(flow, claimed, customer);
+    const result = await trigger.buildSend(flow, claimed, customer, entryNode);
     wamid = wamidOf(result);
   } catch (err) {
     status = 'failed';
@@ -121,7 +134,9 @@ async function processEnrollment(flow, enrollment) {
   await CampaignMessage.create({
     kind: 'flow', flow: flow._id, flowEnrollment: claimed._id,
     customer: customer._id, phone: customer.phone,
-    wamid, messageType: 'template', templateName: flow.templateName,
+    wamid, messageType: 'template',
+    templateName: entryNode ? entryNode.templateName : flow.templateName,
+    messageNode: entryNode ? entryNode._id : undefined,
     status, statusReason, sentAt: new Date(),
   }).catch(() => {});
 }

@@ -18,6 +18,15 @@ router.get('/preview', async (req, res) => {
   }
 });
 
+// Same reason — registered before /:id.
+router.get('/message-variables', async (req, res) => {
+  try {
+    res.json(await ops.getFlowMessageVariables({ triggerType: req.query.triggerType }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     res.json(await ops.getFlow({ id: req.params.id }));

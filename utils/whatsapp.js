@@ -134,19 +134,18 @@ async function getTemplate(name) {
   return templates.find(t => t.name === name) || null;
 }
 
-async function createTemplate(name, bodyText, category = 'MARKETING') {
+async function createTemplate(name, bodyText, category = 'MARKETING', buttonLabels = []) {
   const wabaId = await getWabaId();
+  const components = [
+    { type: 'BODY', text: bodyText },
+    { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+  ];
+  if (buttonLabels.length) {
+    components.push({ type: 'BUTTONS', buttons: buttonLabels.map(text => ({ type: 'QUICK_REPLY', text })) });
+  }
   const res = await axios.post(
     `${WA_BASE}/${wabaId}/message_templates`,
-    {
-      name,
-      language:   'en',
-      category,
-      components: [
-        { type: 'BODY', text: bodyText },
-        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
-      ],
-    },
+    { name, language: 'en', category, components },
     { headers: getHeaders() },
   );
   return res.data;
@@ -421,6 +420,66 @@ async function sendPointsNudgeTemplate(to, customerName, loyaltyPoints, flowId, 
           parameters: [{ type: 'payload', payload: `flowbrowse_${flowId}_${enrollmentId}` }],
         },
       ],
+    },
+  });
+}
+
+// ── Branching (see models/MessageNode.js) ──────────────────────────────────────
+
+// Sends a merchant-authored custom Flow entry message as an approved WhatsApp
+// Template. bodyParams fills {{1}}, {{2}}, ... positionally; buttonPayloads is
+// one payload string per button (0-2), in the same order the template's BUTTONS
+// component was submitted with.
+async function sendCustomFlowTemplate(to, templateName, bodyParams, buttonPayloads) {
+  return waPost({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name:     templateName,
+      language: { code: 'en' },
+      components: [
+        {
+          type: 'body',
+          parameters: bodyParams.map(text => ({ type: 'text', text: String(text) })),
+        },
+        ...buttonPayloads.map((payload, index) => ({
+          type: 'button',
+          sub_type: 'quick_reply',
+          index: String(index),
+          parameters: [{ type: 'payload', payload }],
+        })),
+      ],
+    },
+  });
+}
+
+// Sends a branching follow-up MessageNode as a free-form message — safe because
+// the button tap that triggered this just reopened the 24-hour session window,
+// so (unlike the entry node) this never needs template approval. variableValues
+// resolves any {{n}} tokens in the node's bodyText, same positional convention
+// as the entry template.
+async function sendMessageNodeFollowUp(to, node, variableValues = []) {
+  let bodyText = node.bodyText;
+  variableValues.forEach((val, i) => { bodyText = bodyText.split(`{{${i + 1}}}`).join(String(val)); });
+
+  if (!node.buttons.length) {
+    return waPost({ messaging_product: 'whatsapp', to, type: 'text', text: { body: bodyText } });
+  }
+
+  return waPost({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: node.buttons.map(b => ({
+          type: 'reply',
+          reply: { id: `msgnode_${node._id}_${b.position}`, title: b.label },
+        })),
+      },
     },
   });
 }
@@ -868,6 +927,7 @@ module.exports = {
   createPostPurchaseTemplate,
   createPointsNudgeTemplate,
   createNoShowTemplate,
+  createTemplate,
   deleteTemplate,
   sendPromoTemplate,
   sendLoyaltyTemplate,
@@ -875,6 +935,9 @@ module.exports = {
   sendPostPurchaseTemplate,
   sendPointsNudgeTemplate,
   sendNoShowTemplate,
+  // Branching
+  sendCustomFlowTemplate,
+  sendMessageNodeFollowUp,
   // Catalog
   sendCatalog,
   // Announcement + carousel

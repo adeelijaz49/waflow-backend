@@ -15,6 +15,7 @@ const { money } = require("./utils/currency");
 const { getCurrency } = require("./utils/settingsCache");
 const CampaignMessage = require("./models/CampaignMessage");
 const FlowEnrollment  = require("./models/FlowEnrollment");
+const MessageNode     = require("./models/MessageNode");
 
 const app  = express();
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
@@ -38,6 +39,7 @@ app.use("/api/customers",  require("./routes/customers"));
 app.use("/api/orders",     require("./routes/orders"));
 app.use("/api/promotions", require("./routes/promotions"));
 app.use("/api/flows",      require("./routes/flows"));
+app.use("/api/message-nodes", require("./routes/messageNodes"));
 app.use("/api/services",   require("./routes/services"));
 app.use("/api/whatsapp",   require("./routes/whatsapp"));
 app.use("/api/settings",  require("./routes/settings"));
@@ -176,6 +178,69 @@ async function correlateClick({ from, wamid, promotionId }) {
   } catch (err) {
     console.error("correlateClick error:", err.message);
     return null;
+  }
+}
+
+// Handles a tap on a branching MessageNode button (payload msgnode_<nodeId>_<position>,
+// see models/MessageNode.js). Single atomic claim scoped by wamid+respondedAt —
+// a losing concurrent/duplicate tap (genuine double-tap, or a Meta webhook
+// redelivery) gets null back and no-ops; first tap wins, matching how a
+// WhatsApp client's buttons aren't re-tappable once used. Called from both the
+// entry-node dispatch (message.type === "button", always a template reply) and
+// the deeper-node dispatch (interactive.button_reply, always a free-form reply)
+// so the two webhook shapes can't drift into two separate implementations.
+async function handleMessageNodeTap({ from, wamid, nodeId, position }) {
+  try {
+    if (!wamid) return;
+    const claimed = await CampaignMessage.findOneAndUpdate(
+      { wamid, respondedAt: null },
+      { $set: { clickedAt: new Date(), respondedAt: new Date(), clickedButtonPosition: position } },
+      { new: true },
+    );
+    if (!claimed) return; // already handled
+
+    const node = await MessageNode.findById(nodeId);
+    const button = node?.buttons.find(b => b.position === position);
+    if (!button) return;
+
+    const { type, targetNodeId } = button.nextAction;
+
+    if (type === "send_message" && targetNodeId) {
+      const targetNode = await MessageNode.findById(targetNodeId);
+      if (!targetNode) return;
+
+      const Customer = require("./models/Customer");
+      const customer = await Customer.findById(claimed.customer);
+      if (!customer || customer.optedOut) return; // opt-out enforced at every node, not just the entry message
+
+      // The send itself gets its own try/catch (matching flowScheduler.js's
+      // processEnrollment pattern) so a failed WhatsApp call still results in a
+      // CampaignMessage row (status:'failed') rather than silently recording
+      // nothing — the outer try/catch around this whole function would
+      // otherwise swallow a send failure before reaching CampaignMessage.create.
+      const { sendMessageNodeFollowUp } = require("./utils/whatsapp");
+      let sendStatus = "sent";
+      let statusReason;
+      let followUpWamid;
+      try {
+        const result = await sendMessageNodeFollowUp(from, targetNode, [customer.firstname || "there"]);
+        followUpWamid = result?.messages?.[0]?.id;
+      } catch (err) {
+        sendStatus = "failed";
+        statusReason = err.message;
+      }
+      await CampaignMessage.create({
+        kind: "flow", flow: claimed.flow, flowEnrollment: claimed.flowEnrollment,
+        customer: customer._id, phone: from,
+        wamid: followUpWamid, messageType: "interactive", messageNode: targetNode._id,
+        status: sendStatus, statusReason, sentAt: new Date(),
+      }).catch(() => {});
+    } else if (type === "end_flow" && claimed.flowEnrollment) {
+      await FlowEnrollment.findByIdAndUpdate(claimed.flowEnrollment, { state: "completed" }).catch(() => {});
+    }
+    // apply_discount / redeem_points: not yet wired (Phase 4)
+  } catch (err) {
+    console.error("handleMessageNodeTap error:", err.message);
   }
 }
 
@@ -786,6 +851,11 @@ app.post("/webhook", async (req, res) => {
       const bookingId = parts[1];
       const cm = await correlateClick({ from, wamid: message.context?.id });
       await handleRebookRequest(from, serviceId, bookingId, cm?.flowEnrollment);
+    } else if (payload.startsWith("msgnode_")) {
+      // Entry-node tap — always arrives here since the entry message is always
+      // a template (see models/MessageNode.js).
+      const parts = payload.slice(8).split("_");
+      await handleMessageNodeTap({ from, wamid: message.context?.id, nodeId: parts[0], position: +parts[1] });
     }
     return;
   }
@@ -845,6 +915,12 @@ app.post("/webhook", async (req, res) => {
         const promoId = buttonId.slice(6);
         const cm = await correlateClick({ from, wamid: message.context?.id, promotionId: promoId });
         await handlePromoInterest(from, promoId, cm?._id);
+
+      } else if (buttonId.startsWith("msgnode_")) {
+        // Deeper-node tap — always arrives here since follow-up MessageNodes
+        // are always sent free-form (see models/MessageNode.js).
+        const parts = buttonId.slice(8).split("_");
+        await handleMessageNodeTap({ from, wamid: message.context?.id, nodeId: parts[0], position: +parts[1] });
 
       } else if (buttonId.startsWith("int_")) {
         // Legacy: manual single-product send from /send-message endpoint
