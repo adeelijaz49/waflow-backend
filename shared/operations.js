@@ -911,7 +911,35 @@ async function listFlowEnrollments({ flowId, page = 1, limit = 50 }) {
       .populate('booking'),
     FlowEnrollment.countDocuments(filter),
   ]);
-  return { enrollments, total, page, pages: Math.ceil(total / limit) };
+
+  // Resolves which button (if any) a customer tapped, for display alongside
+  // the existing enrollment state — a light touch-up on the existing view,
+  // not new analytics infrastructure (per-button click-through reporting is
+  // an explicitly deferred §11 item, see the branching plan).
+  const enrollmentIds = enrollments.map(e => e._id);
+  const tapped = await CampaignMessage.find({
+    flowEnrollment: { $in: enrollmentIds }, respondedAt: { $ne: null }, clickedButtonPosition: { $ne: null },
+  }, 'flowEnrollment messageNode clickedButtonPosition').sort({ respondedAt: -1 });
+
+  const nodeIds = [...new Set(tapped.map(t => t.messageNode?.toString()).filter(Boolean))];
+  const nodes = nodeIds.length ? await MessageNode.find({ _id: { $in: nodeIds } }, 'buttons') : [];
+  const nodeById = Object.fromEntries(nodes.map(n => [n._id.toString(), n]));
+
+  const tappedLabelByEnrollment = {};
+  for (const t of tapped) {
+    const key = t.flowEnrollment?.toString();
+    if (!key || tappedLabelByEnrollment[key]) continue; // most recent tap only (sorted desc above)
+    const node = t.messageNode && nodeById[t.messageNode.toString()];
+    const button = node?.buttons.find(b => b.position === t.clickedButtonPosition);
+    tappedLabelByEnrollment[key] = button?.label || null;
+  }
+
+  const withTaps = enrollments.map(e => ({
+    ...e.toObject(),
+    tappedButtonLabel: tappedLabelByEnrollment[e._id.toString()] || null,
+  }));
+
+  return { enrollments: withTaps, total, page, pages: Math.ceil(total / limit) };
 }
 
 async function getFlowReport({ flowId }) {

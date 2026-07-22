@@ -7,6 +7,7 @@ const Customer = require('../models/Customer');
 const Flow = require('../models/Flow');
 const FlowEnrollment = require('../models/FlowEnrollment');
 const CampaignMessage = require('../models/CampaignMessage');
+const MessageNode = require('../models/MessageNode');
 const { WINBACK_TEMPLATE, POST_PURCHASE_TEMPLATE } = require('../utils/whatsapp');
 
 const TEST_PHONE = '15550006666';
@@ -151,4 +152,56 @@ describe('getFlowReport', () => {
     const report = await ops.getFlowReport({ flowId: flow._id });
     expect(report.exited).toBe(1);
   });
+});
+
+describe('listFlowEnrollments: tappedButtonLabel (Phase 5 reporting touch-up)', () => {
+  let flow, customer, node;
+
+  beforeAll(async () => {
+    await connectOnce();
+    flow = await Flow.create({ name: '__test_enrollments_tap_flow__', triggerType: 'inactive_customer', inactivityDays: 60, templateName: WINBACK_TEMPLATE });
+    node = await MessageNode.create({
+      ownerType: 'flow', ownerId: flow._id, isEntryNode: true, bodyText: 'Hi {{1}}',
+      buttons: [{ position: 0, label: 'Shop Now', nextAction: { type: 'end_flow' } }],
+    });
+  }, 15000);
+
+  afterAll(async () => {
+    await CampaignMessage.deleteMany({ flow: flow._id });
+    await FlowEnrollment.deleteMany({ flow: flow._id });
+    await MessageNode.findByIdAndDelete(node._id);
+    await Flow.findByIdAndDelete(flow._id);
+  });
+
+  afterEach(async () => {
+    if (customer) { await Customer.findByIdAndDelete(customer._id); customer = null; }
+  });
+
+  test('resolves the tapped button label when a response was recorded', async () => {
+    customer = await Customer.create({ firstname: '__test_enrollments_tap_customer__', lastname: 'Test', phone: '15559299' });
+    const enrollment = await FlowEnrollment.create({ flow: flow._id, customer: customer._id, state: 'messaged', messagedAt: new Date() });
+    await CampaignMessage.create({
+      kind: 'flow', flow: flow._id, flowEnrollment: enrollment._id, customer: customer._id, phone: customer.phone,
+      wamid: 'wamid.ENROLL_TAP', messageType: 'template', messageNode: node._id,
+      status: 'sent', sentAt: new Date(), respondedAt: new Date(), clickedButtonPosition: 0,
+    });
+
+    const { enrollments } = await ops.listFlowEnrollments({ flowId: flow._id });
+    const found = enrollments.find(e => e._id.toString() === enrollment._id.toString());
+    expect(found.tappedButtonLabel).toBe('Shop Now');
+  }, 15000);
+
+  test('is null when no response has been recorded yet', async () => {
+    customer = await Customer.create({ firstname: '__test_enrollments_notap_customer__', lastname: 'Test', phone: '15559298' });
+    const enrollment = await FlowEnrollment.create({ flow: flow._id, customer: customer._id, state: 'messaged', messagedAt: new Date() });
+    await CampaignMessage.create({
+      kind: 'flow', flow: flow._id, flowEnrollment: enrollment._id, customer: customer._id, phone: customer.phone,
+      wamid: 'wamid.ENROLL_NOTAP', messageType: 'template', messageNode: node._id,
+      status: 'sent', sentAt: new Date(),
+    });
+
+    const { enrollments } = await ops.listFlowEnrollments({ flowId: flow._id });
+    const found = enrollments.find(e => e._id.toString() === enrollment._id.toString());
+    expect(found.tappedButtonLabel).toBeNull();
+  }, 15000);
 });
