@@ -237,8 +237,22 @@ async function handleMessageNodeTap({ from, wamid, nodeId, position }) {
       }).catch(() => {});
     } else if (type === "end_flow" && claimed.flowEnrollment) {
       await FlowEnrollment.findByIdAndUpdate(claimed.flowEnrollment, { state: "completed" }).catch(() => {});
+    } else if (type === "apply_discount" || type === "redeem_points") {
+      // No standalone "apply a one-off discount to this customer" or "mark
+      // points redeemed outside a real order" operation exists yet to call —
+      // discounts today only exist baked into a whole Promotion send, and
+      // points redemption only happens via the full WhatsApp checkout flow.
+      // Building either is a separate, larger feature than this branching
+      // spec covers. Recorded as a visible, reportable outcome rather than
+      // silently doing nothing, so a merchant configuring this isn't left
+      // wondering why the tap produced no effect.
+      console.warn(`MessageNode action "${type}" tapped but not yet implemented (node ${nodeId}, position ${position})`);
+      await CampaignMessage.create({
+        kind: "flow", flow: claimed.flow, flowEnrollment: claimed.flowEnrollment,
+        customer: claimed.customer, phone: from,
+        messageType: "text", status: "failed", statusReason: `action_not_implemented:${type}`, sentAt: new Date(),
+      }).catch(() => {});
     }
-    // apply_discount / redeem_points: not yet wired (Phase 4)
   } catch (err) {
     console.error("handleMessageNodeTap error:", err.message);
   }
