@@ -31,6 +31,10 @@ async function revalidate(flow, enrollment) {
   const customer = await Customer.findById(enrollment.customer);
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
+  // Demo customers must never receive a real WhatsApp send from an unattended
+  // scheduler tick — findEligible here is Order-sourced (no customer-level
+  // filter available), so this revalidate gate is the only checkpoint.
+  if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
 
   const order = await Order.findById(enrollment.sourceRef);
   if (!order) return { outcome: 'exit', reason: 'order_deleted' };

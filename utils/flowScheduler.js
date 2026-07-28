@@ -49,11 +49,32 @@ async function acquireLock() {
   }
 }
 
+// §8.3: cascade/escalation sequences (e.g. win-back at 30/60/90 days) are
+// independent rules with a mutually-exclusive condition, not a native
+// sequence — a customer is only eligible for a flow with requiresPriorFlowId
+// set if they already have a non-completed (didn't convert) FlowEnrollment
+// for that prior-stage flow. Cross-cutting (applies regardless of
+// triggerType), so it lives here rather than duplicated in every trigger file.
+async function filterByRequiresPriorFlow(flow, candidates) {
+  if (!flow.requiresPriorFlowId || !candidates.length) return candidates;
+
+  const customerIds = candidates.map(c => c.customerId);
+  const priorNonConverted = await FlowEnrollment.find({
+    flow: flow.requiresPriorFlowId,
+    customer: { $in: customerIds },
+    state: { $in: ['messaged', 'exited'] }, // sent (or exited) but never 'completed' — i.e. didn't convert
+  }).distinct('customer');
+  const eligibleSet = new Set(priorNonConverted.map(id => id.toString()));
+
+  return candidates.filter(c => eligibleSet.has(c.customerId.toString()));
+}
+
 // Phase A — create a FlowEnrollment for every newly-eligible customer.
 async function enrollEligibleCustomers(flow) {
   const trigger = triggers[flow.triggerType];
   if (!trigger) return;
-  const candidates = await trigger.findEligible(flow);
+  let candidates = await trigger.findEligible(flow);
+  candidates = await filterByRequiresPriorFlow(flow, candidates);
   for (const c of candidates) {
     try {
       await FlowEnrollment.create({
@@ -108,35 +129,77 @@ async function processEnrollment(flow, enrollment) {
   );
   if (!claimed) return; // another tick/instance already claimed this enrollment
 
-  // Resolve the flow's optional custom entry message once here (not inside
-  // buildSend) — this is the one real reader of "what template did we send,"
-  // so it's also the one place that decides messageNode/templateName below.
-  // Only an *approved* template is ever used; activateFlow already blocks
-  // activation otherwise, but this re-checks in case approval was revoked
-  // after the flow went active.
-  let entryNode = null;
-  if (flow.entryNodeId) {
-    const node = await MessageNode.findById(flow.entryNodeId);
-    if (node && node.templateStatus === 'approved') entryNode = node;
-  }
-
   let status = 'sent';
   let statusReason;
   let wamid;
-  try {
-    const result = await trigger.buildSend(flow, claimed, customer, entryNode);
-    wamid = wamidOf(result);
-  } catch (err) {
-    status = 'failed';
-    statusReason = err.message;
+  let templateName;
+  let messageNode;
+  let promotionRef;
+
+  if (flow.promotionId) {
+    // DEFECT-03: "A Flow = a trigger condition + a reference to an existing
+    // Promotion" — the condition side is still whatever trigger.findEligible/
+    // revalidate decided above; only the *action* differs. Reuses exactly the
+    // same entry-node-or-nothing resolution shared/operations.js#sendPromotion
+    // uses for a manual campaign send — a Flow can only reference a Promotion
+    // that already has its own approved custom message (DEFECT-02); there is
+    // no generic points/cash fallback template to fall back to here, since an
+    // automated send always needs an approved template and none is fixed for
+    // an arbitrary promotion shape.
+    promotionRef = flow.promotionId;
+    try {
+      const Promotion = require('../models/Promotion');
+      const { resolveApprovedEntryNode, buildPromoEntryNodeParams, resolvePromoItems } = require('../shared/operations');
+      const { sendCustomFlowTemplate } = require('./whatsapp');
+
+      const promotion = await Promotion.findById(flow.promotionId).populate('products').populate('services');
+      if (!promotion) throw new Error('Referenced promotion not found');
+
+      const entryNode = await resolveApprovedEntryNode(promotion);
+      if (!entryNode) throw new Error("This flow's referenced promotion needs an approved custom message before it can send.");
+
+      // Record which template we're using regardless of send success — a
+      // template send validates the template's existence/approval
+      // synchronously, so a throw below must not lose that intent (matches
+      // shared/operations.js#sendPromotion's identical fix for the same issue).
+      templateName = entryNode.templateName;
+      messageNode = entryNode._id;
+
+      const items = await resolvePromoItems(promotion);
+      const params = await buildPromoEntryNodeParams(customer, promotion, items);
+      const buttonPayloads = entryNode.buttons.map(b => `msgnode_${entryNode._id}_${b.position}`);
+      const result = await sendCustomFlowTemplate(customer.phone, entryNode.templateName, params, buttonPayloads);
+      wamid = wamidOf(result);
+    } catch (err) {
+      status = 'failed';
+      statusReason = err.message;
+    }
+  } else {
+    // Legacy (pre-DEFECT-03) path — the flow's own fixed template or its own
+    // custom entry message (see models/MessageNode.js). Only an *approved*
+    // template is ever used; activateFlow already blocks activation
+    // otherwise, but this re-checks in case approval was revoked after the
+    // flow went active.
+    let entryNode = null;
+    if (flow.entryNodeId) {
+      const node = await MessageNode.findById(flow.entryNodeId);
+      if (node && node.templateStatus === 'approved') entryNode = node;
+    }
+    try {
+      const result = await trigger.buildSend(flow, claimed, customer, entryNode);
+      wamid = wamidOf(result);
+    } catch (err) {
+      status = 'failed';
+      statusReason = err.message;
+    }
+    templateName = entryNode ? entryNode.templateName : flow.templateName;
+    messageNode = entryNode ? entryNode._id : undefined;
   }
 
   await CampaignMessage.create({
-    kind: 'flow', flow: flow._id, flowEnrollment: claimed._id,
+    kind: 'flow', flow: flow._id, flowEnrollment: claimed._id, promotion: promotionRef,
     customer: customer._id, phone: customer.phone,
-    wamid, messageType: 'template',
-    templateName: entryNode ? entryNode.templateName : flow.templateName,
-    messageNode: entryNode ? entryNode._id : undefined,
+    wamid, messageType: 'template', templateName, messageNode,
     status, statusReason, sentAt: new Date(),
   }).catch(() => {});
 }

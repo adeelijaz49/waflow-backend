@@ -2,6 +2,8 @@ const inactiveCustomer = require('./inactiveCustomer');
 const postPurchasePoints = require('./postPurchasePoints');
 const pointsBalanceReminder = require('./pointsBalanceReminder');
 const bookingNoShow = require('./bookingNoShow');
+const pointsThreshold = require('./pointsThreshold');
+const purchaseFrequency = require('./purchaseFrequency');
 
 // Registry mapping Flow.triggerType -> a plugin exposing exactly three
 // functions. utils/flowScheduler.js (the engine) is entirely trigger-agnostic
@@ -34,4 +36,7 @@ module.exports = {
   post_purchase_points: postPurchasePoints,
   points_balance_reminder: pointsBalanceReminder,
   booking_no_show: bookingNoShow,
+  // DEFECT-03 §8.1 — new metrics beyond the original 4.
+  points_threshold: pointsThreshold,
+  purchase_frequency: purchaseFrequency,
 };

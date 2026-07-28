@@ -19,6 +19,12 @@ const schema = new mongoose.Schema({
   sentAt:          Date,
   sentCount:       { type: Number, default: 0 },
   isDemo:          { type: Boolean, default: false }, // flags seeded demo promotions (see seed/seed-demo.js)
+  // Optional merchant-authored entry message (see models/MessageNode.js), same
+  // pattern as Flow.entryNodeId (DEFECT-02) — additive: unset means the fixed
+  // built-in announcement/template is sent exactly as before. When set (and
+  // its MessageNode.templateStatus is 'approved'), that custom template is
+  // sent instead, and its buttons can branch to further MessageNodes.
+  entryNodeId:     { type: mongoose.Schema.Types.ObjectId, ref: 'MessageNode' },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Promotion', schema);

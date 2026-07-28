@@ -134,6 +134,32 @@ async function getTemplate(name) {
   return templates.find(t => t.name === name) || null;
 }
 
+// DEFECT-05: these 6 fixed fallback templates (PROMO_TEMPLATE, LOYALTY_TEMPLATE,
+// WINBACK_TEMPLATE, etc.) used to require a merchant to manually click "Create"
+// in Settings before their first send would work. That manual step is now gone
+// — each send*Template function below calls this first so a brand-new account
+// (or one where a template got deleted) self-heals instead of failing forever.
+// Scoped to "missing" only, not "rejected" — auto-recreating a rejected template
+// blindly could hammer Meta's API in a loop if the body content is the actual
+// problem; that edge case is out of scope here (visible via Settings' read-only
+// status view, just not auto-fixed).
+const knownTemplates = new Set();
+
+async function ensureTemplateExists(name, creatorFn) {
+  if (knownTemplates.has(name)) return;
+  try {
+    if (await getTemplate(name)) { knownTemplates.add(name); return; }
+  } catch (_) { /* listTemplates failed — fall through and attempt creation anyway */ }
+  try {
+    await creatorFn();
+    knownTemplates.add(name);
+  } catch (_) {
+    // Might already exist (race with a concurrent send) or creation genuinely
+    // failed — don't cache a failure; the send attempt right after this call
+    // will surface the real error either way, and the next send retries fresh.
+  }
+}
+
 async function createTemplate(name, bodyText, category = 'MARKETING', buttonLabels = []) {
   const wabaId = await getWabaId();
   const components = [
@@ -287,6 +313,7 @@ async function createNoShowTemplate() {
 // ── Template sending ──────────────────────────────────────────────────────────
 
 async function sendPromoTemplate(to, customer, product, promotion) {
+  await ensureTemplateExists(PROMO_TEMPLATE, createPromoTemplate);
   const discounted = (product.basePrice * (1 - promotion.discountPercent / 100)).toFixed(2);
   const currency = await getCurrency();
   return waPost({
@@ -321,6 +348,7 @@ async function sendPromoTemplate(to, customer, product, promotion) {
 }
 
 async function sendLoyaltyTemplate(to, customerName, loyaltyPoints) {
+  await ensureTemplateExists(LOYALTY_TEMPLATE, createLoyaltyTemplate);
   const worth = (loyaltyPoints / 10).toFixed(2);
   const currency = await getCurrency();
   return waPost({
@@ -347,6 +375,7 @@ async function sendLoyaltyTemplate(to, customerName, loyaltyPoints) {
 // the click can be correlated to the exact FlowEnrollment (see server.js's
 // `flowbrowse_` button routing).
 async function sendWinbackTemplate(to, customerName, flowId, enrollmentId) {
+  await ensureTemplateExists(WINBACK_TEMPLATE, createWinbackTemplate);
   return waPost({
     messaging_product: 'whatsapp',
     to,
@@ -371,6 +400,7 @@ async function sendWinbackTemplate(to, customerName, flowId, enrollmentId) {
 }
 
 async function sendPostPurchaseTemplate(to, customerName, loyaltyPoints, flowId, enrollmentId) {
+  await ensureTemplateExists(POST_PURCHASE_TEMPLATE, createPostPurchaseTemplate);
   return waPost({
     messaging_product: 'whatsapp',
     to,
@@ -398,6 +428,7 @@ async function sendPostPurchaseTemplate(to, customerName, loyaltyPoints, flowId,
 }
 
 async function sendPointsNudgeTemplate(to, customerName, loyaltyPoints, flowId, enrollmentId) {
+  await ensureTemplateExists(POINTS_NUDGE_TEMPLATE, createPointsNudgeTemplate);
   return waPost({
     messaging_product: 'whatsapp',
     to,
@@ -488,6 +519,7 @@ async function sendMessageNodeFollowUp(to, node, variableValues = []) {
 // other 3) so the webhook can call handleRebookRequest directly — the originating
 // FlowEnrollment is instead recovered via wamid correlation on the button tap.
 async function sendNoShowTemplate(to, customerName, serviceName, serviceId, bookingId) {
+  await ensureTemplateExists(NO_SHOW_TEMPLATE, createNoShowTemplate);
   return waPost({
     messaging_product: 'whatsapp',
     to,

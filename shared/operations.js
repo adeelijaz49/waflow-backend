@@ -20,6 +20,7 @@ const MessageNode     = require('../models/MessageNode');
 const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
   sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
+  sendCustomFlowTemplate,
   PROMO_TEMPLATE, LOYALTY_TEMPLATE, WINBACK_TEMPLATE, POST_PURCHASE_TEMPLATE, POINTS_NUDGE_TEMPLATE, NO_SHOW_TEMPLATE,
   WINBACK_BODY, POST_PURCHASE_BODY, POINTS_NUDGE_BODY, NO_SHOW_BODY,
   buildPromoAnnouncementPayload, buildPointsPromoPayload,
@@ -36,6 +37,48 @@ const SHIPPING_COST = 0.5; // flat rate, matches server.js's WhatsApp checkout f
 
 function wamidOf(sendResult) {
   return sendResult?.messages?.[0]?.id;
+}
+
+// ─── Demo Mode isolation ───────────────────────────────────────────────────────
+// A merchant/reseller in Demo Mode must never trigger a real WhatsApp API call —
+// no exceptions, since demo customers can share a single real phone number (see
+// seed/seed-demo.js) and Automated Flows run unattended. sendPromotion and
+// sendLoyaltyReminders (bulk/automatic paths) fully simulate instead of sending
+// whenever the promotion or any targeted customer is isDemo. sendTestMessage is
+// deliberately NOT intercepted — it always takes an admin-typed phone number for
+// one-off manual preview, a different and intentionally real action.
+function fakeWamid() {
+  return `demo_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Simulates a customer converting on a demo send — creates a real Order/points
+// change against the (demo) customer so the campaign report and dashboard look
+// alive, without ever touching the WhatsApp API. ~55% conversion rate.
+async function simulateDemoConversion({ customer, promotion, items }) {
+  if (!items?.length || Math.random() > 0.55) return null;
+  const isPoints = promotion?.customerType === 'points';
+  const item = items[Math.floor(Math.random() * items.length)];
+  const pointsCost = isPoints ? (promotion?.pointsPrice || 0) : 0;
+
+  if (isPoints && (customer.loyaltyPoints || 0) < pointsCost) return null;
+
+  const unitPrice = isPoints ? 0 : +(item.basePrice * (1 - (promotion?.discountPercent || 0) / 100)).toFixed(2);
+  const pointsEarned = isPoints ? 0 : Math.max(100, Math.round(unitPrice * 100));
+  const pointsDelta = pointsEarned - pointsCost;
+  if (pointsDelta) {
+    await Customer.findByIdAndUpdate(customer._id, { $inc: { loyaltyPoints: pointsDelta }, $set: { loyaltyPointsUpdatedAt: new Date() } });
+  }
+
+  const order = await Order.create({
+    customer: customer._id,
+    items: [{ productName: item.name, category: item.category || 'General', quantity: 1, unitPrice }],
+    subtotal: unitPrice, shippingCost: 0, shippingAddress: customer.address || undefined,
+    total: unitPrice, loyaltyPointsUsed: pointsCost, loyaltyDiscount: pointsCost,
+    status: 'confirmed', loyaltyPointsEarned: pointsEarned,
+    source: 'campaign', promotion: promotion?._id,
+    paymentStatus: 'paid', paidAt: new Date(),
+  });
+  return { order, revenue: unitPrice, pointsIssued: pointsEarned };
 }
 
 // ─── Products ────────────────────────────────────────────────────────────────
@@ -517,11 +560,16 @@ async function getPaymentStatus({ paymentIntentId }) {
 async function listPromotions({ isDemo } = {}) {
   const filter = {};
   if (isDemo !== undefined) filter.isDemo = isDemo === true || isDemo === 'true';
-  return Promotion.find(filter).populate('products', 'name basePrice images').populate('services', 'name basePrice duration').sort({ createdAt: -1 });
+  return Promotion.find(filter)
+    .populate('products', 'name basePrice images').populate('services', 'name basePrice duration')
+    .populate('entryNodeId', 'templateStatus') // lets the list view show template status with no extra round-trip
+    .sort({ createdAt: -1 });
 }
 
 async function getPromotion({ id }) {
-  const promo = await Promotion.findById(id).populate('products', 'name basePrice images category description').populate('services');
+  const promo = await Promotion.findById(id)
+    .populate('products', 'name basePrice images category description').populate('services')
+    .populate('entryNodeId', 'templateStatus');
   if (!promo) throw new Error('Promotion not found');
   return promo;
 }
@@ -547,6 +595,10 @@ async function updatePromotion({ id, productIds, serviceIds, products, services,
 }
 
 async function deletePromotion({ id }) {
+  const promotion = await Promotion.findById(id);
+  // Mirrors deleteFlow's cascade — a custom entry message's whole branching
+  // subtree becomes unreachable garbage otherwise (see deleteMessageNodeSubtree).
+  if (promotion?.entryNodeId) await deleteMessageNodeSubtree(promotion.entryNodeId);
   await Promotion.findByIdAndDelete(id);
   return { success: true };
 }
@@ -574,25 +626,38 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
     }},
   ]);
 
+  // getRecommendedCustomers is the regular Promotions screen's targeting view
+  // only (the dedicated /demo page fetches isDemo:true customers directly) —
+  // seeded demo customers must never surface here, so a merchant doesn't have
+  // fake data blended into their real campaign targeting.
   if (promotion.customerType === 'points') {
-    const all = await Customer.find({ optedOut: { $ne: true } }).sort({ loyaltyPoints: -1 }).limit(topN).lean();
+    const all = await Customer.find({ optedOut: { $ne: true }, isDemo: { $ne: true } }).sort({ loyaltyPoints: -1 }).limit(topN).lean();
     return all.map(c => ({
       ...c, rfmScore: 0, segment: 'Best customers to target', orderCount: 0, totalSpent: 0,
       hasEnoughPoints: c.loyaltyPoints >= (promotion.pointsPrice || 0),
     }));
   }
 
-  if (!stats.length) {
-    const all = await Customer.find({ optedOut: { $ne: true } }).limit(topN).lean();
-    return all.map(c => ({ ...c, rfmScore: 0, segment: 'Best customers to target', orderCount: 0, totalSpent: 0 }));
-  }
+  // Every opted-in customer is a candidate, not just ones with order history.
+  // Previously this scored/ranked only customers appearing in `stats` (i.e.
+  // ≥1 non-cancelled order), so a brand-new or freshly-imported customer with
+  // zero orders could never be recommended for a cash promotion — silently and
+  // permanently invisible in the send panel regardless of the limit (DEFECT-04B).
+  // Order-less customers now score 0 (no signal) and rank last, but remain
+  // selectable.
+  const allCustomers = await Customer.find({ optedOut: { $ne: true }, isDemo: { $ne: true } }, '_id').lean();
+  if (!allCustomers.length) return [];
 
-  const now = Date.now();
-  const maxDays   = Math.max(...stats.map(s => (now - new Date(s.lastOrderAt)) / 86400000));
-  const maxOrders = Math.max(...stats.map(s => s.orderCount));
-  const maxSpent  = Math.max(...stats.map(s => s.totalSpent));
+  const statsMap  = Object.fromEntries(stats.map(s => [s._id.toString(), s]));
+  const now       = Date.now();
+  const maxDays   = stats.length ? Math.max(...stats.map(s => (now - new Date(s.lastOrderAt)) / 86400000)) : 1;
+  const maxOrders = stats.length ? Math.max(...stats.map(s => s.orderCount)) : 1;
+  const maxSpent  = stats.length ? Math.max(...stats.map(s => s.totalSpent)) : 1;
 
-  const scored = stats.map(s => {
+  const scored = allCustomers.map(c => {
+    const s = statsMap[c._id.toString()];
+    if (!s) return { customerId: c._id, rfmScore: 0, recency: 0, frequency: 0, monetary: 0, orderCount: 0, totalSpent: 0 };
+
     const daysSince = (now - new Date(s.lastOrderAt)) / 86400000;
     const recency   = 1 - daysSince / (maxDays || 1);
     const frequency = s.orderCount / (maxOrders || 1);
@@ -600,12 +665,12 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
 
     let affinity = 0;
     if (targetCategories.length > 0 && s.categories?.length) {
-      const hits = targetCategories.filter(c => s.categories.includes(c)).length;
+      const hits = targetCategories.filter(cat => s.categories.includes(cat)).length;
       affinity = hits / targetCategories.length;
     }
 
     const rfmScore = 0.30 * recency + 0.25 * frequency + 0.30 * monetary + 0.15 * affinity;
-    return { customerId: s._id, rfmScore, recency, frequency, monetary, orderCount: s.orderCount, totalSpent: s.totalSpent };
+    return { customerId: c._id, rfmScore, recency, frequency, monetary, orderCount: s.orderCount, totalSpent: s.totalSpent };
   });
 
   scored.sort((a, b) => b.rfmScore - a.rfmScore);
@@ -689,7 +754,14 @@ async function sendTestMessage({ promotionId, phone }) {
   const items = await resolvePromoItems(promotion);
   const testCustomer = { firstname: 'Test', phone, loyaltyPoints: promotion.pointsPrice || 100 };
 
-  if (promotion.customerType === 'points') {
+  // Same graceful fallback as sendPromotion below — test-send should show
+  // exactly what a real send would use.
+  const entryNode = await resolveApprovedEntryNode(promotion);
+  if (entryNode) {
+    const params = await buildPromoEntryNodeParams(testCustomer, promotion, items);
+    const buttonPayloads = entryNode.buttons.map(b => `msgnode_${entryNode._id}_${b.position}`);
+    await sendCustomFlowTemplate(phone, entryNode.templateName, params, buttonPayloads);
+  } else if (promotion.customerType === 'points') {
     await sendPointsPromoMessage(phone, testCustomer, promotion, items);
   } else {
     await sendPromoAnnouncement(phone, testCustomer, promotion, items);
@@ -697,7 +769,15 @@ async function sendTestMessage({ promotionId, phone }) {
   return { success: true };
 }
 
-async function sendPromotion({ promotionId, customerIds }) {
+// allowRealDemoSend is a narrow, explicit bypass for the dedicated /demo
+// sales-presentation page only (see frontend pages/demo) — a presenter
+// deliberately confirms ("this is not a simulation") a real send to their own
+// controlled phone so a live prospect sees the actual WhatsApp experience.
+// It must never be settable via MCP or GPT Actions (those tool schemas don't
+// declare it, so it can never arrive here through those surfaces) — every
+// other caller (regular Promotions screen, Automated Flows, API integrations)
+// stays fully simulated for isDemo data.
+async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = false }) {
   if (!customerIds?.length) throw new Error('customerIds required');
   const promotion = await Promotion.findById(promotionId).populate('products').populate('services');
   if (!promotion) throw new Error('Promotion not found');
@@ -706,42 +786,79 @@ async function sendPromotion({ promotionId, customerIds }) {
   const skippedOptedOut = requested.length - customers.length;
 
   const items = await resolvePromoItems(promotion);
+  // DEFECT-02: optional merchant-authored custom entry message + branching.
+  const entryNode = await resolveApprovedEntryNode(promotion);
 
   let sentCount = 0;
   const errors = [];
   for (const customer of customers) {
+    const demo = !allowRealDemoSend && !!(promotion.isDemo || customer.isDemo);
     let sent = false;
     let result = null;
     let messageType = 'interactive';
     let templateName;
     let failReason;
+    let simOutcome = null;
 
-    try {
-      if (promotion.customerType === 'points') result = await sendPointsPromoMessage(customer.phone, customer, promotion, items);
-      else result = await sendPromoAnnouncement(customer.phone, customer, promotion, items);
+    if (demo) {
+      // Zero real WhatsApp API calls for demo data — see simulateDemoConversion above.
+      result = { messages: [{ id: fakeWamid() }] };
       sent = true; sentCount++;
-    } catch (_) { /* fall through to template fallback */ }
-
-    if (!sent && promotion.customerType !== 'points' && items.length && promotion.scope !== 'services') {
+      simOutcome = await simulateDemoConversion({ customer, promotion, items }).catch(() => null);
+    } else if (entryNode) {
+      // Record which template we're using regardless of send success — a
+      // template send validates the template's existence/approval synchronously
+      // (unlike an interactive/session message, which Meta accepts even outside
+      // the 24h window and only fails asynchronously later), so a throw here
+      // must not lose that intent, matching flowScheduler.js#processEnrollment.
+      messageType = 'template';
+      templateName = entryNode.templateName;
       try {
-        result = await sendPromoTemplate(customer.phone, customer, items[0], promotion);
-        sentCount++; sent = true; messageType = 'template'; templateName = PROMO_TEMPLATE;
+        const params = await buildPromoEntryNodeParams(customer, promotion, items);
+        const buttonPayloads = entryNode.buttons.map(b => `msgnode_${entryNode._id}_${b.position}`);
+        result = await sendCustomFlowTemplate(customer.phone, entryNode.templateName, params, buttonPayloads);
+        sent = true; sentCount++;
       } catch (err) {
         failReason = err.message;
         errors.push({ customer: customer._id, error: err.message });
       }
-    } else if (!sent) {
-      failReason = 'Send failed';
-      errors.push({ customer: customer._id, error: failReason });
+    } else {
+      try {
+        if (promotion.customerType === 'points') result = await sendPointsPromoMessage(customer.phone, customer, promotion, items);
+        else result = await sendPromoAnnouncement(customer.phone, customer, promotion, items);
+        sent = true; sentCount++;
+      } catch (_) { /* fall through to template fallback */ }
+
+      if (!sent && promotion.customerType !== 'points' && items.length) {
+        try {
+          result = await sendPromoTemplate(customer.phone, customer, items[0], promotion);
+          sentCount++; sent = true; messageType = 'template'; templateName = PROMO_TEMPLATE;
+        } catch (err) {
+          failReason = err.message;
+          errors.push({ customer: customer._id, error: err.message });
+        }
+      } else if (!sent) {
+        failReason = 'Send failed';
+        errors.push({ customer: customer._id, error: failReason });
+      }
     }
 
     await CampaignMessage.create({
       kind: 'promotion', promotion: promotion._id, customer: customer._id, phone: customer.phone,
       wamid: wamidOf(result), messageType, templateName,
-      status: sent ? 'sent' : 'failed', sentAt: sent ? new Date() : undefined, statusReason: sent ? undefined : failReason,
+      messageNode: (!demo && entryNode) ? entryNode._id : undefined,
+      status: sent ? (demo ? 'read' : 'sent') : 'failed',
+      sentAt: sent ? new Date() : undefined,
+      deliveredAt: demo && sent ? new Date() : undefined,
+      readAt: demo && sent ? new Date() : undefined,
+      clickedAt: simOutcome ? new Date() : undefined,
+      order: simOutcome?.order?._id,
+      revenue: simOutcome?.revenue || 0,
+      pointsIssued: simOutcome?.pointsIssued || 0,
+      statusReason: sent ? undefined : failReason,
     }).catch(() => {}); // best-effort — a tracking-write failure shouldn't break the send loop
 
-    await new Promise(r => setTimeout(r, 300));
+    if (!demo) await new Promise(r => setTimeout(r, 300)); // real-send throttle only
   }
 
   await Promotion.findByIdAndUpdate(promotionId, { sentAt: new Date(), sentCount, status: 'active' });
@@ -756,25 +873,37 @@ async function sendLoyaltyReminders({ customerIds } = {}) {
   let sentCount = 0;
   for (const c of customers) {
     if (!c.loyaltyPoints) continue;
+    const demo = !!c.isDemo;
     let result = null;
     let sent = false;
     let messageType = 'template';
     let templateName = LOYALTY_TEMPLATE;
-    try {
-      result = await sendLoyaltyTemplate(c.phone, c.firstname, c.loyaltyPoints);
+
+    if (demo) {
+      // Zero real WhatsApp API calls for demo data — see simulateDemoConversion above.
+      result = { messages: [{ id: fakeWamid() }] };
       sent = true; sentCount++;
-    } catch {
+    } else {
       try {
-        result = await sendLoyaltyReminder(c.phone, c.firstname, c.loyaltyPoints);
-        sent = true; sentCount++; messageType = 'interactive'; templateName = undefined;
-      } catch (_) {}
+        result = await sendLoyaltyTemplate(c.phone, c.firstname, c.loyaltyPoints);
+        sent = true; sentCount++;
+      } catch {
+        try {
+          result = await sendLoyaltyReminder(c.phone, c.firstname, c.loyaltyPoints);
+          sent = true; sentCount++; messageType = 'interactive'; templateName = undefined;
+        } catch (_) {}
+      }
     }
+
     await CampaignMessage.create({
       kind: 'loyalty_reminder', customer: c._id, phone: c.phone,
       wamid: wamidOf(result), messageType, templateName,
-      status: sent ? 'sent' : 'failed', sentAt: sent ? new Date() : undefined,
+      status: sent ? (demo ? 'read' : 'sent') : 'failed',
+      sentAt: sent ? new Date() : undefined,
+      deliveredAt: demo && sent ? new Date() : undefined,
+      readAt: demo && sent ? new Date() : undefined,
     }).catch(() => {});
-    await new Promise(r => setTimeout(r, 300));
+    if (!demo) await new Promise(r => setTimeout(r, 300));
   }
   return { success: true, sentCount, skippedOptedOut };
 }
@@ -809,7 +938,55 @@ const FLOW_TYPE_DEFAULTS = {
   post_purchase_points:    { delayHours: 2, templateName: POST_PURCHASE_TEMPLATE },
   points_balance_reminder: { inactivityDays: 30, templateName: POINTS_NUDGE_TEMPLATE },
   booking_no_show:         { delayHours: 1, templateName: NO_SHOW_TEMPLATE },
+  // DEFECT-03 §8.1 new metrics — no templateName: these are "promotion-reference
+  // only" (createFlow requires promotionId for these two, see below), since
+  // there's no generic fixed-copy template that fits an arbitrary points/cash
+  // promotion the way the original 4's fixed wording does.
+  points_threshold:        { pointsThreshold: 1000 },
+  purchase_frequency:      { inactivityDays: 30, orderCountThreshold: 2 },
 };
+
+const PROMOTION_ONLY_TRIGGER_TYPES = new Set(['points_threshold', 'purchase_frequency']);
+
+// DEFECT-03 §8.2/§9: "Industry Best Practice" static preset catalog — content
+// taken directly from §9 rather than inventing new defaults, organized by the
+// same 3 outcome categories. Not every rule in §9 has a real trigger behind it
+// yet (e.g. C4's "offer redeem mid-order" is an in-conversation UX feature, not
+// a Flow trigger at all; B1's "own historical reorder interval" is exactly the
+// §8.2 AI Recommendations concept, explicitly deferred as a fast-follow rather
+// than shipped as a fake static number). `flowConfig` is only present for
+// presets backed by a real, working trigger type — the frontend uses its
+// absence to show a preset as informational ("not yet available") instead of
+// offering an Apply action that would silently do the wrong thing.
+const FLOW_PRESET_CATALOG = [
+  // §9.1 — Drive Repeat Business
+  { id: 'A1', category: 'repeat_business', rule: 'days_since_last_order > 30', action: 'Send Win-Back Promotion (soft)', why: 'Standard first-touch reactivation.',
+    flowConfig: { triggerType: 'inactive_customer', inactivityDays: 30 } },
+  { id: 'A2', category: 'repeat_business', rule: 'days_since_last_order > 60 (and A1 didn\'t convert)', action: 'Send Win-Back Promotion (stronger offer)', why: 'A single win-back message underperforms a staggered sequence — escalate the incentive as inactivity deepens.',
+    flowConfig: { triggerType: 'inactive_customer', inactivityDays: 60, requiresPriorPresetId: 'A1' } },
+  { id: 'A3', category: 'repeat_business', rule: 'days_since_last_order > 90 (and A2 didn\'t convert)', action: 'Send "Last Chance" Promotion, largest incentive', why: 'Final attempt before treating the customer as churned.',
+    flowConfig: { triggerType: 'inactive_customer', inactivityDays: 90, requiresPriorPresetId: 'A2' } },
+  { id: 'A4', category: 'repeat_business', rule: 'order_count = 1 and days_since_first_order > 5', action: 'Send Second-Purchase Nudge Promotion', why: 'The 1st-to-2nd-purchase transition is the strongest predictor of whether a customer becomes repeat at all — deserves a more generous, dedicated offer.' },
+  { id: 'A5', category: 'repeat_business', rule: 'booking_status = completed and days_since_booking > [service-typical rebook cycle]', action: 'Send Rebooking Reminder Promotion', why: 'For services, timing the nudge to the natural rebook cycle (e.g. ~4 weeks for a haircut) outperforms a generic fixed delay.' },
+  { id: 'A6', category: 'repeat_business', rule: 'order_started = true and payment_completed = false for > 1 hour', action: 'Send Abandoned Order Recovery Promotion', why: 'Classic cart-abandonment recovery; converts best within hours, not days.' },
+  // §9.2 — Increase Customer Lifetime Value
+  { id: 'B1', category: 'lifetime_value', rule: 'days_since_last_order approaching the customer\'s own historical average reorder interval, not yet lapsed', action: 'Send "Usual Order" Reminder Promotion', why: 'Pre-emptive and personalized — reaches the customer just before they\'d naturally go quiet.' },
+  { id: 'B2', category: 'lifetime_value', rule: 'lifetime_spend >= [merchant-defined VIP threshold]', action: 'Move to VIP segment + send perk-unlock Promotion', why: 'Retaining top spenders matters disproportionately versus average customers.' },
+  { id: 'B3', category: 'lifetime_value', rule: 'order_count >= [5] (a proven repeat customer)', action: 'Send Referral Prompt Promotion', why: 'Referred customers tend toward higher LTV; asking after proven satisfaction (not on order #1) improves response — ties to the "viral loop" mechanic flagged earlier in the project.' },
+  { id: 'B4', category: 'lifetime_value', rule: 'days_since_signup = 365, or order_count crosses a round milestone (e.g. 10th order)', action: 'Send Anniversary/Milestone Promotion', why: 'Recognition drives emotional loyalty and gives a natural excuse to re-engage with an offer.' },
+  // §9.3 — Increase Loyalty Redemption Rates
+  { id: 'C1', category: 'redemption', rule: 'points_balance unused for > [X] days', action: 'Points Balance Reminder Promotion (already built)', why: 'Unused points are dead value — a large share of loyalty programs industry-wide have points nobody ever redeems.',
+    flowConfig: { triggerType: 'points_balance_reminder', inactivityDays: 30 } },
+  { id: 'C2', category: 'redemption', rule: 'points_balance within [10-20]% of next reward threshold', action: '"Almost There" Nudge Promotion', why: 'The goal-gradient effect — people are measurably more motivated to act the closer they perceive themselves to a goal; a high-ROI mechanic most programs never implement.' },
+  { id: 'C3', category: 'redemption', rule: 'points_earned for the first time ever', action: 'Loyalty Program Explainer Promotion', why: 'Much of the "dead balance" problem is customers who never understood the redemption mechanic, not customers who didn\'t care.',
+    flowConfig: { triggerType: 'points_threshold', pointsThreshold: 1 } },
+  { id: 'C4', category: 'redemption', rule: 'points_balance >= redemption_threshold and order_started = true', action: 'Proactively offer "Redeem Now" as a button inside the live order flow', why: 'Redemption should be offered at the point of highest intent — mid-order, not just via a separate reminder.' },
+  { id: 'C5', category: 'redemption', rule: 'Immediately after a redemption completes', action: 'Send Thank-You + "Here\'s how to earn your next reward" Promotion', why: 'Redemption shouldn\'t be a dead end — closing the loop back into further earning sustains the cycle.' },
+];
+
+function getFlowPresets() {
+  return FLOW_PRESET_CATALOG.map(p => ({ ...p, buildable: !!p.flowConfig }));
+}
 
 // Sample {{n}} substitutions for previewFlowMessage — realistic stand-ins for
 // what a real send would fill in (customer first name, points balance, service
@@ -840,26 +1017,48 @@ async function listFlows({ status } = {}) {
   if (status) filter.status = status;
   // Populated (not just the id) so the frontend can grey out Activate for a
   // flow whose custom entry template isn't approved yet, without a second
-  // round-trip per flow — mirrors the activateFlow guard below.
-  return Flow.find(filter).sort({ createdAt: -1 }).populate('entryNodeId', 'templateStatus');
+  // round-trip per flow — mirrors the activateFlow guard below. promotionId's
+  // entryNodeId needs its own populate (Mongoose doesn't do nested populate
+  // through a ref by default) for the same reason.
+  return Flow.find(filter).sort({ createdAt: -1 })
+    .populate('entryNodeId', 'templateStatus')
+    .populate({ path: 'promotionId', select: 'name entryNodeId', populate: { path: 'entryNodeId', select: 'templateStatus' } })
+    .populate('requiresPriorFlowId', 'name');
 }
 
 async function getFlow({ id }) {
-  const flow = await Flow.findById(id).populate('entryNodeId', 'templateStatus');
+  const flow = await Flow.findById(id)
+    .populate('entryNodeId', 'templateStatus')
+    .populate({ path: 'promotionId', select: 'name entryNodeId', populate: { path: 'entryNodeId', select: 'templateStatus' } })
+    .populate('requiresPriorFlowId', 'name');
   if (!flow) throw new Error('Flow not found');
   return flow;
 }
 
-async function createFlow({ name, triggerType, inactivityDays, delayHours, cooldownDaysOverride }) {
+async function createFlow({
+  name, triggerType, inactivityDays, delayHours, cooldownDaysOverride,
+  pointsThreshold, orderCountThreshold, promotionId, requiresPriorFlowId,
+}) {
   const defaults = FLOW_TYPE_DEFAULTS[triggerType];
   if (!defaults) throw new Error('Unknown or not-yet-supported triggerType');
+  // DEFECT-03: these two new metrics have no fixed default template — a
+  // reference to an (eventually approved) Promotion is the only way they can
+  // ever send anything, so it must be provided up front rather than
+  // discovered missing at first send.
+  if (PROMOTION_ONLY_TRIGGER_TYPES.has(triggerType) && !promotionId) {
+    throw new Error('This trigger type requires referencing a Promotion — pick one to continue.');
+  }
   return Flow.create({
     name,
     triggerType,
     inactivityDays: inactivityDays ?? defaults.inactivityDays,
     delayHours: delayHours ?? defaults.delayHours,
+    pointsThreshold: pointsThreshold ?? defaults.pointsThreshold,
+    orderCountThreshold: orderCountThreshold ?? defaults.orderCountThreshold,
     templateName: defaults.templateName,
     cooldownDaysOverride,
+    promotionId: promotionId || undefined,
+    requiresPriorFlowId: requiresPriorFlowId || undefined,
   });
 }
 
@@ -874,7 +1073,17 @@ async function updateFlow({ id, ...data }) {
 async function activateFlow({ id }) {
   const flow = await Flow.findById(id);
   if (!flow) throw new Error('Flow not found');
-  if (flow.entryNodeId) {
+  if (flow.promotionId) {
+    // DEFECT-03: a Flow referencing a Promotion can only go live once that
+    // Promotion has its own approved custom message (DEFECT-02) — same
+    // reasoning as the legacy entryNodeId guard below: an unapproved template
+    // would silently burn enrollments with no retry.
+    const promotion = await Promotion.findById(flow.promotionId);
+    const node = promotion?.entryNodeId ? await MessageNode.findById(promotion.entryNodeId) : null;
+    if (!node || node.templateStatus !== 'approved') {
+      throw new Error("This flow's referenced promotion needs an approved custom message before it can be activated.");
+    }
+  } else if (flow.entryNodeId) {
     // processEnrollment marks a FlowEnrollment 'messaged' (terminal) before the
     // send is attempted — an unapproved template would silently burn enrollments
     // with no retry, so activation is blocked until Meta has approved it.
@@ -1014,6 +1223,50 @@ const FLOW_MESSAGE_VARIABLES = {
 
 function getFlowMessageVariables({ triggerType }) {
   return FLOW_MESSAGE_VARIABLES[triggerType] || [];
+}
+
+// Same purpose as FLOW_MESSAGE_VARIABLES, for a Promotion's custom entry
+// message (DEFECT-02). Promotions vary far more than Flow trigger types
+// (products vs services, cash vs points) so this stays one fixed generic set
+// rather than one list per combination — buildPromoEntryNodeParams below
+// resolves the right real value into each slot regardless of promotion shape.
+const PROMOTION_MESSAGE_VARIABLES = [
+  { key: 'customerName',   label: 'Customer Name',       slot: 1 },
+  { key: 'itemName',       label: 'Product/Service Name', slot: 2 },
+  { key: 'priceOrPoints',  label: 'Price or Points Cost', slot: 3 },
+  { key: 'promoName',      label: 'Promotion Name',       slot: 4 },
+];
+
+function getPromotionMessageVariables() {
+  return PROMOTION_MESSAGE_VARIABLES;
+}
+
+// Same graceful-fallback pattern as utils/flowScheduler.js#processEnrollment:
+// only an *approved* custom entry message is ever used — silently falling back
+// to the fixed built-in announcement/template otherwise (no separate "activate"
+// gate exists for Promotions, per DEFECT-04A, so this re-checks approval on
+// every send rather than once at some earlier activation step).
+async function resolveApprovedEntryNode(promotion) {
+  if (!promotion.entryNodeId) return null;
+  const node = await MessageNode.findById(promotion.entryNodeId);
+  return (node && node.templateStatus === 'approved') ? node : null;
+}
+
+// Resolves PROMOTION_MESSAGE_VARIABLES' 4 slots to real values for one send —
+// mirrors how FLOW_MESSAGE_VARIABLES' slots are filled in flowTriggers/*'s buildSend.
+async function buildPromoEntryNodeParams(customer, promotion, items) {
+  const isPoints = promotion.customerType === 'points';
+  const item = items[0];
+  const currency = await getCurrency();
+  const priceOrPoints = isPoints
+    ? `${promotion.pointsPrice || 0} pts`
+    : money(item ? +(item.basePrice * (1 - (promotion.discountPercent || 0) / 100)).toFixed(2) : 0, currency);
+  return [
+    customer.firstname || 'Valued Customer',
+    item?.name || 'our latest offer',
+    priceOrPoints,
+    promotion.name,
+  ];
 }
 
 function validateButtons(buttons) {
@@ -1162,10 +1415,11 @@ module.exports = {
   listOrders, getOrder, updateOrderStatus, refundOrder, getOrderStats, createOrder, getPaymentStatus,
   listPromotions, getPromotion, createPromotion, updatePromotion, deletePromotion,
   getRecommendedCustomers, sendPromotion, sendLoyaltyReminders, getCampaignReport,
-  previewPromotionMessage, sendTestMessage,
+  previewPromotionMessage, sendTestMessage, getPromotionMessageVariables,
+  resolveApprovedEntryNode, buildPromoEntryNodeParams, resolvePromoItems,
   getLoyaltySettings, updateLoyaltySettings,
   listFlows, getFlow, createFlow, updateFlow, activateFlow, pauseFlow, deleteFlow,
-  listFlowEnrollments, getFlowReport, previewFlowMessage,
+  listFlowEnrollments, getFlowReport, previewFlowMessage, getFlowPresets,
   createMessageNode, updateMessageNode, getMessageNode, deleteMessageNode,
   submitMessageNodeTemplate, refreshMessageNodeTemplateStatus, getFlowMessageVariables,
 };

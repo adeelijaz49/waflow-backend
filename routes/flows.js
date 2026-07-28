@@ -27,6 +27,11 @@ router.get('/message-variables', async (req, res) => {
   }
 });
 
+// DEFECT-03 §8.2/§9 — Industry Best Practice static preset catalog.
+router.get('/presets', (req, res) => {
+  res.json(ops.getFlowPresets());
+});
+
 router.get('/:id', async (req, res) => {
   try {
     res.json(await ops.getFlow({ id: req.params.id }));

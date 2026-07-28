@@ -1,9 +1,10 @@
 const mongoose = require('mongoose');
 
 // A merchant-configured message + up to 3 CTA buttons, optionally branching to
-// further MessageNodes on tap. ownerType is kept generic for a possible future
-// Promotions retrofit, but v1 only ever creates ownerType:'flow' nodes — no
-// abstraction beyond the field exists yet.
+// further MessageNodes on tap. ownerType was originally kept generic for a
+// possible future Promotions retrofit — that retrofit has since landed
+// (DEFECT-02: message/button editing is available directly in Promotions too,
+// via Promotion.entryNodeId — see shared/operations.js#sendPromotion).
 //
 // requiresTemplate/delayMinutes from the original spec are deliberately not
 // modeled here: whether a node needs a template is always exactly isEntryNode
@@ -28,7 +29,7 @@ const buttonSchema = new mongoose.Schema({
 }, { _id: false });
 
 const schema = new mongoose.Schema({
-  ownerType: { type: String, enum: ['flow'], required: true },
+  ownerType: { type: String, enum: ['flow', 'promotion'], required: true },
   ownerId:   { type: mongoose.Schema.Types.ObjectId, required: true },
   isEntryNode: { type: Boolean, default: false },
   bodyText:  { type: String, required: true }, // stores literal {{1}}/{{2}} tokens, same format the existing hardcoded flow bodies use

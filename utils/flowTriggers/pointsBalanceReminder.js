@@ -22,6 +22,7 @@ async function findEligible(flow) {
     loyaltyPoints: { $gt: 0 },
     loyaltyPointsUpdatedAt: { $lte: cutoff },
     optedOut: { $ne: true },
+    isDemo: { $ne: true },
   }, '_id');
   if (!stale.length) return [];
 
@@ -40,6 +41,7 @@ async function revalidate(flow, enrollment) {
   const customer = await Customer.findById(enrollment.customer);
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
+  if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
   if (customer.loyaltyPoints <= 0) return { outcome: 'exit', reason: 'points_redeemed' };
 
   const cutoff = cutoffFor(flow);

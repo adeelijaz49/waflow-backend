@@ -229,8 +229,12 @@ async function handleMessageNodeTap({ from, wamid, nodeId, position }) {
         sendStatus = "failed";
         statusReason = err.message;
       }
+      // Inherits kind/flow/flowEnrollment/promotion from whichever CampaignMessage
+      // this tap resolved (DEFECT-02: entry sends now come from a Promotion just
+      // as often as a Flow) — hardcoding kind:"flow" here would mis-attribute
+      // every promotion-sourced follow-up.
       await CampaignMessage.create({
-        kind: "flow", flow: claimed.flow, flowEnrollment: claimed.flowEnrollment,
+        kind: claimed.kind, flow: claimed.flow, flowEnrollment: claimed.flowEnrollment, promotion: claimed.promotion,
         customer: customer._id, phone: from,
         wamid: followUpWamid, messageType: "interactive", messageNode: targetNode._id,
         status: sendStatus, statusReason, sentAt: new Date(),
@@ -248,7 +252,7 @@ async function handleMessageNodeTap({ from, wamid, nodeId, position }) {
       // wondering why the tap produced no effect.
       console.warn(`MessageNode action "${type}" tapped but not yet implemented (node ${nodeId}, position ${position})`);
       await CampaignMessage.create({
-        kind: "flow", flow: claimed.flow, flowEnrollment: claimed.flowEnrollment,
+        kind: claimed.kind, flow: claimed.flow, flowEnrollment: claimed.flowEnrollment, promotion: claimed.promotion,
         customer: claimed.customer, phone: from,
         messageType: "text", status: "failed", statusReason: `action_not_implemented:${type}`, sentAt: new Date(),
       }).catch(() => {});

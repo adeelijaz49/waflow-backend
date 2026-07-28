@@ -37,7 +37,7 @@ async function findEligible(flow) {
   const remaining = customerIds.filter(id => !enrolledSet.has(id.toString()));
   if (!remaining.length) return [];
 
-  const eligible = await Customer.find({ _id: { $in: remaining }, optedOut: { $ne: true } }, '_id');
+  const eligible = await Customer.find({ _id: { $in: remaining }, optedOut: { $ne: true }, isDemo: { $ne: true } }, '_id');
   return eligible.map(c => ({ customerId: c._id }));
 }
 
@@ -45,6 +45,9 @@ async function revalidate(flow, enrollment) {
   const customer = await Customer.findById(enrollment.customer);
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
+  // Demo customers must never receive a real WhatsApp send from an unattended
+  // scheduler tick — defense in depth alongside findEligible's own exclusion.
+  if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
 
   const cutoff = cutoffFor(flow);
   const mostRecent = await Order.findOne({ customer: customer._id, status: { $ne: 'cancelled' } }).sort({ createdAt: -1 });
