@@ -86,6 +86,24 @@ async function runTurn(session, userMessage) {
   }
 }
 
+// One-off, tool-free completion so a raw tool result reads like a normal chat
+// reply instead of dumped JSON. Falls back to the raw shape if this call fails
+// for any reason — the merchant should never see an empty reply.
+async function phraseResult(toolName, result) {
+  try {
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 200,
+      system: 'Describe this completed action result to the merchant in one short, plain-language sentence. No JSON, no code blocks, just the sentence.',
+      messages: [{ role: 'user', content: `Tool: ${toolName}\nResult: ${JSON.stringify(result)}` }],
+    });
+    const text = response.content.find(b => b.type === 'text')?.text;
+    return text || `Done. ${JSON.stringify(result)}`;
+  } catch {
+    return `Done. ${JSON.stringify(result)}`;
+  }
+}
+
 async function confirmAction(session, actionId, confirm) {
   const pending = session.pendingAction;
   if (!pending || pending.id !== actionId) {
@@ -106,7 +124,7 @@ async function confirmAction(session, actionId, confirm) {
   let reply;
   try {
     const result = await tool.run(pending.args);
-    reply = `Done. ${JSON.stringify(result)}`;
+    reply = await phraseResult(pending.toolName, result);
   } catch (err) {
     reply = `That didn't work: ${err.message}`;
   }
