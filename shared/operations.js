@@ -493,6 +493,100 @@ async function getCampaignReport({ promotionId }) {
   };
 }
 
+// ─── AI Mode analytics (read-only — closes gaps get_order_stats/get_campaign_report
+// /get_recommended_customers don't cover; see ai/tools.js) ────────────────────
+
+// "How many customers returned this month?" — an existing customer (with order
+// history before the target month) who ordered again within it. Distinct from
+// getOrderStats' repeatCustomers, which is an all-time count, not month-scoped.
+async function getCustomerReturnRate({ month, year } = {}) {
+  const now = new Date();
+  const targetMonth = month ?? (now.getMonth() + 1); // 1-indexed
+  const targetYear = year ?? now.getFullYear();
+  const rangeStart = new Date(targetYear, targetMonth - 1, 1);
+  const rangeEnd = new Date(targetYear, targetMonth, 1);
+
+  const [customersThisMonth, priorCustomerIds] = await Promise.all([
+    Order.distinct('customer', { status: { $ne: 'cancelled' }, createdAt: { $gte: rangeStart, $lt: rangeEnd } }),
+    Order.distinct('customer', { status: { $ne: 'cancelled' }, createdAt: { $lt: rangeStart } }),
+  ]);
+  const priorSet = new Set(priorCustomerIds.map(id => id.toString()));
+  const returningCustomers = customersThisMonth.filter(id => priorSet.has(id.toString())).length;
+
+  return { month: targetMonth, year: targetYear, totalCustomersThisMonth: customersThisMonth.length, returningCustomers };
+}
+
+// "Which customer has the most loyalty points?" — no existing tool does this
+// ranked lookup (get_customer/update_customer only touch one customer at a time).
+async function getTopLoyaltyCustomers({ limit = 5 } = {}) {
+  const customers = await Customer.find({ isDemo: { $ne: true } }).sort({ loyaltyPoints: -1 }).limit(limit);
+  return customers.map(c => ({
+    id: c._id, name: `${c.firstname} ${c.lastname}`.trim(), phone: c.phone, loyaltyPoints: c.loyaltyPoints,
+  }));
+}
+
+// "Which promotion performed best?" — getCampaignReport reports one promotion
+// at a time; this reuses its exact CampaignMessage aggregation shape but
+// grouped across every promotion at once, then ranked by the requested metric.
+async function getBestPerformingPromotion({ metric = 'revenue', limit = 5 } = {}) {
+  const agg = await CampaignMessage.aggregate([
+    { $match: { kind: 'promotion', promotion: { $ne: null } } },
+    { $group: {
+      _id: '$promotion',
+      sent:    { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read']] }, 1, 0] } },
+      ordered: { $sum: { $cond: [{ $gt: ['$order', null] }, 1, 0] } },
+      revenue: { $sum: '$revenue' },
+      pointsIssued: { $sum: '$pointsIssued' },
+    } },
+  ]);
+  if (!agg.length) return { currency: await getCurrency(), promotions: [] };
+
+  const [promotions, currency] = await Promise.all([
+    Promotion.find({ _id: { $in: agg.map(a => a._id) } }),
+    getCurrency(),
+  ]);
+  const nameById = Object.fromEntries(promotions.map(p => [p._id.toString(), p.name]));
+
+  const ranked = agg.map(a => ({
+    promotionId: a._id,
+    name: nameById[a._id.toString()] || 'Unknown',
+    sent: a.sent,
+    ordered: a.ordered,
+    revenue: +a.revenue.toFixed(2),
+    pointsIssued: a.pointsIssued,
+    conversionRate: a.sent > 0 ? +((a.ordered / a.sent) * 100).toFixed(1) : 0,
+  }));
+
+  const sortKey = metric === 'conversionRate' ? 'conversionRate' : metric === 'ordered' ? 'ordered' : 'revenue';
+  ranked.sort((x, y) => y[sortKey] - x[sortKey]);
+  return { currency, promotions: ranked.slice(0, limit) };
+}
+
+// "Who hasn't ordered in over a month?" as an ad-hoc query — distinct from the
+// Win-Back *flow's* enrollment mechanism (utils/flowTriggers/inactiveCustomer.js),
+// which reuses this exact stale-customer aggregation shape but gates eligibility
+// against FlowEnrollment state for one specific flow. This is just the list.
+async function listInactiveCustomers({ days = 60 } = {}) {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+  const stale = await Order.aggregate([
+    { $match: { status: { $ne: 'cancelled' } } },
+    { $group: { _id: '$customer', lastOrderAt: { $max: '$createdAt' } } },
+    { $match: { lastOrderAt: { $lt: cutoff } } },
+  ]);
+  if (!stale.length) return { days, customers: [] };
+
+  const lastOrderById = Object.fromEntries(stale.map(s => [s._id.toString(), s.lastOrderAt]));
+  const customers = await Customer.find({ _id: { $in: stale.map(s => s._id) }, optedOut: { $ne: true }, isDemo: { $ne: true } });
+
+  return {
+    days,
+    customers: customers.map(c => ({
+      id: c._id, name: `${c.firstname} ${c.lastname}`.trim(), phone: c.phone,
+      lastOrderAt: lastOrderById[c._id.toString()],
+    })),
+  };
+}
+
 async function createOrder({ customerId, items, shippingAddress }) {
   const customer = await Customer.findById(customerId);
   if (!customer) throw new Error('Customer not found');
@@ -1452,4 +1546,5 @@ module.exports = {
   listFlowEnrollments, getFlowReport, previewFlowMessage, getFlowPresets,
   createMessageNode, updateMessageNode, getMessageNode, deleteMessageNode,
   submitMessageNodeTemplate, refreshMessageNodeTemplateStatus, getFlowMessageVariables,
+  getCustomerReturnRate, getTopLoyaltyCustomers, getBestPerformingPromotion, listInactiveCustomers,
 };
