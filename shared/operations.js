@@ -920,6 +920,7 @@ async function updateLoyaltySettings(data) {
   if (data.minPointsPerPurchase != null) s.minPointsPerPurchase = data.minPointsPerPurchase;
   if (data.currency) s.currency = data.currency;
   if (data.flowCooldownDays != null) s.flowCooldownDays = data.flowCooldownDays;
+  if (data.merchantName != null) s.merchantName = data.merchantName;
   await s.save();
   settingsCache.invalidate();
   return s;

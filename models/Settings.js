@@ -5,6 +5,7 @@ const schema = new mongoose.Schema({
   minPointsPerPurchase: { type: Number, default: 100 },
   currency:             { type: String, default: 'AUD' },
   flowCooldownDays:     { type: Number, default: 3 }, // global cross-flow cooldown — see utils/flowScheduler.js
+  merchantName:         { type: String, default: '' }, // greets the merchant in AI Mode
 }, { collection: 'settings' });
 
 module.exports = mongoose.model('Settings', schema);
