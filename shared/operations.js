@@ -728,6 +728,25 @@ async function previewPromotionMessage({ promotionId }) {
   const items = await resolvePromoItems(promotion);
   const sampleCustomer = {}; // generic — matches what a customer with no name on file would see
 
+  // A merchant-configured custom entry message takes priority over the fixed
+  // default, previewed regardless of Meta-approval status — unlike an actual
+  // send (resolveApprovedEntryNode), a preview must reflect what's configured
+  // immediately after saving, not just once Meta has approved it.
+  if (promotion.entryNodeId) {
+    const entryNode = await MessageNode.findById(promotion.entryNodeId);
+    if (entryNode) {
+      const params = await buildPromoEntryNodeParams(sampleCustomer, promotion, items);
+      let body = entryNode.bodyText;
+      params.forEach((val, i) => { body = body.split(`{{${i + 1}}}`).join(val); });
+      return {
+        messageType: 'interactive',
+        body,
+        buttonLabel: entryNode.buttons[0]?.label || null,
+        templateStatus: entryNode.templateStatus,
+      };
+    }
+  }
+
   if (promotion.customerType === 'points') {
     const { interactive, textFallback } = buildPointsPromoPayload(sampleCustomer, promotion, items);
     return {
@@ -1379,7 +1398,17 @@ async function submitMessageNodeTemplate({ nodeId }) {
   if (!node) throw new Error('MessageNode not found');
   if (!node.isEntryNode) throw new Error('Only entry nodes need a template.');
 
-  const templateName = node.templateName || `waflow_flow_${node._id.toString().slice(-10)}`;
+  // DEFECT-06: resubmitting after an edit can't reuse the same template name —
+  // Meta treats it as already taken (pending/approved) or still mid-deletion
+  // (rejected templates that got cleaned up, see DEFECT-05), either way a
+  // second POST under the same name fails. Only the first-ever submission gets
+  // the stable, readable node._id-derived name; every resubmission mints a
+  // fresh suffixed name and leaves the superseded template on Meta as harmless
+  // orphaned history — this is what actually makes "edit, then resubmit" work.
+  const isResubmission = node.templateStatus !== 'not_created';
+  const baseName = node.templateName || `waflow_flow_${node._id.toString().slice(-10)}`;
+  const templateName = isResubmission ? `${baseName}_${Date.now().toString(36)}` : baseName;
+
   const buttonLabels = node.buttons.map(b => b.label);
   await createTemplate(templateName, node.bodyText, 'MARKETING', buttonLabels);
 

@@ -124,7 +124,7 @@ async function listTemplates() {
   const wabaId = await getWabaId();
   const res = await axios.get(`${WA_BASE}/${wabaId}/message_templates`, {
     headers: getHeaders(),
-    params:  { limit: 100, fields: 'name,status,category,language,components' },
+    params:  { limit: 100, fields: 'name,status,category,language,components,rejected_reason,quality_score' },
   });
   return res.data.data || [];
 }
@@ -160,10 +160,31 @@ async function ensureTemplateExists(name, creatorFn) {
   }
 }
 
+// Meta rejects any BODY component containing {{n}} placeholders with
+// rejected_reason: INVALID_FORMAT unless an example value is supplied for
+// every placeholder (DEFECT-05/06 root cause — every template this app ever
+// submitted was missing this). Values don't need to be the real ones that get
+// substituted at send time, just plausible non-empty strings — Meta reviews
+// the template structure/policy, not whether these specific words are exact.
+const EXAMPLE_VALUE_POOL = ['Sarah', 'Blue T-Shirt', '20', 'SAR 45.00', 'Summer Sale', '350', 'Haircut', 'Friday 2pm'];
+
+function exampleValuesFor(bodyText) {
+  const slots = [...bodyText.matchAll(/\{\{(\d+)\}\}/g)].map(m => +m[1]);
+  const count = slots.length ? Math.max(...slots) : 0;
+  return Array.from({ length: count }, (_, i) => EXAMPLE_VALUE_POOL[i % EXAMPLE_VALUE_POOL.length]);
+}
+
+function bodyComponentWithExample(text) {
+  const component = { type: 'BODY', text };
+  const values = exampleValuesFor(text);
+  if (values.length) component.example = { body_text: [values] };
+  return component;
+}
+
 async function createTemplate(name, bodyText, category = 'MARKETING', buttonLabels = []) {
   const wabaId = await getWabaId();
   const components = [
-    { type: 'BODY', text: bodyText },
+    bodyComponentWithExample(bodyText),
     { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
   ];
   if (buttonLabels.length) {
@@ -188,7 +209,7 @@ async function createPromoTemplate() {
       language: 'en',
       category: 'MARKETING',
       components: [
-        { type: 'BODY', text: body },
+        bodyComponentWithExample(body),
         { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
         { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
       ],
@@ -237,7 +258,7 @@ async function createWinbackTemplate() {
       language: 'en',
       category: 'MARKETING',
       components: [
-        { type: 'BODY', text: body },
+        bodyComponentWithExample(body),
         { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
         { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
       ],
@@ -258,7 +279,7 @@ async function createPostPurchaseTemplate() {
       language: 'en',
       category: 'MARKETING',
       components: [
-        { type: 'BODY', text: body },
+        bodyComponentWithExample(body),
         { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
         { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
       ],
@@ -279,7 +300,7 @@ async function createPointsNudgeTemplate() {
       language: 'en',
       category: 'MARKETING',
       components: [
-        { type: 'BODY', text: body },
+        bodyComponentWithExample(body),
         { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
         { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
       ],
@@ -300,7 +321,7 @@ async function createNoShowTemplate() {
       language: 'en',
       category: 'MARKETING',
       components: [
-        { type: 'BODY', text: body },
+        bodyComponentWithExample(body),
         { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
         { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Rebook Free' }] },
       ],
