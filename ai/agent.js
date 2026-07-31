@@ -18,47 +18,51 @@ function toClaudeHistory(messages) {
   return recent.map(m => ({ role: m.role, content: m.text }));
 }
 
-async function runTurn(session, userMessage) {
-  session.messages.push({ role: 'user', text: userMessage });
-  session.pendingAction = null; // any previous pending action is implicitly superseded
-
-  const claudeMessages = toClaudeHistory(session.messages);
-  let response = await client.messages.create({
+function askClaude(messages) {
+  return client.messages.create({
     model: MODEL,
     max_tokens: 4096,
     output_config: { effort: 'medium' },
     system: SYSTEM_PROMPT,
     tools: toolsForClaude(),
-    messages: claudeMessages,
+    messages,
   });
+}
+
+async function runTurn(session, userMessage) {
+  session.messages.push({ role: 'user', text: userMessage });
+  session.pendingAction = null; // any previous pending action is implicitly superseded
+
+  const claudeMessages = toClaudeHistory(session.messages);
+  let response = await askClaude(claudeMessages);
 
   while (true) {
-    const toolUseBlock = response.content.find(b => b.type === 'tool_use');
+    // Claude can call several tools in parallel in one response — every
+    // tool_use block here MUST get a matching tool_result in the very next
+    // message, or the next request 400s ("tool_use ids were found without
+    // tool_result blocks"). Never just grab the first block.
+    const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
     const textBlock = response.content.find(b => b.type === 'text');
 
-    if (!toolUseBlock) {
+    if (toolUseBlocks.length === 0) {
       const reply = textBlock?.text || "I'm not sure how to answer that — could you rephrase?";
       session.messages.push({ role: 'assistant', text: reply });
       return { reply, pendingAction: null };
     }
 
-    const tool = getTool(toolUseBlock.name);
-    if (!tool) {
-      // Unknown tool name — feed an error back so Claude can recover instead of crashing the turn.
-      claudeMessages.push({ role: 'assistant', content: response.content });
-      claudeMessages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseBlock.id, content: `Unknown tool: ${toolUseBlock.name}`, is_error: true }] });
-      response = await client.messages.create({ model: MODEL, max_tokens: 4096, output_config: { effort: 'medium' }, system: SYSTEM_PROMPT, tools: toolsForClaude(), messages: claudeMessages });
-      continue;
-    }
-
-    if (tool.isAction) {
+    // If any block is an action tool, stop the turn here and propose it.
+    // Safe to return without resolving the other blocks in this response:
+    // claudeMessages is only local to this request and is discarded on return.
+    const actionBlock = toolUseBlocks.find(b => getTool(b.name)?.isAction);
+    if (actionBlock) {
       // STRUCTURAL GATE: tool.run() is never called here. It's only reachable
       // from routes/aiChat.js's POST /confirm-action, after explicit user confirmation.
+      const tool = getTool(actionBlock.name);
       const pendingAction = {
         id: crypto.randomUUID(),
         toolName: tool.name,
-        args: toolUseBlock.input,
-        summary: textBlock?.text || `I'll run ${tool.name} with ${JSON.stringify(toolUseBlock.input)}`,
+        args: actionBlock.input,
+        summary: textBlock?.text || `I'll run ${tool.name} with ${JSON.stringify(actionBlock.input)}`,
         createdAt: new Date(),
       };
       session.pendingAction = pendingAction;
@@ -66,23 +70,26 @@ async function runTurn(session, userMessage) {
       return { reply: pendingAction.summary, pendingAction };
     }
 
-    // Read tool — execute for real, feed the result back, continue the loop in this same request.
-    let result;
-    try {
-      result = await tool.run(toolUseBlock.input);
-    } catch (err) {
-      result = { error: err.message };
-    }
+    // All read tools — run every one and return a tool_result for every
+    // tool_use block, in the same order, so the pairing Claude requires holds.
     claudeMessages.push({ role: 'assistant', content: response.content });
-    claudeMessages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: toolUseBlock.id, content: JSON.stringify(result) }] });
-    response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 4096,
-      output_config: { effort: 'medium' },
-      system: SYSTEM_PROMPT,
-      tools: toolsForClaude(),
-      messages: claudeMessages,
-    });
+    const toolResults = [];
+    for (const block of toolUseBlocks) {
+      const tool = getTool(block.name);
+      if (!tool) {
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: `Unknown tool: ${block.name}`, is_error: true });
+        continue;
+      }
+      let result;
+      try {
+        result = await tool.run(block.input);
+      } catch (err) {
+        result = { error: err.message };
+      }
+      toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: JSON.stringify(result) });
+    }
+    claudeMessages.push({ role: 'user', content: toolResults });
+    response = await askClaude(claudeMessages);
   }
 }
 
