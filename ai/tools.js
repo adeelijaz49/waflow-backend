@@ -188,6 +188,125 @@ const TOOLS = [
       }));
     },
   },
+
+  // ── Action tools (Phase 3) ────────────────────────────────────────────────
+  // create_promotion/create_flow are NOT gated: a new promotion starts in
+  // 'draft' status and a new flow starts inactive — nothing external happens
+  // until the separate, gated send_promotion/activate_flow tool runs.
+  {
+    name: 'create_promotion',
+    description: 'Creates a new promotion in draft status — nothing is sent yet. Call this when the merchant wants to set up a new promotion. Follow up by proposing send_promotion once they confirm who to send it to.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Promotion name.' },
+        description: { type: 'string' },
+        scope: { type: 'string', enum: ['products', 'services'], description: 'Default products.' },
+        customerType: { type: 'string', enum: ['cash', 'points'], description: 'Default cash.' },
+        discountPercent: { type: 'number', description: 'For cash promotions, 0-100.' },
+        pointsPrice: { type: 'number', description: 'For points promotions, points required per item.' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+    isAction: false,
+    run: (args) => ops.createPromotion({
+      name: args.name, description: args.description, scope: args.scope || 'products',
+      customerType: args.customerType || 'cash', discountPercent: args.discountPercent, pointsPrice: args.pointsPrice,
+      type: args.scope === 'services' ? 'specific_services' : 'store_wide',
+    }),
+  },
+  {
+    name: 'create_flow',
+    description: 'Creates a new Automated Flow rule (a trigger condition that will message customers automatically once activated) — inactive until separately activated. Call this when the merchant wants to set up a new automation. Valid triggerType values: inactive_customer (win-back), post_purchase_points, points_balance_reminder, booking_no_show, points_threshold, purchase_frequency.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        triggerType: { type: 'string', enum: ['inactive_customer', 'post_purchase_points', 'points_balance_reminder', 'booking_no_show', 'points_threshold', 'purchase_frequency'] },
+        promotionId: { type: 'string', description: 'Required for points_threshold/purchase_frequency; optional for the other trigger types (they have a fixed default message otherwise).' },
+        inactivityDays: { type: 'integer' },
+        delayHours: { type: 'integer' },
+        pointsThreshold: { type: 'integer' },
+        orderCountThreshold: { type: 'integer' },
+      },
+      required: ['name', 'triggerType'],
+      additionalProperties: false,
+    },
+    isAction: false,
+    run: (args) => ops.createFlow({
+      name: args.name, triggerType: args.triggerType, promotionId: args.promotionId,
+      inactivityDays: args.inactivityDays, delayHours: args.delayHours,
+      pointsThreshold: args.pointsThreshold, orderCountThreshold: args.orderCountThreshold,
+    }),
+  },
+  {
+    name: 'send_promotion',
+    description: 'Sends a real WhatsApp message for this promotion to the given customers right now. This messages real customers — always confirm the exact customer list and message with the merchant before calling this (the system will still require their explicit confirmation regardless).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        promotionId: { type: 'string' },
+        customerIds: { type: 'array', items: { type: 'string' }, description: 'Customer ids to send to, from list_customers or get_recommended_customers.' },
+      },
+      required: ['promotionId', 'customerIds'],
+      additionalProperties: false,
+    },
+    isAction: true,
+    run: (args) => ops.sendPromotion({ promotionId: args.promotionId, customerIds: args.customerIds }),
+  },
+  {
+    name: 'send_test_message',
+    description: 'Sends one real test WhatsApp message for a promotion to a single phone number, so the merchant can see exactly what customers will receive.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        promotionId: { type: 'string' },
+        phone: { type: 'string', description: 'Phone number in international format, e.g. 966501234567.' },
+      },
+      required: ['promotionId', 'phone'],
+      additionalProperties: false,
+    },
+    isAction: true,
+    run: (args) => ops.sendTestMessage({ promotionId: args.promotionId, phone: args.phone }),
+  },
+  {
+    name: 'send_loyalty_reminders',
+    description: 'Sends a real WhatsApp loyalty-points reminder to customers with a points balance (or to a specific customer list if given).',
+    input_schema: {
+      type: 'object',
+      properties: {
+        customerIds: { type: 'array', items: { type: 'string' }, description: 'Optional — omit to send to every customer with a positive points balance.' },
+      },
+      additionalProperties: false,
+    },
+    isAction: true,
+    run: (args) => ops.sendLoyaltyReminders({ customerIds: args.customerIds }),
+  },
+  {
+    name: 'activate_flow',
+    description: 'Activates an Automated Flow so it starts messaging qualifying customers going forward. Requires the flow\'s custom entry template (if any) to already be Meta-approved, or it falls back to the fixed default message.',
+    input_schema: {
+      type: 'object',
+      properties: { flowId: { type: 'string' } },
+      required: ['flowId'],
+      additionalProperties: false,
+    },
+    isAction: true,
+    run: (args) => ops.activateFlow({ id: args.flowId }),
+  },
+  {
+    name: 'refund_order',
+    description: 'Issues a real, irreversible Stripe refund for one paid order.',
+    input_schema: {
+      type: 'object',
+      properties: { orderId: { type: 'string' } },
+      required: ['orderId'],
+      additionalProperties: false,
+    },
+    isAction: true,
+    run: (args) => ops.refundOrder({ id: args.orderId }),
+  },
 ];
 
 function getTool(name) {
