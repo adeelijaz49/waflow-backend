@@ -43,6 +43,7 @@ app.use("/api/message-nodes", require("./routes/messageNodes"));
 app.use("/api/services",   require("./routes/services"));
 app.use("/api/whatsapp",   require("./routes/whatsapp"));
 app.use("/api/settings",  require("./routes/settings"));
+app.use("/api/ai-chat",   require("./routes/aiChat"));
 app.use(require("./routes/pay"));
 
 // ─── MCP (Model Context Protocol) — lets Claude connect as tools ────────────
