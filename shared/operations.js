@@ -277,6 +277,9 @@ async function listCustomers({ search, isDemo, page = 1, limit = 50 } = {}) {
     { firstname: { $regex: search, $options: 'i' } },
     { lastname: { $regex: search, $options: 'i' } },
     { phone: { $regex: search, $options: 'i' } },
+    // A "First Last" search matches neither field alone above — match against
+    // the concatenated full name too, so a full-name search actually works.
+    { $expr: { $regexMatch: { input: { $concat: ['$firstname', ' ', '$lastname'] }, regex: search, options: 'i' } } },
   ];
   if (isDemo !== undefined) filter.isDemo = isDemo === true || isDemo === 'true';
   const skip = (page - 1) * limit;
