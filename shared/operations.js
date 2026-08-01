@@ -903,9 +903,11 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
   const entryNode = await resolveApprovedEntryNode(promotion);
 
   let sentCount = 0;
+  let demoCount = 0;
   const errors = [];
   for (const customer of customers) {
     const demo = !allowRealDemoSend && !!(promotion.isDemo || customer.isDemo);
+    if (demo) demoCount++;
     let sent = false;
     let result = null;
     let messageType = 'interactive';
@@ -975,7 +977,9 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
   }
 
   await Promotion.findByIdAndUpdate(promotionId, { sentAt: new Date(), sentCount, status: 'active' });
-  return { success: true, sentCount, skippedOptedOut, errors };
+  // demoCount lets callers (esp. AI Mode) tell the merchant when a "successful"
+  // send was actually simulated — see the Demo Mode isolation note above.
+  return { success: true, sentCount, skippedOptedOut, errors, demoCount };
 }
 
 async function sendLoyaltyReminders({ customerIds } = {}) {
@@ -984,9 +988,11 @@ async function sendLoyaltyReminders({ customerIds } = {}) {
   const customers = requested.filter(c => !c.optedOut);
   const skippedOptedOut = requested.filter(c => c.optedOut).length;
   let sentCount = 0;
+  let demoCount = 0;
   for (const c of customers) {
     if (!c.loyaltyPoints) continue;
     const demo = !!c.isDemo;
+    if (demo) demoCount++;
     let result = null;
     let sent = false;
     let messageType = 'template';
@@ -1018,7 +1024,7 @@ async function sendLoyaltyReminders({ customerIds } = {}) {
     }).catch(() => {});
     if (!demo) await new Promise(r => setTimeout(r, 300));
   }
-  return { success: true, sentCount, skippedOptedOut };
+  return { success: true, sentCount, skippedOptedOut, demoCount };
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────

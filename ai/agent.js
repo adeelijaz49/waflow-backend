@@ -134,6 +134,18 @@ async function confirmAction(session, actionId, confirm) {
   try {
     const result = await tool.run(pending.args);
     reply = await phraseResult(pending.toolName, result);
+    // Deterministic, not LLM-dependent: a demo/simulated send must never be
+    // reported to the merchant as an unqualified success. Root-caused a real
+    // incident where a demo-flagged promotion silently no-op'd (by design —
+    // see Demo Mode isolation in shared/operations.js) while the AI's own
+    // phrasing implied a real WhatsApp message had gone out.
+    const demoCount = result?.demoCount;
+    if (typeof demoCount === 'number' && demoCount > 0) {
+      const total = result.sentCount ?? demoCount;
+      reply += demoCount >= total
+        ? "\n\n⚠️ That target is a demo/test record, so this was simulated — no real WhatsApp message was sent."
+        : `\n\n⚠️ ${demoCount} of ${total} recipient(s) are demo/test records, so those were simulated — no real WhatsApp message was sent to them.`;
+    }
   } catch (err) {
     reply = `That didn't work: ${err.message}`;
   }
