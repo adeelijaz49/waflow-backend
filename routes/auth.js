@@ -104,7 +104,15 @@ router.post('/otp/request', async (req, res) => {
     });
 
     if (TEST_MODE) return res.json({ success: true, testCode: code });
-    await sendOtpTemplate(phone, code);
+    try {
+      await sendOtpTemplate(phone, code);
+    } catch (err) {
+      // Don't leak a raw Graph API error (e.g. axios's "Request failed with
+      // status code 404") to the merchant — point them at the working
+      // fallback. Logged server-side so the real cause is still visible.
+      console.error('[auth] WhatsApp OTP send failed:', err.response?.data || err.message);
+      return res.status(503).json({ error: "We couldn't send a WhatsApp code right now — please use the Email tab instead." });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
