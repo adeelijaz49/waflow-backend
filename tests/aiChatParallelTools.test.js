@@ -1,16 +1,19 @@
 require('dotenv').config();
-const request = require('supertest');
 
 const { connectOnce } = require('./dbSetup');
+const { authedAgent } = require('./testAuth');
 const app = require('../server');
 const AiChatSession = require('../models/AiChatSession');
 
 const SESSION_ID = '__test_ai_chat_parallel_tools__';
 
 describe('AI Mode handles Claude calling multiple tools in parallel', () => {
+  let request;
+
   beforeAll(async () => {
     await connectOnce();
-  }, 15000);
+    request = await authedAgent(app);
+  }, 30000);
 
   afterAll(async () => {
     await AiChatSession.deleteOne({ sessionId: SESSION_ID });
@@ -22,7 +25,7 @@ describe('AI Mode handles Claude calling multiple tools in parallel', () => {
     // shape that previously broke runTurn(), which only paired a tool_result
     // with the FIRST tool_use block in a response, corrupting the message
     // history sent back to Claude whenever it called more than one tool at once.
-    const res = await request(app)
+    const res = await request
       .post('/api/ai-chat/message')
       .send({
         sessionId: SESSION_ID,

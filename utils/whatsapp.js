@@ -16,6 +16,7 @@ const WINBACK_TEMPLATE = process.env.WA_WINBACK_TEMPLATE || 'waflow_winback';
 const POST_PURCHASE_TEMPLATE = process.env.WA_POST_PURCHASE_TEMPLATE || 'waflow_post_purchase';
 const POINTS_NUDGE_TEMPLATE = process.env.WA_POINTS_NUDGE_TEMPLATE || 'waflow_points_nudge';
 const NO_SHOW_TEMPLATE = process.env.WA_NO_SHOW_TEMPLATE || 'waflow_no_show';
+const OTP_TEMPLATE = process.env.WA_OTP_TEMPLATE || 'waflow_login_otp';
 
 let cachedWabaId = process.env.WA_WABA_ID || null;
 
@@ -179,6 +180,47 @@ function bodyComponentWithExample(text) {
   const values = exampleValuesFor(text);
   if (values.length) component.example = { body_text: [values] };
   return component;
+}
+
+// Authentication-category templates use a different shape than every other
+// template in this app: Meta auto-generates the body text (no custom `text`
+// field — just `add_security_recommendation`), and the OTP code is delivered
+// via a dedicated OTP button rather than a plain quick-reply. Kept separate
+// from createTemplate() rather than bent to fit its marketing-template shape.
+async function createOtpTemplate() {
+  const wabaId = await getWabaId();
+  const res = await axios.post(
+    `${WA_BASE}/${wabaId}/message_templates`,
+    {
+      name: OTP_TEMPLATE,
+      language: 'en',
+      category: 'AUTHENTICATION',
+      components: [
+        { type: 'BODY', add_security_recommendation: true },
+        { type: 'FOOTER', code_expiration_minutes: 5 },
+        { type: 'BUTTONS', buttons: [{ type: 'OTP', otp_type: 'COPY_CODE' }] },
+      ],
+    },
+    { headers: getHeaders() },
+  );
+  return res.data;
+}
+
+async function sendOtpTemplate(to, code) {
+  await ensureTemplateExists(OTP_TEMPLATE, createOtpTemplate);
+  return waPost({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name: OTP_TEMPLATE,
+      language: { code: 'en' },
+      components: [
+        { type: 'body', parameters: [{ type: 'text', text: String(code) }] },
+        { type: 'button', sub_type: 'copy_code', index: '0', parameters: [{ type: 'coupon_code', coupon_code: String(code) }] },
+      ],
+    },
+  });
 }
 
 async function createTemplate(name, bodyText, category = 'MARKETING', buttonLabels = []) {
@@ -980,6 +1022,7 @@ module.exports = {
   createPostPurchaseTemplate,
   createPointsNudgeTemplate,
   createNoShowTemplate,
+  createOtpTemplate,
   createTemplate,
   deleteTemplate,
   sendPromoTemplate,
@@ -988,6 +1031,7 @@ module.exports = {
   sendPostPurchaseTemplate,
   sendPointsNudgeTemplate,
   sendNoShowTemplate,
+  sendOtpTemplate,
   // Branching
   sendCustomFlowTemplate,
   sendMessageNodeFollowUp,

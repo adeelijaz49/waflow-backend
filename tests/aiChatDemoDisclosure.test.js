@@ -1,7 +1,7 @@
 require('dotenv').config();
-const request = require('supertest');
 
 const { connectOnce } = require('./dbSetup');
+const { authedAgent } = require('./testAuth');
 const app = require('../server');
 const AiChatSession = require('../models/AiChatSession');
 const Customer = require('../models/Customer');
@@ -11,13 +11,14 @@ const CampaignMessage = require('../models/CampaignMessage');
 const SESSION_ID = '__test_ai_chat_demo_disclosure__';
 
 describe('AI Mode discloses when a "successful" send was actually simulated', () => {
-  let promo, customer;
+  let promo, customer, request;
 
   beforeAll(async () => {
     await connectOnce();
+    request = await authedAgent(app);
     customer = await Customer.create({ firstname: '__test_ai_disclosure__', lastname: 'Customer', phone: '15559990299', isDemo: true });
     promo = await Promotion.create({ name: '__test_ai_disclosure_promo__', scope: 'products', customerType: 'cash', isDemo: true });
-  }, 15000);
+  }, 30000);
 
   afterAll(async () => {
     await AiChatSession.deleteOne({ sessionId: SESSION_ID });
@@ -32,7 +33,7 @@ describe('AI Mode discloses when a "successful" send was actually simulated', ()
   // reply said only "Done" with no indication the send wasn't real. The
   // merchant reasonably believed a real message had gone out.
   test('confirming a send for a demo-flagged promotion discloses it was simulated', async () => {
-    const proposeRes = await request(app)
+    const proposeRes = await request
       .post('/api/ai-chat/message')
       .send({
         sessionId: SESSION_ID,
@@ -41,7 +42,7 @@ describe('AI Mode discloses when a "successful" send was actually simulated', ()
     expect(proposeRes.status).toBe(200);
     expect(proposeRes.body.pendingAction?.toolName).toBe('send_promotion');
 
-    const confirmRes = await request(app)
+    const confirmRes = await request
       .post('/api/ai-chat/confirm-action')
       .send({ sessionId: SESSION_ID, actionId: proposeRes.body.pendingAction.id, confirm: true });
 

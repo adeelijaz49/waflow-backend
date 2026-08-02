@@ -1,7 +1,7 @@
 require('dotenv').config();
-const request = require('supertest');
 
 const { connectOnce } = require('./dbSetup');
+const { authedAgent } = require('./testAuth');
 const app = require('../server');
 const AiChatSession = require('../models/AiChatSession');
 const Customer = require('../models/Customer');
@@ -13,13 +13,14 @@ const DECLINE_SESSION = '__test_ai_chat_action_decline__';
 const STALE_SESSION = '__test_ai_chat_action_stale__';
 
 describe('AI Mode action tools + confirm-gate (Phase 3)', () => {
-  let promo, customer;
+  let promo, customer, request;
 
   beforeAll(async () => {
     await connectOnce();
+    request = await authedAgent(app);
     customer = await Customer.create({ firstname: '__test_ai_action__', lastname: 'Customer', phone: '15559990099', isDemo: true });
     promo = await Promotion.create({ name: '__test_ai_action_promo__', scope: 'products', customerType: 'cash', isDemo: true });
-  }, 15000);
+  }, 30000);
 
   afterAll(async () => {
     await AiChatSession.deleteMany({ sessionId: { $in: [PROPOSE_SESSION, DECLINE_SESSION, STALE_SESSION] } });
@@ -29,7 +30,7 @@ describe('AI Mode action tools + confirm-gate (Phase 3)', () => {
   });
 
   test('proposing send_promotion returns a pendingAction with zero side effects', async () => {
-    const res = await request(app)
+    const res = await request
       .post('/api/ai-chat/message')
       .send({
         sessionId: PROPOSE_SESSION,
@@ -44,7 +45,7 @@ describe('AI Mode action tools + confirm-gate (Phase 3)', () => {
     const countBeforeConfirm = await CampaignMessage.countDocuments({ promotion: promo._id });
     expect(countBeforeConfirm).toBe(0);
 
-    const confirmRes = await request(app)
+    const confirmRes = await request
       .post('/api/ai-chat/confirm-action')
       .send({ sessionId: PROPOSE_SESSION, actionId: res.body.pendingAction.id, confirm: true });
 
@@ -58,7 +59,7 @@ describe('AI Mode action tools + confirm-gate (Phase 3)', () => {
   test('declining a proposed action causes zero side effects', async () => {
     const countBefore = await CampaignMessage.countDocuments({ promotion: promo._id });
 
-    const res = await request(app)
+    const res = await request
       .post('/api/ai-chat/message')
       .send({
         sessionId: DECLINE_SESSION,
@@ -69,7 +70,7 @@ describe('AI Mode action tools + confirm-gate (Phase 3)', () => {
     expect(res.body.pendingAction).toBeTruthy();
     const actionId = res.body.pendingAction.id;
 
-    const declineRes = await request(app)
+    const declineRes = await request
       .post('/api/ai-chat/confirm-action')
       .send({ sessionId: DECLINE_SESSION, actionId, confirm: false });
 
@@ -81,7 +82,7 @@ describe('AI Mode action tools + confirm-gate (Phase 3)', () => {
   }, 45000);
 
   test('confirming a stale/unknown actionId returns 409 and does nothing', async () => {
-    const res = await request(app)
+    const res = await request
       .post('/api/ai-chat/message')
       .send({
         sessionId: STALE_SESSION,
@@ -91,7 +92,7 @@ describe('AI Mode action tools + confirm-gate (Phase 3)', () => {
     expect(res.status).toBe(200);
     expect(res.body.pendingAction).toBeTruthy();
 
-    const staleRes = await request(app)
+    const staleRes = await request
       .post('/api/ai-chat/confirm-action')
       .send({ sessionId: STALE_SESSION, actionId: 'not-the-real-action-id', confirm: true });
 

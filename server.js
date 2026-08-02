@@ -16,6 +16,7 @@ const { getCurrency } = require("./utils/settingsCache");
 const CampaignMessage = require("./models/CampaignMessage");
 const FlowEnrollment  = require("./models/FlowEnrollment");
 const MessageNode     = require("./models/MessageNode");
+const { requireAuth } = require("./middleware/requireAuth");
 
 const app  = express();
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
@@ -33,18 +34,23 @@ mongoose.connect(MONGODB_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.error("MongoDB connection error:", err.message));
 
-// ─── API routes ──────────────────────────────────────────────────────────────
-app.use("/api/products",   require("./routes/products"));
-app.use("/api/customers",  require("./routes/customers"));
-app.use("/api/orders",     require("./routes/orders"));
-app.use("/api/promotions", require("./routes/promotions"));
-app.use("/api/flows",      require("./routes/flows"));
-app.use("/api/message-nodes", require("./routes/messageNodes"));
-app.use("/api/services",   require("./routes/services"));
-app.use("/api/whatsapp",   require("./routes/whatsapp"));
-app.use("/api/settings",  require("./routes/settings"));
-app.use("/api/ai-chat",   require("./routes/aiChat"));
-app.use("/api/uploads",   require("./routes/uploads"));
+// ─── Auth (passwordless login) — must stay public ───────────────────────────
+app.use("/api/auth", require("./routes/auth"));
+
+// ─── API routes — everything below requires a logged-in session ────────────
+app.use("/api/products",   requireAuth, require("./routes/products"));
+app.use("/api/customers",  requireAuth, require("./routes/customers"));
+app.use("/api/orders",     requireAuth, require("./routes/orders"));
+app.use("/api/promotions", requireAuth, require("./routes/promotions"));
+app.use("/api/flows",      requireAuth, require("./routes/flows"));
+app.use("/api/message-nodes", requireAuth, require("./routes/messageNodes"));
+app.use("/api/services",   requireAuth, require("./routes/services"));
+app.use("/api/whatsapp",   requireAuth, require("./routes/whatsapp"));
+app.use("/api/settings",  requireAuth, require("./routes/settings"));
+app.use("/api/ai-chat",   requireAuth, require("./routes/aiChat"));
+app.use("/api/uploads",   requireAuth, require("./routes/uploads"));
+// Uploaded images must stay public — WhatsApp's own servers fetch them by URL
+// with no Authorization header when rendering a message to a real customer.
 app.use("/uploads", express.static(require("./utils/config").UPLOAD_DIR));
 app.use(require("./routes/pay"));
 
