@@ -224,6 +224,29 @@ router.post('/select-workspace', async (req, res) => {
   }
 });
 
+// ── Temporary dev bypass ─────────────────────────────────────────────────────
+// For continuing work before WhatsApp OTP / email magic link are configured
+// (Meta Authentication template permission, Resend). Deliberately NOT the
+// same mechanism as AUTH_TEST_MODE: that echoes real codes back to anyone who
+// asks, which would be a real hole if ever left on in production. This is a
+// no-op unless DEV_LOGIN_SECRET is explicitly set, requires that exact secret,
+// and always logs in as the existing (oldest) account rather than anyone the
+// caller names — remove or unset DEV_LOGIN_SECRET once real login works.
+router.post('/dev-login', async (req, res) => {
+  try {
+    const secret = process.env.DEV_LOGIN_SECRET;
+    if (!secret) return res.status(404).json({ error: 'Not found' });
+    if (req.body.secret !== secret) return res.status(401).json({ error: 'Invalid secret' });
+
+    const user = await User.findOne().sort({ createdAt: 1 });
+    if (!user) return res.status(404).json({ error: 'No account exists yet — run scripts/migrate-to-workspace.js first' });
+
+    await resolveSessionForUser(res, user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Current session ──────────────────────────────────────────────────────────
 
 router.get('/me', require('../middleware/requireAuth').requireAuth, async (req, res) => {

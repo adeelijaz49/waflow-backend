@@ -121,4 +121,14 @@ describe('routes/auth.js — passwordless login', () => {
     await Membership.deleteOne({ userId: user._id, workspaceId: secondWorkspace._id });
     await Workspace.deleteOne({ _id: secondWorkspace._id });
   }, 30000);
+
+  test('dev-login rejects a wrong secret and accepts the real one from DEV_LOGIN_SECRET', async () => {
+    if (!process.env.DEV_LOGIN_SECRET) return; // not configured in this env - nothing to test
+    const wrong = await request(app).post('/api/auth/dev-login').send({ secret: 'not-the-real-secret' });
+    expect(wrong.status).toBe(401);
+
+    const right = await request(app).post('/api/auth/dev-login').send({ secret: process.env.DEV_LOGIN_SECRET });
+    expect(right.status).toBe(200);
+    expect(right.body.token).toBeTruthy();
+  }, 15000);
 });
