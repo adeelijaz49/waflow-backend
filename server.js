@@ -16,7 +16,21 @@ const { getCurrency } = require("./utils/settingsCache");
 const CampaignMessage = require("./models/CampaignMessage");
 const FlowEnrollment  = require("./models/FlowEnrollment");
 const MessageNode     = require("./models/MessageNode");
+const Workspace       = require("./models/Workspace");
 const { requireAuth } = require("./middleware/requireAuth");
+const { withWorkspace, scopedFilter } = require("./shared/operations");
+
+// The WhatsApp webhook and Stripe webhook serve real customers directly, with
+// no logged-in session to read a workspaceId from. Only one platform WABA
+// exists today, so every inbound conversation belongs to the one workspace
+// scripts/migrate-to-workspace.js created — resolve it fresh per webhook call
+// rather than caching, since correctness matters more than one indexed query.
+// A future multi-WABA setup would resolve via the payload's phone_number_id
+// (Workspace.findOne({ 'whatsapp.phoneId': ... })) before this fallback.
+async function resolveWebhookWorkspaceId() {
+  const workspace = await Workspace.findOne().sort({ createdAt: 1 });
+  return workspace?._id;
+}
 
 const app  = express();
 const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || "my_verify_token";
@@ -143,10 +157,10 @@ const pendingProducts = new Map(); // randomId → { name, priceAud, description
 // "read" already landed).
 const STATUS_RANK = { queued: 0, sent: 1, failed: 1, delivered: 2, read: 3 };
 
-async function handleStatusCallbacks(statuses) {
+async function handleStatusCallbacks(statuses, workspaceId) {
   for (const s of statuses) {
     try {
-      const cm = await CampaignMessage.findOne({ wamid: s.id });
+      const cm = await CampaignMessage.findOne(withWorkspace({ wamid: s.id }, workspaceId));
       if (!cm) continue;
       if ((STATUS_RANK[s.status] ?? 0) < (STATUS_RANK[cm.status] ?? 0)) continue;
 
@@ -167,18 +181,18 @@ async function handleStatusCallbacks(statuses) {
 // Correlates an inbound button tap back to the CampaignMessage that prompted it —
 // precise match via the wamid in `context.id` (the message being replied to), with
 // a (promotion, customer, most-recent-sent) fallback if context is unavailable.
-async function correlateClick({ from, wamid, promotionId }) {
+async function correlateClick({ from, wamid, promotionId, workspaceId }) {
   try {
     let cm = null;
     if (wamid) {
-      cm = await CampaignMessage.findOneAndUpdate({ wamid }, { clickedAt: new Date() }, { new: true });
+      cm = await CampaignMessage.findOneAndUpdate(withWorkspace({ wamid }, workspaceId), { clickedAt: new Date() }, { new: true });
     }
     if (!cm && promotionId) {
       const Customer = require("./models/Customer");
-      const customer = await Customer.findOne({ phone: from });
+      const customer = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
       if (customer) {
         cm = await CampaignMessage.findOneAndUpdate(
-          { promotion: promotionId, customer: customer._id, status: { $in: ["sent", "delivered", "read"] } },
+          withWorkspace({ promotion: promotionId, customer: customer._id, status: { $in: ["sent", "delivered", "read"] } }, workspaceId),
           { clickedAt: new Date() },
           { sort: { createdAt: -1 }, new: true },
         );
@@ -199,28 +213,28 @@ async function correlateClick({ from, wamid, promotionId }) {
 // entry-node dispatch (message.type === "button", always a template reply) and
 // the deeper-node dispatch (interactive.button_reply, always a free-form reply)
 // so the two webhook shapes can't drift into two separate implementations.
-async function handleMessageNodeTap({ from, wamid, nodeId, position }) {
+async function handleMessageNodeTap({ from, wamid, nodeId, position, workspaceId }) {
   try {
     if (!wamid) return;
     const claimed = await CampaignMessage.findOneAndUpdate(
-      { wamid, respondedAt: null },
+      withWorkspace({ wamid, respondedAt: null }, workspaceId),
       { $set: { clickedAt: new Date(), respondedAt: new Date(), clickedButtonPosition: position } },
       { new: true },
     );
     if (!claimed) return; // already handled
 
-    const node = await MessageNode.findById(nodeId);
+    const node = await MessageNode.findOne(scopedFilter(nodeId, workspaceId));
     const button = node?.buttons.find(b => b.position === position);
     if (!button) return;
 
     const { type, targetNodeId } = button.nextAction;
 
     if (type === "send_message" && targetNodeId) {
-      const targetNode = await MessageNode.findById(targetNodeId);
+      const targetNode = await MessageNode.findOne(scopedFilter(targetNodeId, workspaceId));
       if (!targetNode) return;
 
       const Customer = require("./models/Customer");
-      const customer = await Customer.findById(claimed.customer);
+      const customer = await Customer.findOne(scopedFilter(claimed.customer, workspaceId));
       if (!customer || customer.optedOut) return; // opt-out enforced at every node, not just the entry message
 
       // The send itself gets its own try/catch (matching flowScheduler.js's
@@ -245,7 +259,7 @@ async function handleMessageNodeTap({ from, wamid, nodeId, position }) {
       // every promotion-sourced follow-up.
       await CampaignMessage.create({
         kind: claimed.kind, flow: claimed.flow, flowEnrollment: claimed.flowEnrollment, promotion: claimed.promotion,
-        customer: customer._id, phone: from,
+        customer: customer._id, phone: from, workspaceId,
         wamid: followUpWamid, messageType: "interactive", messageNode: targetNode._id,
         status: sendStatus, statusReason, sentAt: new Date(),
       }).catch(() => {});
@@ -263,7 +277,7 @@ async function handleMessageNodeTap({ from, wamid, nodeId, position }) {
       console.warn(`MessageNode action "${type}" tapped but not yet implemented (node ${nodeId}, position ${position})`);
       await CampaignMessage.create({
         kind: claimed.kind, flow: claimed.flow, flowEnrollment: claimed.flowEnrollment, promotion: claimed.promotion,
-        customer: claimed.customer, phone: from,
+        customer: claimed.customer, phone: from, workspaceId,
         messageType: "text", status: "failed", statusReason: `action_not_implemented:${type}`, sentAt: new Date(),
       }).catch(() => {});
     }
@@ -312,7 +326,7 @@ async function proceedToPayment(from, customer, cart) {
     // this same document (matched by stripePaymentIntentId) to paid/failed.
     const Order = require("./models/Order");
     await Order.create({
-      customer: customer._id,
+      customer: customer._id, workspaceId: customer.workspaceId,
       items: cart.map(item => ({ productName: item.name, category: item.description || "General", quantity: 1, unitPrice: item.priceAud })),
       subtotal, shippingCost: SHIPPING_COST, shippingAddress: customer.address, total,
       status: "pending", paymentStatus: "pending", source,
@@ -345,7 +359,7 @@ async function proceedToPointsConfirmation(from, customer, cart) {
       text: { body: `⚠️ You need ${totalPointsCost} pts but only have ${customer.loyaltyPoints} pts. Add fewer items or earn more points first.` } }).catch(() => {});
     return;
   }
-  pendingPointsCheckouts.set(from, { cart, promotion, campaignMessageId, totalPointsCost, address: customer.address });
+  pendingPointsCheckouts.set(from, { cart, promotion, campaignMessageId, totalPointsCost, address: customer.address, workspaceId: customer.workspaceId });
   const itemList  = cart.map(i => `• ${i.name}`).join("\n");
   const remaining = customer.loyaltyPoints - totalPointsCost;
   await waPost({
@@ -363,10 +377,12 @@ async function handleStripeWebhook(req, res) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  const workspaceId = await resolveWebhookWorkspaceId();
+
   if (event.type === "payment_intent.payment_failed") {
     const pi = event.data.object;
     const Order = require('./models/Order');
-    await Order.findOneAndUpdate({ stripePaymentIntentId: pi.id }, { paymentStatus: 'failed' }).catch(() => {});
+    await Order.findOneAndUpdate(withWorkspace({ stripePaymentIntentId: pi.id }, workspaceId), { paymentStatus: 'failed' }).catch(() => {});
     return res.sendStatus(200);
   }
 
@@ -385,8 +401,8 @@ async function handleStripeWebhook(req, res) {
           const TimeSlot = require('./models/TimeSlot');
           const Booking  = require('./models/Booking');
           const Order    = require('./models/Order');
-          const customer = await Customer.findOne({ phone: buyerPhone });
-          await TimeSlot.findByIdAndUpdate(slotId, { $inc: { bookedCount: 1 } });
+          const customer = await Customer.findOne(withWorkspace({ phone: buyerPhone }, workspaceId));
+          await TimeSlot.findOneAndUpdate(scopedFilter(slotId, workspaceId), { $inc: { bookedCount: 1 } });
           await Booking.create({
             serviceId,
             slotId,
@@ -397,12 +413,13 @@ async function handleStripeWebhook(req, res) {
             paymentType:   'cash',
             amount:        pi.amount / 100,
             stripePaymentIntentId: pi.id,
+            workspaceId: customer?.workspaceId || workspaceId,
           });
 
           // Shadow order so paid bookings show up in the same revenue/points
           // reporting as product orders (services otherwise never touch Order).
           let loyaltySettings = { loyaltyPointsPerUnit: 100, minPointsPerPurchase: 100 };
-          try { loyaltySettings = (await require('./models/Settings').findOne()) || loyaltySettings; } catch (_) {}
+          try { loyaltySettings = (await require('./models/Settings').findOne(withWorkspace({}, workspaceId))) || loyaltySettings; } catch (_) {}
           const bookingAmount = pi.amount / 100;
           const bookingPoints = Math.max(loyaltySettings.minPointsPerPurchase, Math.round(bookingAmount * loyaltySettings.loyaltyPointsPerUnit));
           const promotionId = pi.metadata?.promotionId || undefined;
@@ -414,6 +431,7 @@ async function handleStripeWebhook(req, res) {
             status: 'confirmed', paymentStatus: 'paid', paidAt: new Date(), source: promotionId ? 'campaign' : 'booking',
             promotion: promotionId, campaignMessage: campaignMessageId,
             stripePaymentIntentId: pi.id, loyaltyPointsEarned: bookingPoints,
+            workspaceId: customer?.workspaceId || workspaceId,
           });
           if (customer) {
             await Customer.findByIdAndUpdate(customer._id, { $inc: { loyaltyPoints: bookingPoints }, $set: { loyaltyPointsUpdatedAt: new Date() } });
@@ -443,7 +461,7 @@ async function handleStripeWebhook(req, res) {
     const promotionId       = pi.metadata?.promotionId || undefined;
     const campaignMessageId = pi.metadata?.campaignMessageId || undefined;
     let loyaltySettings = { loyaltyPointsPerUnit: 100, minPointsPerPurchase: 100 };
-    try { loyaltySettings = (await require('./models/Settings').findOne()) || loyaltySettings; } catch (_) {}
+    try { loyaltySettings = (await require('./models/Settings').findOne(withWorkspace({}, workspaceId))) || loyaltySettings; } catch (_) {}
     const points = Math.max(loyaltySettings.minPointsPerPurchase, Math.round(subtotal * loyaltySettings.loyaltyPointsPerUnit));
 
     const cartItems = carts.get(buyerPhone) || [];
@@ -455,7 +473,7 @@ async function handleStripeWebhook(req, res) {
         const Customer = require('./models/Customer');
         const Order    = require('./models/Order');
         const customer = await Customer.findOneAndUpdate(
-          { phone: buyerPhone },
+          withWorkspace({ phone: buyerPhone }, workspaceId),
           { $inc: { loyaltyPoints: points }, $set: { loyaltyPointsUpdatedAt: new Date() } },
           { new: true }
         );
@@ -465,7 +483,7 @@ async function handleStripeWebhook(req, res) {
         // place. Fall back to creating one fresh if none is found (e.g. an
         // older in-flight payment from before pending-order creation existed).
         let order = await Order.findOneAndUpdate(
-          { stripePaymentIntentId: pi.id },
+          withWorkspace({ stripePaymentIntentId: pi.id }, workspaceId),
           { status: 'confirmed', paymentStatus: 'paid', paidAt: new Date(), loyaltyPointsEarned: points },
           { new: true },
         );
@@ -490,6 +508,7 @@ async function handleStripeWebhook(req, res) {
             campaignMessage:     campaignMessageId,
             stripePaymentIntentId: pi.id,
             loyaltyPointsEarned: points,
+            workspaceId: customer?.workspaceId || workspaceId,
           });
         }
         if (order && campaignMessageId) {
@@ -526,21 +545,21 @@ app.get("/webhook", (req, res) => {
 // ─── Promo catalog helpers ────────────────────────────────────────────────────
 const { sendCatalog, sendProductCarousel, sendVariantPicker, sendPromoAnnouncement, sendServiceSlots } = require("./utils/whatsapp");
 
-async function handlePromoInterest(from, promoId, campaignMessageId) {
+async function handlePromoInterest(from, promoId, campaignMessageId, workspaceId) {
   try {
     const Promotion = require("./models/Promotion");
     const Product   = require("./models/Product");
 
-    const promo = await Promotion.findById(promoId).populate("products").populate("services");
+    const promo = await Promotion.findOne(scopedFilter(promoId, workspaceId)).populate("products").populate("services");
     if (!promo) return;
 
     if (promo.scope === "services") {
-      return handleServicePromoInterest(from, promo, campaignMessageId);
+      return handleServicePromoInterest(from, promo, campaignMessageId, workspaceId);
     }
 
     let products = promo.products || [];
     if (!products.length && promo.type === "store_wide") {
-      products = await Product.find({ active: true }).limit(50).lean();
+      products = await Product.find(withWorkspace({ active: true }, workspaceId)).limit(50).lean();
     }
 
     if (!products.length) {
@@ -561,10 +580,10 @@ async function handlePromoInterest(from, promoId, campaignMessageId) {
 // threads through pendingCatalogs -> proceedToPayment exactly like a promo send,
 // so a resulting order gets attributed back to this CampaignMessage (and from
 // there, via its flowEnrollment, back to the flow — see handleStripeWebhook).
-async function handleFlowBrowse(from, campaignMessageId) {
+async function handleFlowBrowse(from, campaignMessageId, workspaceId) {
   try {
     const Product = require("./models/Product");
-    const products = await Product.find({ active: true }).limit(50).lean();
+    const products = await Product.find(withWorkspace({ active: true }, workspaceId)).limit(50).lean();
     if (!products.length) {
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: "Sorry, no products are available right now." } });
@@ -589,13 +608,13 @@ async function handleMoreProducts(from, batchStart, promoId) {
   }
 }
 
-async function handleProductSelection(from, productId, variantLabel) {
+async function handleProductSelection(from, productId, variantLabel, workspaceId) {
   try {
     const catalog = pendingCatalogs.get(from);
     const Product = require("./models/Product");
 
     let p = catalog?.products.find(x => x._id.toString() === productId);
-    if (!p) p = await Product.findById(productId).lean();
+    if (!p) p = await Product.findOne(scopedFilter(productId, workspaceId)).lean();
     if (!p) return;
 
     const promo      = catalog?.promotion;
@@ -647,12 +666,12 @@ async function handleProductSelection(from, productId, variantLabel) {
 }
 
 // Shows available time slots when a customer taps a service promotion
-async function handleServicePromoInterest(from, promo, campaignMessageId) {
+async function handleServicePromoInterest(from, promo, campaignMessageId, workspaceId) {
   try {
     const Service  = require("./models/Service");
     const TimeSlot = require("./models/TimeSlot");
 
-    const services = promo.services?.length ? promo.services : await Service.find({ active: true }).limit(1);
+    const services = promo.services?.length ? promo.services : await Service.find(withWorkspace({ active: true }, workspaceId)).limit(1);
     if (!services.length) {
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: "Sorry, no services are available for this promotion right now." } });
@@ -662,13 +681,13 @@ async function handleServicePromoInterest(from, promo, campaignMessageId) {
     // Use first service in promotion (or only service)
     const service = services[0];
     const today   = new Date().toISOString().slice(0, 10);
-    const slots   = await TimeSlot.find({
+    const slots   = await TimeSlot.find(withWorkspace({
       serviceId:   service._id,
       date:        { $gte: today },
       $expr:       { $lt: ["$bookedCount", "$capacity"] },
-    }).sort({ date: 1, startTime: 1 }).limit(10);
+    }, workspaceId)).sort({ date: 1, startTime: 1 }).limit(10);
 
-    pendingSlotSelections.set(from, { service, promotion: promo, slots, isFree: false, campaignMessageId });
+    pendingSlotSelections.set(from, { service, promotion: promo, slots, isFree: false, campaignMessageId, workspaceId });
     await sendServiceSlots(from, service, slots, promo._id.toString(), false);
   } catch (err) {
     console.error("handleServicePromoInterest error:", err.message);
@@ -676,7 +695,7 @@ async function handleServicePromoInterest(from, promo, campaignMessageId) {
 }
 
 // Customer picked a time slot from a service promo
-async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
+async function handleSlotSelection(from, slotId, isFree, oldBookingId, workspaceId) {
   try {
     const TimeSlot = require("./models/TimeSlot");
     const Service  = require("./models/Service");
@@ -684,11 +703,12 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
     const Booking  = require("./models/Booking");
 
     const pending  = pendingSlotSelections.get(from);
-    const slot     = await TimeSlot.findById(slotId);
+    workspaceId    = pending?.workspaceId || workspaceId;
+    const slot     = await TimeSlot.findOne(scopedFilter(slotId, workspaceId));
     if (!slot) return;
 
-    const service  = pending?.service || await Service.findById(slot.serviceId);
-    const customer = await Customer.findOne({ phone: from });
+    const service  = pending?.service || await Service.findOne(scopedFilter(slot.serviceId, workspaceId));
+    const customer = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
 
     if (!slot || slot.bookedCount >= slot.capacity) {
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
@@ -698,11 +718,11 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
 
     if (isFree) {
       // Rescheduling — free, no payment needed
-      await TimeSlot.findByIdAndUpdate(slotId, { $inc: { bookedCount: 1 } });
+      await TimeSlot.findOneAndUpdate(scopedFilter(slotId, workspaceId), { $inc: { bookedCount: 1 } });
 
       // If rescheduling an existing booking, mark old one rescheduled
       if (oldBookingId) {
-        await Booking.findByIdAndUpdate(oldBookingId, { status: 'rescheduled' });
+        await Booking.findOneAndUpdate(scopedFilter(oldBookingId, workspaceId), { status: 'rescheduled' });
       }
 
       const booking = await Booking.create({
@@ -714,6 +734,7 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
         status:       'confirmed',
         paymentType:  'free',
         amount:       0,
+        workspaceId,
       });
 
       if (pending?.flowEnrollmentId) {
@@ -736,7 +757,7 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
           text: { body: `⚠️ You need ${pointsCost} pts but only have ${customer?.loyaltyPoints || 0} pts.` } });
         return;
       }
-      pendingServiceCheckouts.set(from, { service, slot, promotion, totalPointsCost: pointsCost });
+      pendingServiceCheckouts.set(from, { service, slot, promotion, totalPointsCost: pointsCost, workspaceId });
       const remaining = (customer?.loyaltyPoints || 0) - pointsCost;
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: `💎 *Booking Summary*\n\n📋 ${service.name}\n📅 ${slot.date} at ${slot.startTime}–${slot.endTime}\n\n*${pointsCost} points will be deducted*\nYou have: ${customer?.loyaltyPoints || 0} pts → after: ${remaining} pts\n\nReply *YES* to confirm or *NO* to cancel.` } });
@@ -765,7 +786,7 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId) {
         text: { body: `📋 *${service.name}*\n📅 ${slot.date} at ${slot.startTime}–${slot.endTime}\n💰 ${money(amount, currency)}\n\nPay securely to confirm your booking:\n${APP_URL}/pay/${pi.id}` } });
 
       // Second option — hold the slot without paying online; the merchant reviews and confirms.
-      pendingPayLaterSlots.set(from, { service, slot });
+      pendingPayLaterSlots.set(from, { service, slot, workspaceId });
       await waPost({
         messaging_product: "whatsapp", to: from, type: "interactive",
         interactive: {
@@ -785,21 +806,22 @@ async function handlePayLaterReservation(from, slotId) {
     const pending = pendingPayLaterSlots.get(from);
     if (!pending || pending.slot._id.toString() !== slotId) return;
     pendingPayLaterSlots.delete(from);
+    const workspaceId = pending.workspaceId;
 
     const TimeSlot = require("./models/TimeSlot");
     const Customer = require("./models/Customer");
     const Booking  = require("./models/Booking");
 
     const { service, slot } = pending;
-    const freshSlot = await TimeSlot.findById(slot._id);
+    const freshSlot = await TimeSlot.findOne(scopedFilter(slot._id, workspaceId));
     if (!freshSlot || freshSlot.bookedCount >= freshSlot.capacity) {
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: "⚠️ Sorry, that slot just got booked up. Please pick another time." } });
       return;
     }
 
-    await TimeSlot.findByIdAndUpdate(slot._id, { $inc: { bookedCount: 1 } });
-    const customer = await Customer.findOne({ phone: from });
+    await TimeSlot.findOneAndUpdate(scopedFilter(slot._id, workspaceId), { $inc: { bookedCount: 1 } });
+    const customer = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
     await Booking.create({
       serviceId:    service._id,
       slotId:       slot._id,
@@ -809,6 +831,7 @@ async function handlePayLaterReservation(from, slotId) {
       status:       'requested',
       paymentType:  'pay_later',
       amount:       service.basePrice || 0,
+      workspaceId,
     });
 
     await waPost({ messaging_product: "whatsapp", to: from, type: "text",
@@ -824,22 +847,22 @@ async function handlePayLaterReservation(from, slotId) {
 // that FlowEnrollment 'completed' once the customer actually rebooks (this
 // converts via a new Booking, not an Order, so the generic Stripe-webhook
 // completion hook used by the other flow triggers doesn't cover it).
-async function handleRebookRequest(from, serviceId, oldBookingId, flowEnrollmentId) {
+async function handleRebookRequest(from, serviceId, oldBookingId, flowEnrollmentId, workspaceId) {
   try {
     const Service  = require("./models/Service");
     const TimeSlot = require("./models/TimeSlot");
 
-    const service = await Service.findById(serviceId);
+    const service = await Service.findOne(scopedFilter(serviceId, workspaceId));
     if (!service) return;
 
     const today = new Date().toISOString().slice(0, 10);
-    const slots = await TimeSlot.find({
+    const slots = await TimeSlot.find(withWorkspace({
       serviceId,
       date:  { $gte: today },
       $expr: { $lt: ["$bookedCount", "$capacity"] },
-    }).sort({ date: 1, startTime: 1 }).limit(10);
+    }, workspaceId)).sort({ date: 1, startTime: 1 }).limit(10);
 
-    pendingSlotSelections.set(from, { service, promotion: null, slots, isFree: true, oldBookingId, flowEnrollmentId });
+    pendingSlotSelections.set(from, { service, promotion: null, slots, isFree: true, oldBookingId, flowEnrollmentId, workspaceId });
     await sendServiceSlots(from, service, slots, null, true);
   } catch (err) {
     console.error("handleRebookRequest error:", err.message);
@@ -850,10 +873,11 @@ async function handleRebookRequest(from, serviceId, oldBookingId, flowEnrollment
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
   const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+  const workspaceId = await resolveWebhookWorkspaceId();
 
   // Delivery/read/failed callbacks for outbound messages — no inbound message here.
   if (value?.statuses?.length) {
-    await handleStatusCallbacks(value.statuses);
+    await handleStatusCallbacks(value.statuses, workspaceId);
     return;
   }
 
@@ -868,22 +892,22 @@ app.post("/webhook", async (req, res) => {
     const payload = message.button?.payload || "";
     if (payload.startsWith("promo_")) {
       const promoId = payload.slice(6);
-      const cm = await correlateClick({ from, wamid: message.context?.id, promotionId: promoId });
-      await handlePromoInterest(from, promoId, cm?._id);
+      const cm = await correlateClick({ from, wamid: message.context?.id, promotionId: promoId, workspaceId });
+      await handlePromoInterest(from, promoId, cm?._id, workspaceId);
     } else if (payload.startsWith("flowbrowse_")) {
-      const cm = await correlateClick({ from, wamid: message.context?.id });
-      await handleFlowBrowse(from, cm?._id);
+      const cm = await correlateClick({ from, wamid: message.context?.id, workspaceId });
+      await handleFlowBrowse(from, cm?._id, workspaceId);
     } else if (payload.startsWith("flownoshow_")) {
       const parts     = payload.slice(11).split("_");
       const serviceId = parts[0];
       const bookingId = parts[1];
-      const cm = await correlateClick({ from, wamid: message.context?.id });
-      await handleRebookRequest(from, serviceId, bookingId, cm?.flowEnrollment);
+      const cm = await correlateClick({ from, wamid: message.context?.id, workspaceId });
+      await handleRebookRequest(from, serviceId, bookingId, cm?.flowEnrollment, workspaceId);
     } else if (payload.startsWith("msgnode_")) {
       // Entry-node tap — always arrives here since the entry message is always
       // a template (see models/MessageNode.js).
       const parts = payload.slice(8).split("_");
-      await handleMessageNodeTap({ from, wamid: message.context?.id, nodeId: parts[0], position: +parts[1] });
+      await handleMessageNodeTap({ from, wamid: message.context?.id, nodeId: parts[0], position: +parts[1], workspaceId });
     }
     return;
   }
@@ -908,16 +932,16 @@ app.post("/webhook", async (req, res) => {
             const v = (product.variants || [])[parseInt(varIdx, 10)];
             label = [v?.size, v?.color].filter(Boolean).join(" · ");
           }
-          await handleProductSelection(from, productId, label);
+          await handleProductSelection(from, productId, label, workspaceId);
         }
       } else if (rowId.startsWith("slot_")) {
-        await handleSlotSelection(from, rowId.slice(5), false, null);
+        await handleSlotSelection(from, rowId.slice(5), false, null, workspaceId);
       } else if (rowId.startsWith("reslot_")) {
         const pending = pendingSlotSelections.get(from);
-        await handleSlotSelection(from, rowId.slice(7), true, pending?.oldBookingId || null);
+        await handleSlotSelection(from, rowId.slice(7), true, pending?.oldBookingId || null, workspaceId);
       } else if (rowId.startsWith("cart_")) {
         // Product row from list fallback
-        await handleProductSelection(from, rowId.slice(5), "");
+        await handleProductSelection(from, rowId.slice(5), "", workspaceId);
       }
       return;
     }
@@ -932,7 +956,7 @@ app.post("/webhook", async (req, res) => {
         const parts     = buttonId.slice(7).split("_");
         const serviceId = parts[0];
         const bookingId = parts[1];
-        await handleRebookRequest(from, serviceId, bookingId);
+        await handleRebookRequest(from, serviceId, bookingId, undefined, workspaceId);
 
       } else if (buttonId.startsWith("paylater_")) {
         // Customer tapped "Reserve, Pay in Person" instead of the Stripe link
@@ -941,14 +965,14 @@ app.post("/webhook", async (req, res) => {
       } else if (buttonId.startsWith("promo_")) {
         // "Shop Now" / "Book Now" tapped on promo message → show catalog or slots
         const promoId = buttonId.slice(6);
-        const cm = await correlateClick({ from, wamid: message.context?.id, promotionId: promoId });
-        await handlePromoInterest(from, promoId, cm?._id);
+        const cm = await correlateClick({ from, wamid: message.context?.id, promotionId: promoId, workspaceId });
+        await handlePromoInterest(from, promoId, cm?._id, workspaceId);
 
       } else if (buttonId.startsWith("msgnode_")) {
         // Deeper-node tap — always arrives here since follow-up MessageNodes
         // are always sent free-form (see models/MessageNode.js).
         const parts = buttonId.slice(8).split("_");
-        await handleMessageNodeTap({ from, wamid: message.context?.id, nodeId: parts[0], position: +parts[1] });
+        await handleMessageNodeTap({ from, wamid: message.context?.id, nodeId: parts[0], position: +parts[1], workspaceId });
 
       } else if (buttonId.startsWith("int_")) {
         // Legacy: manual single-product send from /send-message endpoint
@@ -964,7 +988,7 @@ app.post("/webhook", async (req, res) => {
 
       } else if (buttonId.startsWith("cart_")) {
         // "Add to Cart" tapped on an individual product card (button_reply from sendProductCards)
-        await handleProductSelection(from, buttonId.slice(5), "");
+        await handleProductSelection(from, buttonId.slice(5), "", workspaceId);
 
       } else if (buttonId.startsWith("more_")) {
         // Load next carousel batch: more_<batchStart>_<promoId>
@@ -993,7 +1017,7 @@ app.post("/webhook", async (req, res) => {
           return;
         }
         const Customer = require("./models/Customer");
-        const customer = await Customer.findOne({ phone: from });
+        const customer = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
         if (!customer) {
           await waPost({ messaging_product: "whatsapp", to: from, type: "text",
             text: { body: "We couldn't find your profile. Please contact support to complete this order." } }).catch(() => {});
@@ -1015,7 +1039,7 @@ app.post("/webhook", async (req, res) => {
           return;
         }
         const Customer  = require("./models/Customer");
-        const customer  = await Customer.findOne({ phone: from });
+        const customer  = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
         if (!customer) {
           await waPost({ messaging_product: "whatsapp", to: from, type: "text",
             text: { body: "We couldn't find your profile. Please contact support." } }).catch(() => {});
@@ -1042,14 +1066,14 @@ app.post("/webhook", async (req, res) => {
     // the "Reply STOP to unsubscribe" promise already in the promo template footer.
     if (upperText === "STOP" || upperText === "UNSUBSCRIBE") {
       const Customer = require("./models/Customer");
-      await Customer.findOneAndUpdate({ phone: from }, { optedOut: true, optedOutAt: new Date() });
+      await Customer.findOneAndUpdate(withWorkspace({ phone: from }, workspaceId), { optedOut: true, optedOutAt: new Date() });
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: "You've been unsubscribed from promotional messages. Reply START to opt back in anytime." } }).catch(() => {});
       return;
     }
     if (upperText === "START" || upperText === "SUBSCRIBE") {
       const Customer = require("./models/Customer");
-      await Customer.findOneAndUpdate({ phone: from }, { optedOut: false, optedOutAt: null });
+      await Customer.findOneAndUpdate(withWorkspace({ phone: from }, workspaceId), { optedOut: false, optedOutAt: null });
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: "You're subscribed to promotional messages again. Welcome back! 🎉" } }).catch(() => {});
       return;
@@ -1068,7 +1092,7 @@ app.post("/webhook", async (req, res) => {
           const Booking  = require('./models/Booking');
 
           const customer = await Customer.findOneAndUpdate(
-            { phone: from, loyaltyPoints: { $gte: pending.totalPointsCost } },
+            withWorkspace({ phone: from, loyaltyPoints: { $gte: pending.totalPointsCost } }, pending.workspaceId),
             { $inc: { loyaltyPoints: -pending.totalPointsCost }, $set: { loyaltyPointsUpdatedAt: new Date() } },
             { new: true }
           );
@@ -1077,7 +1101,7 @@ app.post("/webhook", async (req, res) => {
               text: { body: '⚠️ Insufficient points. Booking could not be completed.' } }).catch(() => {});
             return;
           }
-          await TimeSlot.findByIdAndUpdate(pending.slot._id, { $inc: { bookedCount: 1 } });
+          await TimeSlot.findOneAndUpdate(scopedFilter(pending.slot._id, pending.workspaceId), { $inc: { bookedCount: 1 } });
           await Booking.create({
             serviceId:    pending.service._id,
             slotId:       pending.slot._id,
@@ -1087,6 +1111,7 @@ app.post("/webhook", async (req, res) => {
             status:       'confirmed',
             paymentType:  'points',
             pointsUsed:   pending.totalPointsCost,
+            workspaceId:  pending.workspaceId,
           });
           await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
             text: { body: `✅ *Booked!*\n\n📋 ${pending.service.name}\n📅 ${pending.slot.date} at ${pending.slot.startTime}\n💎 ${pending.totalPointsCost} points redeemed\n\nRemaining points: ${customer.loyaltyPoints} pts\n\nSee you then! 🎉` } }).catch(() => {});
@@ -1114,7 +1139,7 @@ app.post("/webhook", async (req, res) => {
           const Customer = require('./models/Customer');
           const Order    = require('./models/Order');
           const customer = await Customer.findOneAndUpdate(
-            { phone: from, loyaltyPoints: { $gte: pending.totalPointsCost } },
+            withWorkspace({ phone: from, loyaltyPoints: { $gte: pending.totalPointsCost } }, pending.workspaceId),
             { $inc: { loyaltyPoints: -pending.totalPointsCost }, $set: { loyaltyPointsUpdatedAt: new Date() } },
             { new: true }
           );
@@ -1140,6 +1165,7 @@ app.post("/webhook", async (req, res) => {
               promotion:        pending.promotion?._id,
               campaignMessage:  pending.campaignMessageId,
               loyaltyPointsEarned: 0,
+              workspaceId:      customer.workspaceId,
             });
             if (pending.campaignMessageId) {
               await CampaignMessage.findByIdAndUpdate(pending.campaignMessageId, { order: order._id }).catch(() => {});
@@ -1171,7 +1197,7 @@ app.post("/webhook", async (req, res) => {
         return;
       }
       const Customer = require("./models/Customer");
-      const customer = await Customer.findOneAndUpdate({ phone: from }, { address: text }, { new: true });
+      const customer = await Customer.findOneAndUpdate(withWorkspace({ phone: from }, workspaceId), { address: text }, { new: true });
       if (!customer) {
         await waPost({ messaging_product: "whatsapp", to: from, type: "text",
           text: { body: "We couldn't find your profile. Please contact support to complete this order." } }).catch(() => {});
@@ -1205,7 +1231,7 @@ app.post("/webhook", async (req, res) => {
 
     // Route each selection through handleProductSelection (handles variant check too)
     for (const i of indices) {
-      await handleProductSelection(from, products[i]._id.toString(), "");
+      await handleProductSelection(from, products[i]._id.toString(), "", workspaceId);
     }
   }
 });

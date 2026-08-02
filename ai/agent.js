@@ -31,7 +31,7 @@ function askClaude(messages) {
   });
 }
 
-async function runTurn(session, userMessage) {
+async function runTurn(session, userMessage, workspaceId) {
   session.messages.push({ role: 'user', text: userMessage });
   session.pendingAction = null; // any previous pending action is implicitly superseded
 
@@ -84,7 +84,7 @@ async function runTurn(session, userMessage) {
       }
       let result;
       try {
-        result = await tool.run(block.input);
+        result = await tool.run(block.input, workspaceId);
       } catch (err) {
         result = { error: err.message };
       }
@@ -113,7 +113,7 @@ async function phraseResult(toolName, result) {
   }
 }
 
-async function confirmAction(session, actionId, confirm) {
+async function confirmAction(session, actionId, confirm, workspaceId) {
   const pending = session.pendingAction;
   if (!pending || pending.id !== actionId) {
     const err = new Error('This action is no longer pending.');
@@ -132,7 +132,7 @@ async function confirmAction(session, actionId, confirm) {
   const tool = getTool(pending.toolName);
   let reply;
   try {
-    const result = await tool.run(pending.args);
+    const result = await tool.run(pending.args, workspaceId);
     reply = await phraseResult(pending.toolName, result);
     // Deterministic, not LLM-dependent: a demo/simulated send must never be
     // reported to the merchant as an unqualified success. Root-caused a real

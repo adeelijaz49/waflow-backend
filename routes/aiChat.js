@@ -2,15 +2,15 @@ const router = require('express').Router();
 const AiChatSession = require('../models/AiChatSession');
 const { runTurn, confirmAction } = require('../ai/agent');
 
-async function loadOrCreateSession(sessionId) {
-  let session = await AiChatSession.findOne({ sessionId });
-  if (!session) session = new AiChatSession({ sessionId, messages: [] });
+async function loadOrCreateSession(sessionId, workspaceId) {
+  let session = await AiChatSession.findOne({ sessionId, workspaceId });
+  if (!session) session = new AiChatSession({ sessionId, workspaceId, messages: [] });
   return session;
 }
 
 router.get('/session/:sessionId', async (req, res) => {
   try {
-    const session = await AiChatSession.findOne({ sessionId: req.params.sessionId });
+    const session = await AiChatSession.findOne({ sessionId: req.params.sessionId, workspaceId: req.user.workspaceId });
     if (!session) return res.json({ sessionId: req.params.sessionId, messages: [], pendingAction: null });
     res.json({ sessionId: session.sessionId, messages: session.messages, pendingAction: session.pendingAction });
   } catch (err) {
@@ -23,8 +23,8 @@ router.post('/message', async (req, res) => {
     const { sessionId, message } = req.body;
     if (!sessionId || !message) return res.status(400).json({ error: 'sessionId and message are required' });
 
-    const session = await loadOrCreateSession(sessionId);
-    const { reply, pendingAction } = await runTurn(session, message);
+    const session = await loadOrCreateSession(sessionId, req.user.workspaceId);
+    const { reply, pendingAction } = await runTurn(session, message, req.user.workspaceId);
     await session.save();
 
     res.json({ sessionId, reply, pendingAction });
@@ -40,10 +40,10 @@ router.post('/confirm-action', async (req, res) => {
       return res.status(400).json({ error: 'sessionId, actionId, and confirm (boolean) are required' });
     }
 
-    const session = await AiChatSession.findOne({ sessionId });
+    const session = await AiChatSession.findOne({ sessionId, workspaceId: req.user.workspaceId });
     if (!session) return res.status(404).json({ error: 'Session not found' });
 
-    const { reply, pendingAction } = await confirmAction(session, actionId, confirm);
+    const { reply, pendingAction } = await confirmAction(session, actionId, confirm, req.user.workspaceId);
     await session.save();
 
     res.json({ sessionId, reply, pendingAction });

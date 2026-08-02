@@ -4,7 +4,7 @@ const ops = require('../shared/operations');
 router.get('/', async (req, res) => {
   try {
     const { search, isDemo, page = 1, limit = 50 } = req.query;
-    res.json(await ops.listCustomers({ search, isDemo, page: +page, limit: +limit }));
+    res.json(await ops.listCustomers({ search, isDemo, page: +page, limit: +limit, workspaceId: req.user.workspaceId }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -12,7 +12,7 @@ router.get('/', async (req, res) => {
 
 router.get('/:id', async (req, res) => {
   try {
-    res.json(await ops.getCustomer({ id: req.params.id }));
+    res.json(await ops.getCustomer({ id: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Customer not found') return res.status(404).json({ error: 'Not found' });
     res.status(500).json({ error: err.message });
@@ -21,7 +21,7 @@ router.get('/:id', async (req, res) => {
 
 router.get('/:id/whatsapp-history', async (req, res) => {
   try {
-    res.json(await ops.getCustomerWhatsAppHistory({ customerId: req.params.id }));
+    res.json(await ops.getCustomerWhatsAppHistory({ customerId: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -29,7 +29,7 @@ router.get('/:id/whatsapp-history', async (req, res) => {
 
 router.get('/:id/bookings', async (req, res) => {
   try {
-    res.json(await ops.listBookings({ customerId: req.params.id }));
+    res.json(await ops.listBookings({ customerId: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -37,7 +37,7 @@ router.get('/:id/bookings', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    res.status(201).json(await ops.createCustomer(req.body));
+    res.status(201).json(await ops.createCustomer({ ...req.body, workspaceId: req.user.workspaceId }));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -45,7 +45,7 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    res.json(await ops.updateCustomer({ id: req.params.id, ...req.body }));
+    res.json(await ops.updateCustomer({ id: req.params.id, ...req.body, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Customer not found') return res.status(404).json({ error: 'Not found' });
     res.status(400).json({ error: err.message });

@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 // trigger the merchant has set up — see utils/flowScheduler.js for how these
 // get evaluated and utils/flowTriggers/ for the per-triggerType logic.
 const schema = new mongoose.Schema({
+  workspaceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   name:        { type: String, required: true },
   triggerType: {
     type: String,

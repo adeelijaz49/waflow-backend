@@ -2,6 +2,7 @@ require('dotenv').config();
 const request  = require('supertest');
 
 const { connectOnce } = require('./dbSetup');
+const { getTestWorkspaceId } = require('./testAuth');
 const app             = require('../server');
 const Customer        = require('../models/Customer');
 const Promotion       = require('../models/Promotion');
@@ -34,11 +35,12 @@ describe('webhook: status callbacks, opt-out, and click correlation', () => {
 
   beforeAll(async () => {
     await connectOnce();
-    customer = await Customer.create({ firstname: 'Test', lastname: 'Webhook', phone: TEST_PHONE });
-    promotion = await Promotion.create({ name: '__test_campaign__', scope: 'products', customerType: 'cash' });
+    const workspaceId = await getTestWorkspaceId(app);
+    customer = await Customer.create({ firstname: 'Test', lastname: 'Webhook', phone: TEST_PHONE, workspaceId });
+    promotion = await Promotion.create({ name: '__test_campaign__', scope: 'products', customerType: 'cash', workspaceId });
     cm = await CampaignMessage.create({
       kind: 'promotion', promotion: promotion._id, customer: customer._id, phone: TEST_PHONE,
-      wamid: 'wamid.TEST123', messageType: 'interactive', status: 'sent', sentAt: new Date(),
+      wamid: 'wamid.TEST123', messageType: 'interactive', status: 'sent', sentAt: new Date(), workspaceId,
     });
   });
 

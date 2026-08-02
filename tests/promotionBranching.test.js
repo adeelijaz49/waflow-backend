@@ -2,6 +2,7 @@ require('dotenv').config();
 const request = require('supertest');
 
 const { connectOnce } = require('./dbSetup');
+const { getTestWorkspaceId } = require('./testAuth');
 const app = require('../server');
 const ops = require('../shared/operations');
 const Customer = require('../models/Customer');
@@ -115,15 +116,17 @@ describe('promotion branching: deletePromotion cascades to its MessageNode subtr
 });
 
 describe('promotion branching: webhook button-tap attributes the follow-up to the promotion', () => {
-  let customer, entryNode, target;
+  let customer, entryNode, target, workspaceId;
 
   beforeAll(async () => {
     await connectOnce();
-    customer = await Customer.create({ firstname: '__test_promo_tap_customer__', lastname: 'Test', phone: '15558801' });
-    target = await MessageNode.create({ ownerType: 'promotion', ownerId: customer._id, bodyText: 'Follow-up for {{1}}', buttons: [] });
+    workspaceId = await getTestWorkspaceId(app);
+    customer = await Customer.create({ firstname: '__test_promo_tap_customer__', lastname: 'Test', phone: '15558801', workspaceId });
+    target = await MessageNode.create({ ownerType: 'promotion', ownerId: customer._id, bodyText: 'Follow-up for {{1}}', buttons: [], workspaceId });
     entryNode = await MessageNode.create({
       ownerType: 'promotion', ownerId: customer._id, isEntryNode: true, bodyText: 'Pick one, {{1}}',
       buttons: [{ position: 0, label: 'Option A', nextAction: { type: 'send_message', targetNodeId: target._id } }],
+      workspaceId,
     });
   }, 15000);
 
@@ -138,7 +141,7 @@ describe('promotion branching: webhook button-tap attributes the follow-up to th
     const cm = await CampaignMessage.create({
       kind: 'promotion', promotion: promotionId, customer: customer._id, phone: customer.phone,
       wamid: 'wamid.PROMO_BRANCH_TAP', messageType: 'template', messageNode: entryNode._id,
-      status: 'sent', sentAt: new Date(),
+      status: 'sent', sentAt: new Date(), workspaceId,
     });
 
     await request(app).post('/webhook').send({

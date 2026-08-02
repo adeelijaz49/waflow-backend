@@ -4,6 +4,7 @@
 // Keeping the logic here once means a fix/change applies to both surfaces automatically.
 
 const Stripe = require('stripe');
+const mongoose = require('mongoose');
 
 const Product   = require('../models/Product');
 const Service    = require('../models/Service');
@@ -37,6 +38,28 @@ const SHIPPING_COST = 0.5; // flat rate, matches server.js's WhatsApp checkout f
 
 function wamidOf(sendResult) {
   return sendResult?.messages?.[0]?.id;
+}
+
+// ─── Multi-tenant scoping (Phase 3) ─────────────────────────────────────────
+// workspaceId is optional everywhere on purpose: omitting it preserves this
+// codebase's pre-multi-tenant behavior exactly (no filter at all) for any
+// caller that doesn't pass one — today that's MCP/GPT Actions and the test
+// suite. The real dashboard (routes/*.js) always passes req.user.workspaceId,
+// which is what makes isolation real for the surface that actually needs it.
+function scopedFilter(id, workspaceId, extra) {
+  const filter = { _id: id, ...extra };
+  if (workspaceId) filter.workspaceId = workspaceId;
+  return filter;
+}
+function withWorkspace(filter, workspaceId) {
+  if (workspaceId) filter.workspaceId = workspaceId;
+  return filter;
+}
+// Aggregation pipelines don't auto-cast strings to ObjectId the way find()
+// does — $match needs an explicit cast, or a string workspaceId silently
+// matches nothing.
+function workspaceMatch(workspaceId) {
+  return workspaceId ? { workspaceId: new mongoose.Types.ObjectId(workspaceId) } : {};
 }
 
 // ─── Demo Mode isolation ───────────────────────────────────────────────────────
@@ -83,8 +106,8 @@ async function simulateDemoConversion({ customer, promotion, items }) {
 
 // ─── Products ────────────────────────────────────────────────────────────────
 
-async function listProducts({ search, category, page = 1, limit = 50 } = {}) {
-  const filter = { active: true };
+async function listProducts({ search, category, page = 1, limit = 50, workspaceId } = {}) {
+  const filter = withWorkspace({ active: true }, workspaceId);
   if (search) filter.name = { $regex: search, $options: 'i' };
   if (category) filter.category = category;
   const skip = (page - 1) * limit;
@@ -95,8 +118,8 @@ async function listProducts({ search, category, page = 1, limit = 50 } = {}) {
   return { products, total, page, pages: Math.ceil(total / limit) };
 }
 
-async function getProduct({ id }) {
-  const product = await Product.findById(id);
+async function getProduct({ id, workspaceId }) {
+  const product = await Product.findOne(scopedFilter(id, workspaceId));
   if (!product) throw new Error('Product not found');
   return product;
 }
@@ -105,25 +128,25 @@ async function createProduct(data) {
   return Product.create(data);
 }
 
-async function updateProduct({ id, ...data }) {
-  const product = await Product.findByIdAndUpdate(id, data, { new: true, runValidators: true });
+async function updateProduct({ id, workspaceId, ...data }) {
+  const product = await Product.findOneAndUpdate(scopedFilter(id, workspaceId), data, { new: true, runValidators: true });
   if (!product) throw new Error('Product not found');
   return product;
 }
 
-async function deactivateProduct({ id }) {
-  await Product.findByIdAndUpdate(id, { active: false });
+async function deactivateProduct({ id, workspaceId }) {
+  await Product.findOneAndUpdate(scopedFilter(id, workspaceId), { active: false });
   return { success: true };
 }
 
 // ─── Services ────────────────────────────────────────────────────────────────
 
-async function listServices() {
-  return Service.find({ active: true }).sort({ name: 1 });
+async function listServices({ workspaceId } = {}) {
+  return Service.find(withWorkspace({ active: true }, workspaceId)).sort({ name: 1 });
 }
 
-async function getService({ id }) {
-  const service = await Service.findById(id);
+async function getService({ id, workspaceId }) {
+  const service = await Service.findOne(scopedFilter(id, workspaceId));
   if (!service) throw new Error('Service not found');
   const slots = await TimeSlot.find({ serviceId: id }).sort({ date: 1, startTime: 1 });
   const bookings = await Booking.find({ serviceId: id }).sort({ createdAt: -1 }).populate('customerId', 'firstname lastname phone');
@@ -134,14 +157,14 @@ async function createService(data) {
   return Service.create(data);
 }
 
-async function updateService({ id, ...data }) {
-  const service = await Service.findByIdAndUpdate(id, data, { new: true });
+async function updateService({ id, workspaceId, ...data }) {
+  const service = await Service.findOneAndUpdate(scopedFilter(id, workspaceId), data, { new: true });
   if (!service) throw new Error('Service not found');
   return service;
 }
 
-async function deactivateService({ id }) {
-  await Service.findByIdAndUpdate(id, { active: false });
+async function deactivateService({ id, workspaceId }) {
+  await Service.findOneAndUpdate(scopedFilter(id, workspaceId), { active: false });
   return { success: true };
 }
 
@@ -149,8 +172,8 @@ async function createTimeSlot({ serviceId, ...data }) {
   return TimeSlot.create({ ...data, serviceId });
 }
 
-async function listBookings({ serviceId, customerId } = {}) {
-  const filter = {};
+async function listBookings({ serviceId, customerId, workspaceId } = {}) {
+  const filter = withWorkspace({}, workspaceId);
   if (serviceId) filter.serviceId = serviceId;
   if (customerId) filter.customerId = customerId;
   return Booking.find(filter).sort({ createdAt: -1 }).limit(200)
@@ -159,8 +182,8 @@ async function listBookings({ serviceId, customerId } = {}) {
     .populate('customerId', 'firstname lastname phone');
 }
 
-async function cancelBooking({ bookingId }) {
-  const booking = await Booking.findById(bookingId).populate('serviceId').populate('slotId');
+async function cancelBooking({ bookingId, workspaceId }) {
+  const booking = await Booking.findOne(scopedFilter(bookingId, workspaceId)).populate('serviceId').populate('slotId');
   if (!booking) throw new Error('Booking not found');
   if (booking.status === 'cancelled') throw new Error('Already cancelled');
   booking.status = 'cancelled';
@@ -182,8 +205,8 @@ async function cancelBooking({ bookingId }) {
   return { success: true };
 }
 
-async function rescheduleBooking({ bookingId, newSlotId }) {
-  const booking = await Booking.findById(bookingId).populate('serviceId').populate('slotId');
+async function rescheduleBooking({ bookingId, newSlotId, workspaceId }) {
+  const booking = await Booking.findOne(scopedFilter(bookingId, workspaceId)).populate('serviceId').populate('slotId');
   if (!booking) throw new Error('Booking not found');
   const newSlot = await TimeSlot.findById(newSlotId);
   if (!newSlot) throw new Error('New slot not found');
@@ -208,15 +231,15 @@ async function rescheduleBooking({ bookingId, newSlotId }) {
   return { success: true };
 }
 
-async function completeBooking({ bookingId }) {
-  await Booking.findByIdAndUpdate(bookingId, { status: 'completed' });
+async function completeBooking({ bookingId, workspaceId }) {
+  await Booking.findOneAndUpdate(scopedFilter(bookingId, workspaceId), { status: 'completed' });
   return { success: true };
 }
 
 // A "Reserve — Pay in Person" booking sits as 'requested' until the merchant
 // reviews it — these three transitions are that review action.
-async function confirmBooking({ bookingId }) {
-  const booking = await Booking.findById(bookingId).populate('serviceId').populate('slotId');
+async function confirmBooking({ bookingId, workspaceId }) {
+  const booking = await Booking.findOne(scopedFilter(bookingId, workspaceId)).populate('serviceId').populate('slotId');
   if (!booking) throw new Error('Booking not found');
   if (booking.status !== 'requested') throw new Error('Only requested bookings can be confirmed');
   booking.status = 'confirmed';
@@ -236,8 +259,8 @@ async function confirmBooking({ bookingId }) {
   return booking;
 }
 
-async function declineBooking({ bookingId }) {
-  const booking = await Booking.findById(bookingId).populate('serviceId').populate('slotId');
+async function declineBooking({ bookingId, workspaceId }) {
+  const booking = await Booking.findOne(scopedFilter(bookingId, workspaceId)).populate('serviceId').populate('slotId');
   if (!booking) throw new Error('Booking not found');
   if (booking.status !== 'requested') throw new Error('Only requested bookings can be declined');
   booking.status = 'cancelled';
@@ -260,8 +283,8 @@ async function declineBooking({ bookingId }) {
 
 // Manual, post-hoc — the customer never showed for a confirmed slot. No slot-capacity
 // change (the slot already happened) and no customer notification (nothing to tell them).
-async function markNoShow({ bookingId }) {
-  const booking = await Booking.findById(bookingId);
+async function markNoShow({ bookingId, workspaceId }) {
+  const booking = await Booking.findOne(scopedFilter(bookingId, workspaceId));
   if (!booking) throw new Error('Booking not found');
   if (booking.status !== 'confirmed') throw new Error('Only confirmed bookings can be marked no-show');
   booking.status = 'no-show';
@@ -271,8 +294,8 @@ async function markNoShow({ bookingId }) {
 
 // ─── Customers ───────────────────────────────────────────────────────────────
 
-async function listCustomers({ search, isDemo, page = 1, limit = 50 } = {}) {
-  const filter = {};
+async function listCustomers({ search, isDemo, page = 1, limit = 50, workspaceId } = {}) {
+  const filter = withWorkspace({}, workspaceId);
   if (search) filter.$or = [
     { firstname: { $regex: search, $options: 'i' } },
     { lastname: { $regex: search, $options: 'i' } },
@@ -310,8 +333,8 @@ async function listCustomers({ search, isDemo, page = 1, limit = 50 } = {}) {
   return { customers: enriched, total, page, pages: Math.ceil(total / limit) };
 }
 
-async function getCustomer({ id }) {
-  const customer = await Customer.findById(id);
+async function getCustomer({ id, workspaceId }) {
+  const customer = await Customer.findOne(scopedFilter(id, workspaceId));
   if (!customer) throw new Error('Customer not found');
   const orders = await Order.find({ customer: id }).sort({ createdAt: -1 });
   const totalSpent = orders.reduce((s, o) => s + (o.total || 0), 0);
@@ -320,8 +343,8 @@ async function getCustomer({ id }) {
 
 // The lighter WhatsApp history: reuses CampaignMessage (already written for every
 // promotion/loyalty/booking-notification send) rather than a full chat transcript.
-async function getCustomerWhatsAppHistory({ customerId }) {
-  return CampaignMessage.find({ customer: customerId })
+async function getCustomerWhatsAppHistory({ customerId, workspaceId }) {
+  return CampaignMessage.find(withWorkspace({ customer: customerId }, workspaceId))
     .sort({ createdAt: -1 })
     .limit(100)
     .populate('promotion', 'name')
@@ -332,16 +355,16 @@ async function createCustomer(data) {
   return Customer.create(data);
 }
 
-async function updateCustomer({ id, ...data }) {
-  const customer = await Customer.findByIdAndUpdate(id, data, { new: true, runValidators: true });
+async function updateCustomer({ id, workspaceId, ...data }) {
+  const customer = await Customer.findOneAndUpdate(scopedFilter(id, workspaceId), data, { new: true, runValidators: true });
   if (!customer) throw new Error('Customer not found');
   return customer;
 }
 
 // ─── Orders ──────────────────────────────────────────────────────────────────
 
-async function listOrders({ status, source, page = 1, limit = 50 } = {}) {
-  const filter = {};
+async function listOrders({ status, source, page = 1, limit = 50, workspaceId } = {}) {
+  const filter = withWorkspace({}, workspaceId);
   if (status) filter.status = status;
   if (source) filter.source = source;
   const skip = (page - 1) * limit;
@@ -352,20 +375,20 @@ async function listOrders({ status, source, page = 1, limit = 50 } = {}) {
   return { orders, total, page, pages: Math.ceil(total / limit) };
 }
 
-async function getOrder({ id }) {
-  const order = await Order.findById(id).populate('customer', 'firstname lastname phone loyaltyPoints');
+async function getOrder({ id, workspaceId }) {
+  const order = await Order.findOne(scopedFilter(id, workspaceId)).populate('customer', 'firstname lastname phone loyaltyPoints');
   if (!order) throw new Error('Order not found');
   return order;
 }
 
-async function updateOrderStatus({ id, status }) {
-  const order = await Order.findByIdAndUpdate(id, { status }, { new: true });
+async function updateOrderStatus({ id, status, workspaceId }) {
+  const order = await Order.findOneAndUpdate(scopedFilter(id, workspaceId), { status }, { new: true });
   if (!order) throw new Error('Order not found');
   return order;
 }
 
-async function refundOrder({ id }) {
-  const order = await Order.findById(id);
+async function refundOrder({ id, workspaceId }) {
+  const order = await Order.findOne(scopedFilter(id, workspaceId));
   if (!order) throw new Error('Order not found');
   if (order.paymentStatus !== 'paid') throw new Error('Only paid orders can be refunded');
   if (!order.stripePaymentIntentId) throw new Error('This order has no Stripe payment to refund');
@@ -381,8 +404,8 @@ async function refundOrder({ id }) {
 // small (a real small business, not an enterprise catalog), and the "gap between
 // consecutive orders per customer" shape is much easier to get right as a loop
 // than as a $map/$range aggregation expression.
-async function countInactiveRecovered() {
-  const orders = await Order.find({ status: { $ne: 'cancelled' } }, 'customer createdAt source')
+async function countInactiveRecovered({ workspaceId } = {}) {
+  const orders = await Order.find(withWorkspace({ status: { $ne: 'cancelled' } }, workspaceId), 'customer createdAt source')
     .sort({ customer: 1, createdAt: 1 }).lean();
   const byCustomer = new Map();
   for (const o of orders) {
@@ -403,40 +426,41 @@ async function countInactiveRecovered() {
   return recovered;
 }
 
-async function getOrderStats() {
+async function getOrderStats({ workspaceId } = {}) {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const wm = workspaceMatch(workspaceId);
   const [
     totalOrders, totalCustomers, recentRevenue, statusBreakdown, recentOrders,
     repeatAgg, campaignRevenueAgg, campaignOrdersAgg, messagesSent, pointsAgg, inactiveRecovered,
   ] = await Promise.all([
-    Order.countDocuments(),
-    Customer.countDocuments(),
+    Order.countDocuments(withWorkspace({}, workspaceId)),
+    Customer.countDocuments(withWorkspace({}, workspaceId)),
     Order.aggregate([
-      { $match: { createdAt: { $gte: thirtyDaysAgo }, status: { $ne: 'cancelled' } } },
+      { $match: { ...wm, createdAt: { $gte: thirtyDaysAgo }, status: { $ne: 'cancelled' } } },
       { $group: { _id: null, revenue: { $sum: '$total' } } },
     ]),
-    Order.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]),
-    Order.find().populate('customer', 'firstname lastname').sort({ createdAt: -1 }).limit(10),
+    Order.aggregate([{ $match: wm }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+    Order.find(withWorkspace({}, workspaceId)).populate('customer', 'firstname lastname').sort({ createdAt: -1 }).limit(10),
     Order.aggregate([
-      { $match: { status: { $ne: 'cancelled' } } },
+      { $match: { ...wm, status: { $ne: 'cancelled' } } },
       { $group: { _id: '$customer', count: { $sum: 1 } } },
       { $match: { count: { $gt: 1 } } },
       { $count: 'repeatCustomers' },
     ]),
     Order.aggregate([
-      { $match: { source: 'campaign', status: { $ne: 'cancelled' } } },
+      { $match: { ...wm, source: 'campaign', status: { $ne: 'cancelled' } } },
       { $group: { _id: null, revenue: { $sum: '$total' } } },
     ]),
     Order.aggregate([
-      { $match: { source: 'campaign', status: { $ne: 'cancelled' } } },
+      { $match: { ...wm, source: 'campaign', status: { $ne: 'cancelled' } } },
       { $count: 'count' },
     ]),
-    CampaignMessage.countDocuments({ kind: 'promotion', status: { $in: ['sent', 'delivered', 'read'] } }),
+    CampaignMessage.countDocuments(withWorkspace({ kind: 'promotion', status: { $in: ['sent', 'delivered', 'read'] } }, workspaceId)),
     Order.aggregate([
-      { $match: { status: { $ne: 'cancelled' } } },
+      { $match: { ...wm, status: { $ne: 'cancelled' } } },
       { $group: { _id: null, points: { $sum: '$loyaltyPointsEarned' } } },
     ]),
-    countInactiveRecovered(),
+    countInactiveRecovered({ workspaceId }),
   ]);
 
   const campaignOrders = campaignOrdersAgg[0]?.count ?? 0;
@@ -454,8 +478,8 @@ async function getOrderStats() {
 }
 
 // Per-campaign funnel: sent → delivered → read → clicked → ordered → revenue/points.
-async function getCampaignReport({ promotionId }) {
-  const promotion = await Promotion.findById(promotionId);
+async function getCampaignReport({ promotionId, workspaceId }) {
+  const promotion = await Promotion.findOne(scopedFilter(promotionId, workspaceId));
   if (!promotion) throw new Error('Promotion not found');
 
   const agg = await CampaignMessage.aggregate([
@@ -502,7 +526,7 @@ async function getCampaignReport({ promotionId }) {
 // "How many customers returned this month?" — an existing customer (with order
 // history before the target month) who ordered again within it. Distinct from
 // getOrderStats' repeatCustomers, which is an all-time count, not month-scoped.
-async function getCustomerReturnRate({ month, year } = {}) {
+async function getCustomerReturnRate({ month, year, workspaceId } = {}) {
   const now = new Date();
   const targetMonth = month ?? (now.getMonth() + 1); // 1-indexed
   const targetYear = year ?? now.getFullYear();
@@ -510,8 +534,8 @@ async function getCustomerReturnRate({ month, year } = {}) {
   const rangeEnd = new Date(targetYear, targetMonth, 1);
 
   const [customersThisMonth, priorCustomerIds] = await Promise.all([
-    Order.distinct('customer', { status: { $ne: 'cancelled' }, createdAt: { $gte: rangeStart, $lt: rangeEnd } }),
-    Order.distinct('customer', { status: { $ne: 'cancelled' }, createdAt: { $lt: rangeStart } }),
+    Order.distinct('customer', withWorkspace({ status: { $ne: 'cancelled' }, createdAt: { $gte: rangeStart, $lt: rangeEnd } }, workspaceId)),
+    Order.distinct('customer', withWorkspace({ status: { $ne: 'cancelled' }, createdAt: { $lt: rangeStart } }, workspaceId)),
   ]);
   const priorSet = new Set(priorCustomerIds.map(id => id.toString()));
   const returningCustomers = customersThisMonth.filter(id => priorSet.has(id.toString())).length;
@@ -521,8 +545,8 @@ async function getCustomerReturnRate({ month, year } = {}) {
 
 // "Which customer has the most loyalty points?" — no existing tool does this
 // ranked lookup (get_customer/update_customer only touch one customer at a time).
-async function getTopLoyaltyCustomers({ limit = 5 } = {}) {
-  const customers = await Customer.find({ isDemo: { $ne: true } }).sort({ loyaltyPoints: -1 }).limit(limit);
+async function getTopLoyaltyCustomers({ limit = 5, workspaceId } = {}) {
+  const customers = await Customer.find(withWorkspace({ isDemo: { $ne: true } }, workspaceId)).sort({ loyaltyPoints: -1 }).limit(limit);
   return customers.map(c => ({
     id: c._id, name: `${c.firstname} ${c.lastname}`.trim(), phone: c.phone, loyaltyPoints: c.loyaltyPoints,
   }));
@@ -531,9 +555,9 @@ async function getTopLoyaltyCustomers({ limit = 5 } = {}) {
 // "Which promotion performed best?" — getCampaignReport reports one promotion
 // at a time; this reuses its exact CampaignMessage aggregation shape but
 // grouped across every promotion at once, then ranked by the requested metric.
-async function getBestPerformingPromotion({ metric = 'revenue', limit = 5 } = {}) {
+async function getBestPerformingPromotion({ metric = 'revenue', limit = 5, workspaceId } = {}) {
   const agg = await CampaignMessage.aggregate([
-    { $match: { kind: 'promotion', promotion: { $ne: null } } },
+    { $match: { ...workspaceMatch(workspaceId), kind: 'promotion', promotion: { $ne: null } } },
     { $group: {
       _id: '$promotion',
       sent:    { $sum: { $cond: [{ $in: ['$status', ['sent', 'delivered', 'read']] }, 1, 0] } },
@@ -569,17 +593,17 @@ async function getBestPerformingPromotion({ metric = 'revenue', limit = 5 } = {}
 // Win-Back *flow's* enrollment mechanism (utils/flowTriggers/inactiveCustomer.js),
 // which reuses this exact stale-customer aggregation shape but gates eligibility
 // against FlowEnrollment state for one specific flow. This is just the list.
-async function listInactiveCustomers({ days = 60 } = {}) {
+async function listInactiveCustomers({ days = 60, workspaceId } = {}) {
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const stale = await Order.aggregate([
-    { $match: { status: { $ne: 'cancelled' } } },
+    { $match: { ...workspaceMatch(workspaceId), status: { $ne: 'cancelled' } } },
     { $group: { _id: '$customer', lastOrderAt: { $max: '$createdAt' } } },
     { $match: { lastOrderAt: { $lt: cutoff } } },
   ]);
   if (!stale.length) return { days, customers: [] };
 
   const lastOrderById = Object.fromEntries(stale.map(s => [s._id.toString(), s.lastOrderAt]));
-  const customers = await Customer.find({ _id: { $in: stale.map(s => s._id) }, optedOut: { $ne: true }, isDemo: { $ne: true } });
+  const customers = await Customer.find(withWorkspace({ _id: { $in: stale.map(s => s._id) }, optedOut: { $ne: true }, isDemo: { $ne: true } }, workspaceId));
 
   return {
     days,
@@ -590,8 +614,8 @@ async function listInactiveCustomers({ days = 60 } = {}) {
   };
 }
 
-async function createOrder({ customerId, items, shippingAddress }) {
-  const customer = await Customer.findById(customerId);
+async function createOrder({ customerId, items, shippingAddress, workspaceId }) {
+  const customer = await Customer.findOne(scopedFilter(customerId, workspaceId));
   if (!customer) throw new Error('Customer not found');
 
   const address = shippingAddress || customer.address;
@@ -603,7 +627,7 @@ async function createOrder({ customerId, items, shippingAddress }) {
 
   const cartItems = [];
   for (const { productId, quantity = 1 } of items) {
-    const product = await Product.findById(productId);
+    const product = await Product.findOne(scopedFilter(productId, workspaceId));
     if (!product) throw new Error(`Product ${productId} not found`);
     for (let i = 0; i < quantity; i++) {
       cartItems.push({ name: product.name, priceAud: product.basePrice, pointsCost: 0, description: product.description || product.category || '' });
@@ -626,6 +650,7 @@ async function createOrder({ customerId, items, shippingAddress }) {
   // than creating a second one.
   await Order.create({
     customer: customer._id,
+    workspaceId: workspaceId || customer.workspaceId,
     items: cartItems.map(it => ({ productName: it.name, category: it.description || 'General', quantity: 1, unitPrice: it.priceAud })),
     subtotal, shippingCost: SHIPPING_COST, shippingAddress: address, total,
     status: 'pending', paymentStatus: 'pending', source: 'manual',
@@ -654,8 +679,8 @@ async function getPaymentStatus({ paymentIntentId }) {
 
 // ─── Promotions ──────────────────────────────────────────────────────────────
 
-async function listPromotions({ isDemo } = {}) {
-  const filter = {};
+async function listPromotions({ isDemo, workspaceId } = {}) {
+  const filter = withWorkspace({}, workspaceId);
   if (isDemo !== undefined) filter.isDemo = isDemo === true || isDemo === 'true';
   return Promotion.find(filter)
     .populate('products', 'name basePrice images').populate('services', 'name basePrice duration')
@@ -663,8 +688,8 @@ async function listPromotions({ isDemo } = {}) {
     .sort({ createdAt: -1 });
 }
 
-async function getPromotion({ id }) {
-  const promo = await Promotion.findById(id)
+async function getPromotion({ id, workspaceId }) {
+  const promo = await Promotion.findOne(scopedFilter(id, workspaceId))
     .populate('products', 'name basePrice images category description').populate('services')
     .populate('entryNodeId', 'templateStatus');
   if (!promo) throw new Error('Promotion not found');
@@ -681,29 +706,30 @@ async function createPromotion({ productIds, serviceIds, products, services, ...
   });
 }
 
-async function updatePromotion({ id, productIds, serviceIds, products, services, ...data }) {
+async function updatePromotion({ id, workspaceId, productIds, serviceIds, products, services, ...data }) {
   const finalProducts = products ?? productIds;
   const finalServices = services ?? serviceIds;
   if (finalProducts) data.products = finalProducts;
   if (finalServices) data.services = finalServices;
-  const promo = await Promotion.findByIdAndUpdate(id, data, { new: true, runValidators: true });
+  const promo = await Promotion.findOneAndUpdate(scopedFilter(id, workspaceId), data, { new: true, runValidators: true });
   if (!promo) throw new Error('Promotion not found');
   return promo;
 }
 
-async function deletePromotion({ id }) {
-  const promotion = await Promotion.findById(id);
+async function deletePromotion({ id, workspaceId }) {
+  const promotion = await Promotion.findOne(scopedFilter(id, workspaceId));
+  if (!promotion) throw new Error('Promotion not found');
   // Mirrors deleteFlow's cascade — a custom entry message's whole branching
   // subtree becomes unreachable garbage otherwise (see deleteMessageNodeSubtree).
-  if (promotion?.entryNodeId) await deleteMessageNodeSubtree(promotion.entryNodeId);
-  await Promotion.findByIdAndDelete(id);
+  if (promotion.entryNodeId) await deleteMessageNodeSubtree(promotion.entryNodeId);
+  await Promotion.deleteOne({ _id: promotion._id });
   return { success: true };
 }
 
 // RFM (recency/frequency/monetary + category-affinity) scoring — weighted
 // 0.30/0.25/0.30/0.15, matching the algorithm merchants see on the dashboard.
-async function getRecommendedCustomers({ promotionId, limit = 100 }) {
-  const promotion = await Promotion.findById(promotionId).populate('products', 'category');
+async function getRecommendedCustomers({ promotionId, limit = 100, workspaceId }) {
+  const promotion = await Promotion.findOne(scopedFilter(promotionId, workspaceId)).populate('products', 'category');
   if (!promotion) throw new Error('Promotion not found');
 
   const topN = limit;
@@ -712,7 +738,7 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
     : [];
 
   const stats = await Order.aggregate([
-    { $match: { status: { $ne: 'cancelled' } } },
+    { $match: { ...workspaceMatch(workspaceId), status: { $ne: 'cancelled' } } },
     { $unwind: { path: '$items', preserveNullAndEmptyArrays: true } },
     { $group: {
       _id: '$customer',
@@ -728,7 +754,7 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
   // seeded demo customers must never surface here, so a merchant doesn't have
   // fake data blended into their real campaign targeting.
   if (promotion.customerType === 'points') {
-    const all = await Customer.find({ optedOut: { $ne: true }, isDemo: { $ne: true } }).sort({ loyaltyPoints: -1 }).limit(topN).lean();
+    const all = await Customer.find(withWorkspace({ optedOut: { $ne: true }, isDemo: { $ne: true } }, workspaceId)).sort({ loyaltyPoints: -1 }).limit(topN).lean();
     return all.map(c => ({
       ...c, rfmScore: 0, segment: 'Best customers to target', orderCount: 0, totalSpent: 0,
       hasEnoughPoints: c.loyaltyPoints >= (promotion.pointsPrice || 0),
@@ -742,7 +768,7 @@ async function getRecommendedCustomers({ promotionId, limit = 100 }) {
   // permanently invisible in the send panel regardless of the limit (DEFECT-04B).
   // Order-less customers now score 0 (no signal) and rank last, but remain
   // selectable.
-  const allCustomers = await Customer.find({ optedOut: { $ne: true }, isDemo: { $ne: true } }, '_id').lean();
+  const allCustomers = await Customer.find(withWorkspace({ optedOut: { $ne: true }, isDemo: { $ne: true } }, workspaceId), '_id').lean();
   if (!allCustomers.length) return [];
 
   const statsMap  = Object.fromEntries(stats.map(s => [s._id.toString(), s]));
@@ -813,14 +839,17 @@ function segmentFor(s) {
 // previewing, and test-sending — store-wide/no-explicit-picks promotions fall
 // back to the first 10 active products/services.
 async function resolvePromoItems(promotion) {
+  // A store-wide/no-explicit-picks promotion's fallback must stay within its
+  // own workspace's catalog — otherwise it'd pull in every other workspace's
+  // active products/services too.
   if (promotion.scope === 'services') {
-    return promotion.services?.length ? promotion.services : Service.find({ active: true }).limit(10);
+    return promotion.services?.length ? promotion.services : Service.find(withWorkspace({ active: true }, promotion.workspaceId)).limit(10);
   }
-  return promotion.products?.length ? promotion.products : Product.find({ active: true }).limit(10);
+  return promotion.products?.length ? promotion.products : Product.find(withWorkspace({ active: true }, promotion.workspaceId)).limit(10);
 }
 
-async function previewPromotionMessage({ promotionId }) {
-  const promotion = await Promotion.findById(promotionId).populate('products').populate('services');
+async function previewPromotionMessage({ promotionId, workspaceId }) {
+  const promotion = await Promotion.findOne(scopedFilter(promotionId, workspaceId)).populate('products').populate('services');
   if (!promotion) throw new Error('Promotion not found');
   const items = await resolvePromoItems(promotion);
   const sampleCustomer = {}; // generic — matches what a customer with no name on file would see
@@ -863,9 +892,9 @@ async function previewPromotionMessage({ promotionId }) {
   };
 }
 
-async function sendTestMessage({ promotionId, phone }) {
+async function sendTestMessage({ promotionId, phone, workspaceId }) {
   if (!phone) throw new Error('phone required');
-  const promotion = await Promotion.findById(promotionId).populate('products').populate('services');
+  const promotion = await Promotion.findOne(scopedFilter(promotionId, workspaceId)).populate('products').populate('services');
   if (!promotion) throw new Error('Promotion not found');
   const items = await resolvePromoItems(promotion);
   const testCustomer = { firstname: 'Test', phone, loyaltyPoints: promotion.pointsPrice || 100 };
@@ -893,11 +922,11 @@ async function sendTestMessage({ promotionId, phone }) {
 // declare it, so it can never arrive here through those surfaces) — every
 // other caller (regular Promotions screen, Automated Flows, API integrations)
 // stays fully simulated for isDemo data.
-async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = false }) {
+async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = false, workspaceId }) {
   if (!customerIds?.length) throw new Error('customerIds required');
-  const promotion = await Promotion.findById(promotionId).populate('products').populate('services');
+  const promotion = await Promotion.findOne(scopedFilter(promotionId, workspaceId)).populate('products').populate('services');
   if (!promotion) throw new Error('Promotion not found');
-  const requested = await Customer.find({ _id: { $in: customerIds } });
+  const requested = await Customer.find(withWorkspace({ _id: { $in: customerIds } }, workspaceId));
   const customers = requested.filter(c => !c.optedOut);
   const skippedOptedOut = requested.length - customers.length;
 
@@ -963,6 +992,7 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
 
     await CampaignMessage.create({
       kind: 'promotion', promotion: promotion._id, customer: customer._id, phone: customer.phone,
+      workspaceId: promotion.workspaceId,
       wamid: wamidOf(result), messageType, templateName,
       messageNode: (!demo && entryNode) ? entryNode._id : undefined,
       status: sent ? (demo ? 'read' : 'sent') : 'failed',
@@ -979,14 +1009,14 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
     if (!demo) await new Promise(r => setTimeout(r, 300)); // real-send throttle only
   }
 
-  await Promotion.findByIdAndUpdate(promotionId, { sentAt: new Date(), sentCount, status: 'active' });
+  await Promotion.updateOne({ _id: promotion._id }, { sentAt: new Date(), sentCount, status: 'active' });
   // demoCount lets callers (esp. AI Mode) tell the merchant when a "successful"
   // send was actually simulated — see the Demo Mode isolation note above.
   return { success: true, sentCount, skippedOptedOut, errors, demoCount };
 }
 
-async function sendLoyaltyReminders({ customerIds } = {}) {
-  const filter = customerIds?.length ? { _id: { $in: customerIds } } : { loyaltyPoints: { $gt: 0 } };
+async function sendLoyaltyReminders({ customerIds, workspaceId } = {}) {
+  const filter = withWorkspace(customerIds?.length ? { _id: { $in: customerIds } } : { loyaltyPoints: { $gt: 0 } }, workspaceId);
   const requested = await Customer.find(filter);
   const customers = requested.filter(c => !c.optedOut);
   const skippedOptedOut = requested.filter(c => c.optedOut).length;
@@ -1019,6 +1049,7 @@ async function sendLoyaltyReminders({ customerIds } = {}) {
 
     await CampaignMessage.create({
       kind: 'loyalty_reminder', customer: c._id, phone: c.phone,
+      workspaceId: c.workspaceId,
       wamid: wamidOf(result), messageType, templateName,
       status: sent ? (demo ? 'read' : 'sent') : 'failed',
       sentAt: sent ? new Date() : undefined,
@@ -1032,12 +1063,20 @@ async function sendLoyaltyReminders({ customerIds } = {}) {
 
 // ─── Settings ────────────────────────────────────────────────────────────────
 
-async function getLoyaltySettings() {
-  return (await Settings.findOne()) || (await Settings.create({}));
+// Settings is per-workspace (one doc per workspace) rather than a true global
+// singleton — but utils/settingsCache.js's getCurrency() (used throughout
+// this file for message formatting) still reads whichever Settings doc comes
+// first, unscoped. That's exactly correct for today's single-workspace
+// reality; making it workspace-aware too is a known follow-up for whenever a
+// second real workspace with a different currency is actually onboarded.
+async function getLoyaltySettings({ workspaceId } = {}) {
+  const filter = withWorkspace({}, workspaceId);
+  return (await Settings.findOne(filter)) || (await Settings.create(filter));
 }
 
-async function updateLoyaltySettings(data) {
-  let s = (await Settings.findOne()) || new Settings();
+async function updateLoyaltySettings(data, { workspaceId } = {}) {
+  const filter = withWorkspace({}, workspaceId);
+  let s = (await Settings.findOne(filter)) || new Settings(filter);
   if (data.loyaltyPointsPerUnit != null) s.loyaltyPointsPerUnit = data.loyaltyPointsPerUnit;
   if (data.minPointsPerPurchase != null) s.minPointsPerPurchase = data.minPointsPerPurchase;
   if (data.currency) s.currency = data.currency;
@@ -1135,8 +1174,8 @@ async function previewFlowMessage({ triggerType }) {
   };
 }
 
-async function listFlows({ status } = {}) {
-  const filter = {};
+async function listFlows({ status, workspaceId } = {}) {
+  const filter = withWorkspace({}, workspaceId);
   if (status) filter.status = status;
   // Populated (not just the id) so the frontend can grey out Activate for a
   // flow whose custom entry template isn't approved yet, without a second
@@ -1149,8 +1188,8 @@ async function listFlows({ status } = {}) {
     .populate('requiresPriorFlowId', 'name');
 }
 
-async function getFlow({ id }) {
-  const flow = await Flow.findById(id)
+async function getFlow({ id, workspaceId }) {
+  const flow = await Flow.findOne(scopedFilter(id, workspaceId))
     .populate('entryNodeId', 'templateStatus')
     .populate({ path: 'promotionId', select: 'name entryNodeId', populate: { path: 'entryNodeId', select: 'templateStatus' } })
     .populate('requiresPriorFlowId', 'name');
@@ -1160,7 +1199,7 @@ async function getFlow({ id }) {
 
 async function createFlow({
   name, triggerType, inactivityDays, delayHours, cooldownDaysOverride,
-  pointsThreshold, orderCountThreshold, promotionId, requiresPriorFlowId,
+  pointsThreshold, orderCountThreshold, promotionId, requiresPriorFlowId, workspaceId,
 }) {
   const defaults = FLOW_TYPE_DEFAULTS[triggerType];
   if (!defaults) throw new Error('Unknown or not-yet-supported triggerType');
@@ -1174,6 +1213,7 @@ async function createFlow({
   return Flow.create({
     name,
     triggerType,
+    workspaceId,
     inactivityDays: inactivityDays ?? defaults.inactivityDays,
     delayHours: delayHours ?? defaults.delayHours,
     pointsThreshold: pointsThreshold ?? defaults.pointsThreshold,
@@ -1185,16 +1225,16 @@ async function createFlow({
   });
 }
 
-async function updateFlow({ id, ...data }) {
+async function updateFlow({ id, workspaceId, ...data }) {
   delete data.triggerType;   // fixed at creation — changing it invalidates templateName/eligibility semantics
   delete data.templateName;
-  const flow = await Flow.findByIdAndUpdate(id, data, { new: true, runValidators: true });
+  const flow = await Flow.findOneAndUpdate(scopedFilter(id, workspaceId), data, { new: true, runValidators: true });
   if (!flow) throw new Error('Flow not found');
   return flow;
 }
 
-async function activateFlow({ id }) {
-  const flow = await Flow.findById(id);
+async function activateFlow({ id, workspaceId }) {
+  const flow = await Flow.findOne(scopedFilter(id, workspaceId));
   if (!flow) throw new Error('Flow not found');
   if (flow.promotionId) {
     // DEFECT-03: a Flow referencing a Promotion can only go live once that
@@ -1220,21 +1260,22 @@ async function activateFlow({ id }) {
   return flow;
 }
 
-async function pauseFlow({ id }) {
-  const flow = await Flow.findByIdAndUpdate(id, { status: 'paused' }, { new: true });
+async function pauseFlow({ id, workspaceId }) {
+  const flow = await Flow.findOneAndUpdate(scopedFilter(id, workspaceId), { status: 'paused' }, { new: true });
   if (!flow) throw new Error('Flow not found');
   return flow;
 }
 
-async function deleteFlow({ id }) {
-  const flow = await Flow.findById(id);
-  if (flow?.entryNodeId) await deleteMessageNodeSubtree(flow.entryNodeId);
-  await Flow.findByIdAndDelete(id);
+async function deleteFlow({ id, workspaceId }) {
+  const flow = await Flow.findOne(scopedFilter(id, workspaceId));
+  if (!flow) throw new Error('Flow not found');
+  if (flow.entryNodeId) await deleteMessageNodeSubtree(flow.entryNodeId);
+  await Flow.deleteOne({ _id: flow._id });
   return { success: true };
 }
 
-async function listFlowEnrollments({ flowId, page = 1, limit = 50 }) {
-  const filter = { flow: flowId };
+async function listFlowEnrollments({ flowId, page = 1, limit = 50, workspaceId }) {
+  const filter = withWorkspace({ flow: flowId }, workspaceId);
   const skip = (page - 1) * limit;
   const [enrollments, total] = await Promise.all([
     FlowEnrollment.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit)
@@ -1274,8 +1315,8 @@ async function listFlowEnrollments({ flowId, page = 1, limit = 50 }) {
   return { enrollments: withTaps, total, page, pages: Math.ceil(total / limit) };
 }
 
-async function getFlowReport({ flowId }) {
-  const flow = await Flow.findById(flowId);
+async function getFlowReport({ flowId, workspaceId }) {
+  const flow = await Flow.findOne(scopedFilter(flowId, workspaceId));
   if (!flow) throw new Error('Flow not found');
 
   const [enrollmentCounts, messageAgg] = await Promise.all([
@@ -1442,15 +1483,15 @@ async function deleteMessageNodeSubtree(nodeId) {
   await MessageNode.findByIdAndDelete(nodeId);
 }
 
-async function createMessageNode({ ownerType = 'flow', ownerId, isEntryNode = false, bodyText, buttons = [], depth = 0 }) {
+async function createMessageNode({ ownerType = 'flow', ownerId, isEntryNode = false, bodyText, buttons = [], depth = 0, workspaceId }) {
   if (depth > MAX_BRANCH_DEPTH || depth < 0) throw new Error(`Messages can only branch ${MAX_BRANCH_DEPTH} levels deep.`);
   validateButtons(buttons);
   await assertTreeOnly(ownerId, undefined, buttons);
-  return MessageNode.create({ ownerType, ownerId, isEntryNode, bodyText, buttons, depth });
+  return MessageNode.create({ ownerType, ownerId, isEntryNode, bodyText, buttons, depth, workspaceId });
 }
 
-async function updateMessageNode({ id, bodyText, buttons }) {
-  const existing = await MessageNode.findById(id);
+async function updateMessageNode({ id, bodyText, buttons, workspaceId }) {
+  const existing = await MessageNode.findOne(scopedFilter(id, workspaceId));
   if (!existing) throw new Error('MessageNode not found');
 
   const data = {};
@@ -1475,18 +1516,22 @@ async function updateMessageNode({ id, bodyText, buttons }) {
 
     data.buttons = buttons;
   }
-  const node = await MessageNode.findByIdAndUpdate(id, data, { new: true, runValidators: true });
+  const node = await MessageNode.findOneAndUpdate(scopedFilter(id, workspaceId), data, { new: true, runValidators: true });
   if (!node) throw new Error('MessageNode not found');
   return node;
 }
 
-async function getMessageNode({ id }) {
-  const node = await MessageNode.findById(id);
+async function getMessageNode({ id, workspaceId }) {
+  const node = await MessageNode.findOne(scopedFilter(id, workspaceId));
   if (!node) throw new Error('MessageNode not found');
   return node;
 }
 
-async function deleteMessageNode({ id }) {
+async function deleteMessageNode({ id, workspaceId }) {
+  if (workspaceId) {
+    const node = await MessageNode.findOne(scopedFilter(id, workspaceId));
+    if (!node) throw new Error('MessageNode not found');
+  }
   await deleteMessageNodeSubtree(id);
   return { success: true };
 }
@@ -1496,8 +1541,8 @@ async function deleteMessageNode({ id }) {
 // createTemplate() call the 4 fixed flow templates already go through, just
 // parameterized instead of hardcoded. Only entry nodes need a template; every
 // other node sends free-form (see utils/whatsapp.js#sendMessageNodeFollowUp).
-async function submitMessageNodeTemplate({ nodeId }) {
-  const node = await MessageNode.findById(nodeId);
+async function submitMessageNodeTemplate({ nodeId, workspaceId }) {
+  const node = await MessageNode.findOne(scopedFilter(nodeId, workspaceId));
   if (!node) throw new Error('MessageNode not found');
   if (!node.isEntryNode) throw new Error('Only entry nodes need a template.');
 
@@ -1525,8 +1570,8 @@ async function submitMessageNodeTemplate({ nodeId }) {
 // outcome back to us, so this pulls the current live status on demand (same
 // on-demand-fetch pattern Settings already uses for the 4 fixed flow
 // templates, not a new polling mechanism) and syncs it onto the node.
-async function refreshMessageNodeTemplateStatus({ nodeId }) {
-  const node = await MessageNode.findById(nodeId);
+async function refreshMessageNodeTemplateStatus({ nodeId, workspaceId }) {
+  const node = await MessageNode.findOne(scopedFilter(nodeId, workspaceId));
   if (!node) throw new Error('MessageNode not found');
   if (!node.templateName) return node; // never submitted yet
 
@@ -1556,4 +1601,5 @@ module.exports = {
   createMessageNode, updateMessageNode, getMessageNode, deleteMessageNode,
   submitMessageNodeTemplate, refreshMessageNodeTemplateStatus, getFlowMessageVariables,
   getCustomerReturnRate, getTopLoyaltyCustomers, getBestPerformingPromotion, listInactiveCustomers,
+  scopedFilter, withWorkspace, workspaceMatch,
 };

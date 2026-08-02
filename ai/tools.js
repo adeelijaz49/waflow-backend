@@ -15,7 +15,7 @@ const TOOLS = [
     description: 'Dashboard-style summary of the store: total orders, total customers, 30-day revenue, order status breakdown, repeat-customer count, campaign-attributed revenue, WhatsApp messages sent, loyalty points issued, conversion rate. Call this for broad "how is the store doing" or revenue/order-count questions.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
     isAction: false,
-    run: () => ops.getOrderStats(),
+    run: (args, workspaceId) => ops.getOrderStats({ workspaceId }),
   },
   {
     name: 'list_customers',
@@ -29,8 +29,8 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: async (args) => {
-      const { customers, total } = await ops.listCustomers({ search: args.search, limit: args.limit || 20 });
+    run: async (args, workspaceId) => {
+      const { customers, total } = await ops.listCustomers({ search: args.search, limit: args.limit || 20, workspaceId });
       return {
         total,
         customers: customers.map(c => ({
@@ -52,7 +52,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: (args) => ops.getCustomerReturnRate({ month: args.month, year: args.year }),
+    run: (args, workspaceId) => ops.getCustomerReturnRate({ month: args.month, year: args.year, workspaceId }),
   },
   {
     name: 'get_top_loyalty_customers',
@@ -63,7 +63,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: (args) => ops.getTopLoyaltyCustomers({ limit: args.limit || 5 }),
+    run: (args, workspaceId) => ops.getTopLoyaltyCustomers({ limit: args.limit || 5, workspaceId }),
   },
   {
     name: 'get_best_performing_promotion',
@@ -77,7 +77,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: (args) => ops.getBestPerformingPromotion({ metric: args.metric, limit: args.limit || 5 }),
+    run: (args, workspaceId) => ops.getBestPerformingPromotion({ metric: args.metric, limit: args.limit || 5, workspaceId }),
   },
   {
     name: 'list_inactive_customers',
@@ -88,7 +88,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: (args) => ops.listInactiveCustomers({ days: args.days || 60 }),
+    run: (args, workspaceId) => ops.listInactiveCustomers({ days: args.days || 60, workspaceId }),
   },
   {
     name: 'list_promotions',
@@ -99,8 +99,8 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: async (args) => {
-      const promos = await ops.listPromotions({ isDemo: args.isDemo });
+    run: async (args, workspaceId) => {
+      const promos = await ops.listPromotions({ isDemo: args.isDemo, workspaceId });
       return promos.slice(0, 20).map(p => ({
         id: p._id, name: p.name, status: p.status, scope: p.scope, customerType: p.customerType,
         discountPercent: p.discountPercent, pointsPrice: p.pointsPrice, sentCount: p.sentCount,
@@ -112,8 +112,8 @@ const TOOLS = [
     description: 'Lists Automated Flows (name, trigger type, status). Call this to browse or look up existing flows by name.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
     isAction: false,
-    run: async () => {
-      const flows = await ops.listFlows();
+    run: async (args, workspaceId) => {
+      const flows = await ops.listFlows({ workspaceId });
       return flows.slice(0, 20).map(f => ({
         id: f._id, name: f.name, triggerType: f.triggerType, status: f.status,
         promotionName: f.promotionId?.name || null,
@@ -132,8 +132,8 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: async (args) => {
-      const { orders, total } = await ops.listOrders({ status: args.status, limit: args.limit || 20 });
+    run: async (args, workspaceId) => {
+      const { orders, total } = await ops.listOrders({ status: args.status, limit: args.limit || 20, workspaceId });
       return {
         total,
         orders: orders.map(o => ({
@@ -153,7 +153,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: (args) => ops.getCampaignReport({ promotionId: args.promotionId }),
+    run: (args, workspaceId) => ops.getCampaignReport({ promotionId: args.promotionId, workspaceId }),
   },
   {
     name: 'get_flow_report',
@@ -165,7 +165,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: (args) => ops.getFlowReport({ flowId: args.flowId }),
+    run: (args, workspaceId) => ops.getFlowReport({ flowId: args.flowId, workspaceId }),
   },
   {
     name: 'get_recommended_customers',
@@ -180,8 +180,8 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: async (args) => {
-      const recommended = await ops.getRecommendedCustomers({ promotionId: args.promotionId, limit: args.limit || 20 });
+    run: async (args, workspaceId) => {
+      const recommended = await ops.getRecommendedCustomers({ promotionId: args.promotionId, limit: args.limit || 20, workspaceId });
       return recommended.slice(0, 20).map(c => ({
         id: c._id, name: `${c.firstname} ${c.lastname}`.trim(), phone: c.phone,
         loyaltyPoints: c.loyaltyPoints, segment: c.segment, orderCount: c.orderCount, totalSpent: c.totalSpent,
@@ -210,10 +210,11 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: (args) => ops.createPromotion({
+    run: (args, workspaceId) => ops.createPromotion({
       name: args.name, description: args.description, scope: args.scope || 'products',
       customerType: args.customerType || 'cash', discountPercent: args.discountPercent, pointsPrice: args.pointsPrice,
       type: args.scope === 'services' ? 'specific_services' : 'store_wide',
+      workspaceId,
     }),
   },
   {
@@ -234,10 +235,11 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: false,
-    run: (args) => ops.createFlow({
+    run: (args, workspaceId) => ops.createFlow({
       name: args.name, triggerType: args.triggerType, promotionId: args.promotionId,
       inactivityDays: args.inactivityDays, delayHours: args.delayHours,
       pointsThreshold: args.pointsThreshold, orderCountThreshold: args.orderCountThreshold,
+      workspaceId,
     }),
   },
   {
@@ -253,7 +255,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: true,
-    run: (args) => ops.sendPromotion({ promotionId: args.promotionId, customerIds: args.customerIds }),
+    run: (args, workspaceId) => ops.sendPromotion({ promotionId: args.promotionId, customerIds: args.customerIds, workspaceId }),
   },
   {
     name: 'send_test_message',
@@ -268,7 +270,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: true,
-    run: (args) => ops.sendTestMessage({ promotionId: args.promotionId, phone: args.phone }),
+    run: (args, workspaceId) => ops.sendTestMessage({ promotionId: args.promotionId, phone: args.phone, workspaceId }),
   },
   {
     name: 'send_loyalty_reminders',
@@ -281,7 +283,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: true,
-    run: (args) => ops.sendLoyaltyReminders({ customerIds: args.customerIds }),
+    run: (args, workspaceId) => ops.sendLoyaltyReminders({ customerIds: args.customerIds, workspaceId }),
   },
   {
     name: 'activate_flow',
@@ -293,7 +295,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: true,
-    run: (args) => ops.activateFlow({ id: args.flowId }),
+    run: (args, workspaceId) => ops.activateFlow({ id: args.flowId, workspaceId }),
   },
   {
     name: 'refund_order',
@@ -305,7 +307,7 @@ const TOOLS = [
       additionalProperties: false,
     },
     isAction: true,
-    run: (args) => ops.refundOrder({ id: args.orderId }),
+    run: (args, workspaceId) => ops.refundOrder({ id: args.orderId, workspaceId }),
   },
 ];
 

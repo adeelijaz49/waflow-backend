@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const schema = new mongoose.Schema({
+  workspaceId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   name:            { type: String, required: true },
   description:     { type: String },
   customerType:    { type: String, enum: ['cash', 'points'], default: 'cash' },

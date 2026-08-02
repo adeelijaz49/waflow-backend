@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 // booking is the *resulting* conversion after the flow's message lands a
 // sale or a rebook — distinct from sourceRef, the *cause*.
 const schema = new mongoose.Schema({
+  workspaceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   flow:     { type: mongoose.Schema.Types.ObjectId, ref: 'Flow', required: true },
   customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
   state:    { type: String, enum: ['enrolled', 'messaged', 'exited', 'completed'], default: 'enrolled' },

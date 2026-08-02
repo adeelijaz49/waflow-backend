@@ -8,6 +8,9 @@ const variantSchema = new mongoose.Schema({
 }, { _id: false });
 
 const schema = new mongoose.Schema({
+  // Optional for backward compatibility with pre-multi-tenant data and with
+  // MCP/GPT Actions callers that don't pass a workspace — see shared/operations.js.
+  workspaceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   name:        { type: String, required: true },
   description: { type: String },
   category:    { type: String, required: true },

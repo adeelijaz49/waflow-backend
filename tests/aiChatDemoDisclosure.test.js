@@ -1,7 +1,7 @@
 require('dotenv').config();
 
 const { connectOnce } = require('./dbSetup');
-const { authedAgent } = require('./testAuth');
+const { authedAgent, getTestWorkspaceId } = require('./testAuth');
 const app = require('../server');
 const AiChatSession = require('../models/AiChatSession');
 const Customer = require('../models/Customer');
@@ -16,8 +16,9 @@ describe('AI Mode discloses when a "successful" send was actually simulated', ()
   beforeAll(async () => {
     await connectOnce();
     request = await authedAgent(app);
-    customer = await Customer.create({ firstname: '__test_ai_disclosure__', lastname: 'Customer', phone: '15559990299', isDemo: true });
-    promo = await Promotion.create({ name: '__test_ai_disclosure_promo__', scope: 'products', customerType: 'cash', isDemo: true });
+    const workspaceId = await getTestWorkspaceId(app);
+    customer = await Customer.create({ firstname: '__test_ai_disclosure__', lastname: 'Customer', phone: '15559990299', isDemo: true, workspaceId });
+    promo = await Promotion.create({ name: '__test_ai_disclosure_promo__', scope: 'products', customerType: 'cash', isDemo: true, workspaceId });
   }, 30000);
 
   afterAll(async () => {

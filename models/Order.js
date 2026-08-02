@@ -11,6 +11,7 @@ const itemSchema = new mongoose.Schema({
 }, { _id: false });
 
 const schema = new mongoose.Schema({
+  workspaceId:        { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   customer:           { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
   items:              [itemSchema],
   subtotal:           Number,

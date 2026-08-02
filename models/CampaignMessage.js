@@ -8,6 +8,7 @@ const mongoose = require('mongoose');
 // (sent/delivered/clicked/ordered/revenue) and customer WhatsApp history
 // are both built from.
 const schema = new mongoose.Schema({
+  workspaceId:  { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   kind:         { type: String, enum: ['promotion', 'booking_notification', 'loyalty_reminder', 'flow'], required: true, default: 'promotion' },
   promotion:    { type: mongoose.Schema.Types.ObjectId, ref: 'Promotion' },
   booking:      { type: mongoose.Schema.Types.ObjectId, ref: 'Booking' },

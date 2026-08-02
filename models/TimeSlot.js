@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const schema = new mongoose.Schema({
+  workspaceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   serviceId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: true },
   date:        { type: String, required: true }, // "YYYY-MM-DD"
   startTime:   { type: String, required: true }, // "09:00"

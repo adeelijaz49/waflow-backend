@@ -5,7 +5,7 @@ const ops = require('../shared/operations');
 
 router.get('/', async (req, res) => {
   try {
-    res.json(await ops.listPromotions({ isDemo: req.query.isDemo }));
+    res.json(await ops.listPromotions({ isDemo: req.query.isDemo, workspaceId: req.user.workspaceId }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -18,7 +18,7 @@ router.get('/message-variables', (req, res) => {
 
 router.get('/:id', async (req, res) => {
   try {
-    res.json(await ops.getPromotion({ id: req.params.id }));
+    res.json(await ops.getPromotion({ id: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
     res.status(500).json({ error: err.message });
@@ -27,7 +27,7 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    res.status(201).json(await ops.createPromotion(req.body));
+    res.status(201).json(await ops.createPromotion({ ...req.body, workspaceId: req.user.workspaceId }));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
@@ -35,7 +35,7 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    res.json(await ops.updatePromotion({ id: req.params.id, ...req.body }));
+    res.json(await ops.updatePromotion({ id: req.params.id, ...req.body, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
     res.status(400).json({ error: err.message });
@@ -44,7 +44,7 @@ router.put('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    res.json(await ops.deletePromotion({ id: req.params.id }));
+    res.json(await ops.deletePromotion({ id: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -55,7 +55,7 @@ router.delete('/:id', async (req, res) => {
 router.get('/:id/recommended-customers', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 100;
-    res.json(await ops.getRecommendedCustomers({ promotionId: req.params.id, limit }));
+    res.json(await ops.getRecommendedCustomers({ promotionId: req.params.id, limit, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
     res.status(500).json({ error: err.message });
@@ -66,7 +66,7 @@ router.get('/:id/recommended-customers', async (req, res) => {
 
 router.get('/:id/report', async (req, res) => {
   try {
-    res.json(await ops.getCampaignReport({ promotionId: req.params.id }));
+    res.json(await ops.getCampaignReport({ promotionId: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
     res.status(500).json({ error: err.message });
@@ -77,7 +77,7 @@ router.get('/:id/report', async (req, res) => {
 
 router.get('/:id/preview', async (req, res) => {
   try {
-    res.json(await ops.previewPromotionMessage({ promotionId: req.params.id }));
+    res.json(await ops.previewPromotionMessage({ promotionId: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
     res.status(500).json({ error: err.message });
@@ -86,7 +86,7 @@ router.get('/:id/preview', async (req, res) => {
 
 router.post('/:id/test-send', async (req, res) => {
   try {
-    res.json(await ops.sendTestMessage({ promotionId: req.params.id, phone: req.body.phone }));
+    res.json(await ops.sendTestMessage({ promotionId: req.params.id, phone: req.body.phone, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'phone required') return res.status(400).json({ error: err.message });
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
@@ -102,7 +102,7 @@ router.post('/:id/send', async (req, res) => {
     // allowRealDemoSend is intentionally NOT read from req.body here — it must
     // never be client-controlled on this route. isDemo promotions/customers
     // always simulate through this endpoint; see /:id/send-live-demo below.
-    res.json(await ops.sendPromotion({ promotionId: req.params.id, customerIds }));
+    res.json(await ops.sendPromotion({ promotionId: req.params.id, customerIds, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'customerIds required') return res.status(400).json({ error: err.message });
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
@@ -117,7 +117,7 @@ router.post('/:id/send', async (req, res) => {
 router.post('/:id/send-live-demo', async (req, res) => {
   try {
     const { customerIds } = req.body;
-    res.json(await ops.sendPromotion({ promotionId: req.params.id, customerIds, allowRealDemoSend: true }));
+    res.json(await ops.sendPromotion({ promotionId: req.params.id, customerIds, allowRealDemoSend: true, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'customerIds required') return res.status(400).json({ error: err.message });
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
@@ -129,7 +129,7 @@ router.post('/:id/send-live-demo', async (req, res) => {
 
 router.post('/loyalty/remind', async (req, res) => {
   try {
-    res.json(await ops.sendLoyaltyReminders(req.body));
+    res.json(await ops.sendLoyaltyReminders({ ...req.body, workspaceId: req.user.workspaceId }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

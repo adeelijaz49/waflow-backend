@@ -1,10 +1,9 @@
-const router   = require('express').Router();
-const Settings = require('../models/Settings');
+const router = require('express').Router();
+const ops    = require('../shared/operations');
 
 router.get('/loyalty', async (req, res) => {
   try {
-    let s = await Settings.findOne();
-    if (!s) s = await Settings.create({});
+    const s = await ops.getLoyaltySettings({ workspaceId: req.user.workspaceId });
     res.json(s);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -14,14 +13,10 @@ router.get('/loyalty', async (req, res) => {
 router.put('/loyalty', async (req, res) => {
   try {
     const { loyaltyPointsPerUnit, minPointsPerPurchase, currency, flowCooldownDays, merchantName } = req.body;
-    let s = await Settings.findOne();
-    if (!s) s = new Settings();
-    if (loyaltyPointsPerUnit != null) s.loyaltyPointsPerUnit = +loyaltyPointsPerUnit;
-    if (minPointsPerPurchase != null) s.minPointsPerPurchase = +minPointsPerPurchase;
-    if (currency) s.currency = currency;
-    if (flowCooldownDays != null) s.flowCooldownDays = +flowCooldownDays;
-    if (merchantName != null) s.merchantName = merchantName;
-    await s.save();
+    const s = await ops.updateLoyaltySettings(
+      { loyaltyPointsPerUnit, minPointsPerPurchase, currency, flowCooldownDays, merchantName },
+      { workspaceId: req.user.workspaceId }
+    );
     res.json(s);
   } catch (err) {
     res.status(400).json({ error: err.message });

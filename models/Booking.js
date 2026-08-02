@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const schema = new mongoose.Schema({
+  workspaceId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   serviceId:            { type: mongoose.Schema.Types.ObjectId, ref: 'Service', required: true },
   slotId:               { type: mongoose.Schema.Types.ObjectId, ref: 'TimeSlot', required: true },
   customerId:           { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },

@@ -29,6 +29,7 @@ const buttonSchema = new mongoose.Schema({
 }, { _id: false });
 
 const schema = new mongoose.Schema({
+  workspaceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   ownerType: { type: String, enum: ['flow', 'promotion'], required: true },
   ownerId:   { type: mongoose.Schema.Types.ObjectId, required: true },
   isEntryNode: { type: Boolean, default: false },

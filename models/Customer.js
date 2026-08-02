@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 const schema = new mongoose.Schema({
+  workspaceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   firstname: { type: String, required: true },
   lastname:  { type: String, required: true },
   phone:     { type: String, required: true },

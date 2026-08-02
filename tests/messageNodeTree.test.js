@@ -2,6 +2,7 @@ require('dotenv').config();
 const request = require('supertest');
 
 const { connectOnce } = require('./dbSetup');
+const { getTestWorkspaceId } = require('./testAuth');
 const app = require('../server');
 const ops = require('../shared/operations');
 const Customer = require('../models/Customer');
@@ -113,19 +114,22 @@ describe('MessageNode tree lifecycle', () => {
 });
 
 describe('multi-level branching: two-level tap-through', () => {
-  let customer, level0, level1, level2;
+  let customer, level0, level1, level2, workspaceId;
 
   beforeAll(async () => {
     await connectOnce();
-    customer = await Customer.create({ firstname: '__test_multilevel_customer__', lastname: 'Test', phone: '15559099' });
-    level2 = await MessageNode.create({ ownerType: 'flow', ownerId: customer._id, bodyText: 'Level 2 message for {{1}}', depth: 2, buttons: [] });
+    workspaceId = await getTestWorkspaceId(app);
+    customer = await Customer.create({ firstname: '__test_multilevel_customer__', lastname: 'Test', phone: '15559099', workspaceId });
+    level2 = await MessageNode.create({ ownerType: 'flow', ownerId: customer._id, bodyText: 'Level 2 message for {{1}}', depth: 2, buttons: [], workspaceId });
     level1 = await MessageNode.create({
       ownerType: 'flow', ownerId: customer._id, bodyText: 'Level 1 message for {{1}}', depth: 1,
       buttons: [{ position: 0, label: 'Go Deeper', nextAction: { type: 'send_message', targetNodeId: level2._id } }],
+      workspaceId,
     });
     level0 = await MessageNode.create({
       ownerType: 'flow', ownerId: customer._id, isEntryNode: true, bodyText: 'Entry for {{1}}', depth: 0,
       buttons: [{ position: 0, label: 'Start', nextAction: { type: 'send_message', targetNodeId: level1._id } }],
+      workspaceId,
     });
   }, 15000);
 
@@ -151,6 +155,7 @@ describe('multi-level branching: two-level tap-through', () => {
     const entrySend = await CampaignMessage.create({
       kind: 'flow', customer: customer._id, phone: customer.phone,
       wamid: 'wamid.MULTILEVEL_0', messageType: 'template', messageNode: level0._id, status: 'sent', sentAt: new Date(),
+      workspaceId,
     });
 
     await tapButton('wamid.MULTILEVEL_0', level0._id, 0);

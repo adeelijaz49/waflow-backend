@@ -4,7 +4,7 @@ const Product = require('../models/Product');
 router.get('/', async (req, res) => {
   try {
     const { search, category, page = 1, limit = 50 } = req.query;
-    const filter = { active: true };
+    const filter = { active: true, workspaceId: req.user.workspaceId };
     if (search) filter.name = { $regex: search, $options: 'i' };
     if (category) filter.category = category;
     const skip = (page - 1) * limit;
@@ -20,7 +20,7 @@ router.get('/', async (req, res) => {
 
 router.get('/categories', async (req, res) => {
   try {
-    const categories = await Product.distinct('category', { active: true });
+    const categories = await Product.distinct('category', { active: true, workspaceId: req.user.workspaceId });
     res.json(categories.sort());
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -29,7 +29,7 @@ router.get('/categories', async (req, res) => {
 
 router.get('/:id', async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const product = await Product.findOne({ _id: req.params.id, workspaceId: req.user.workspaceId });
     if (!product) return res.status(404).json({ error: 'Not found' });
     res.json(product);
   } catch (err) {
@@ -39,7 +39,7 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const product = await Product.create(req.body);
+    const product = await Product.create({ ...req.body, workspaceId: req.user.workspaceId });
     res.status(201).json(product);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -48,7 +48,11 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+    const product = await Product.findOneAndUpdate(
+      { _id: req.params.id, workspaceId: req.user.workspaceId },
+      req.body,
+      { new: true, runValidators: true }
+    );
     if (!product) return res.status(404).json({ error: 'Not found' });
     res.json(product);
   } catch (err) {
@@ -58,7 +62,7 @@ router.put('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    await Product.findByIdAndUpdate(req.params.id, { active: false });
+    await Product.findOneAndUpdate({ _id: req.params.id, workspaceId: req.user.workspaceId }, { active: false });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

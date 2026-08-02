@@ -1,4 +1,5 @@
 const request = require('supertest');
+const jwt = require('jsonwebtoken');
 
 // Every real route is now gated by requireAuth. Rather than hand-mint JWTs,
 // this drives the actual login endpoints (AUTH_TEST_MODE must be true so the
@@ -20,6 +21,15 @@ async function getTestToken(app) {
   return cachedToken;
 }
 
+// Phase 3: dashboard/AI-Mode routes now scope every query by req.user.workspaceId
+// (decoded straight off the session JWT, same as requireAuth does) — any test
+// fixture a scoped route/tool needs to find (Promotion, Customer, etc.) must be
+// tagged with this same id or it's invisible to list_x/get_x lookups.
+async function getTestWorkspaceId(app) {
+  const token = await getTestToken(app);
+  return jwt.decode(token).workspaceId;
+}
+
 // Returns a supertest-shaped object whose get/post/put/patch/delete calls
 // already carry a valid Authorization header — drop-in replacement for
 // request(app) in existing test files.
@@ -33,4 +43,4 @@ async function authedAgent(app) {
   };
 }
 
-module.exports = { authedAgent, getTestToken, TEST_PHONE };
+module.exports = { authedAgent, getTestToken, getTestWorkspaceId, TEST_PHONE };

@@ -2,6 +2,7 @@ require('dotenv').config();
 const request = require('supertest');
 
 const { connectOnce } = require('./dbSetup');
+const { getTestWorkspaceId } = require('./testAuth');
 const app = require('../server');
 const scheduler = require('../utils/flowScheduler');
 const ops = require('../shared/operations');
@@ -15,6 +16,15 @@ const { WINBACK_TEMPLATE } = require('../utils/whatsapp');
 
 const DAYS = 24 * 60 * 60 * 1000;
 
+// The real /webhook endpoint (no requireAuth — WhatsApp itself calls it)
+// resolves to Workspace #1 (see server.js#resolveWebhookWorkspaceId). Every
+// fixture these tests expect the webhook handler to find must carry that
+// same workspaceId or Phase 3's scoping makes it invisible.
+let workspaceId;
+beforeAll(async () => {
+  workspaceId = await getTestWorkspaceId(app);
+});
+
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function waitUntil(checkFn, { timeout = 4000, interval = 100 } = {}) {
   const start = Date.now();
@@ -27,8 +37,8 @@ async function waitUntil(checkFn, { timeout = 4000, interval = 100 } = {}) {
 }
 
 async function makeStaleCustomer(phoneSuffix) {
-  const customer = await Customer.create({ firstname: '__test_branch_customer__', lastname: 'Test', phone: `1555700${phoneSuffix}` });
-  await Order.create({ customer: customer._id, subtotal: 10, total: 10, status: 'delivered', createdAt: new Date(Date.now() - 70 * DAYS) });
+  const customer = await Customer.create({ firstname: '__test_branch_customer__', lastname: 'Test', phone: `1555700${phoneSuffix}`, workspaceId });
+  await Order.create({ customer: customer._id, subtotal: 10, total: 10, status: 'delivered', createdAt: new Date(Date.now() - 70 * DAYS), workspaceId });
   return customer;
 }
 
@@ -146,15 +156,16 @@ describe('flow branching: webhook button-tap routing', () => {
 
   beforeAll(async () => {
     await connectOnce();
-    customer = await Customer.create({ firstname: '__test_branch_tap_customer__', lastname: 'Test', phone: '15557099' });
-    targetA = await MessageNode.create({ ownerType: 'flow', ownerId: customer._id, bodyText: 'Follow-up A for {{1}}', buttons: [] });
-    targetB = await MessageNode.create({ ownerType: 'flow', ownerId: customer._id, bodyText: 'Follow-up B for {{1}}', buttons: [] });
+    customer = await Customer.create({ firstname: '__test_branch_tap_customer__', lastname: 'Test', phone: '15557099', workspaceId });
+    targetA = await MessageNode.create({ ownerType: 'flow', ownerId: customer._id, bodyText: 'Follow-up A for {{1}}', buttons: [], workspaceId });
+    targetB = await MessageNode.create({ ownerType: 'flow', ownerId: customer._id, bodyText: 'Follow-up B for {{1}}', buttons: [], workspaceId });
     entryNode = await MessageNode.create({
       ownerType: 'flow', ownerId: customer._id, isEntryNode: true, bodyText: 'Pick one, {{1}}',
       buttons: [
         { position: 0, label: 'Option A', nextAction: { type: 'send_message', targetNodeId: targetA._id } },
         { position: 1, label: 'Option B', nextAction: { type: 'send_message', targetNodeId: targetB._id } },
       ],
+      workspaceId,
     });
   }, 15000);
 
@@ -180,7 +191,7 @@ describe('flow branching: webhook button-tap routing', () => {
     return CampaignMessage.create({
       kind: 'flow', customer: customer._id, phone: customer.phone,
       wamid, messageType: 'template', messageNode: entryNode._id,
-      status: 'sent', sentAt: new Date(),
+      status: 'sent', sentAt: new Date(), workspaceId,
     });
   }
 
@@ -265,15 +276,16 @@ describe('flow branching: webhook button-tap routing', () => {
   }, 15000);
 
   test('tapping end_flow marks the FlowEnrollment completed', async () => {
-    const flow = await Flow.create({ name: '__test_branch_endflow_flow__', triggerType: 'inactive_customer', inactivityDays: 60, templateName: WINBACK_TEMPLATE });
-    const enrollment = await FlowEnrollment.create({ flow: flow._id, customer: customer._id, state: 'messaged', messagedAt: new Date() });
+    const flow = await Flow.create({ name: '__test_branch_endflow_flow__', triggerType: 'inactive_customer', inactivityDays: 60, templateName: WINBACK_TEMPLATE, workspaceId });
+    const enrollment = await FlowEnrollment.create({ flow: flow._id, customer: customer._id, state: 'messaged', messagedAt: new Date(), workspaceId });
     const endNode = await MessageNode.create({
       ownerType: 'flow', ownerId: flow._id, isEntryNode: true, bodyText: 'Bye {{1}}',
       buttons: [{ position: 0, label: 'Done', nextAction: { type: 'end_flow' } }],
+      workspaceId,
     });
     await CampaignMessage.create({
       kind: 'flow', flow: flow._id, flowEnrollment: enrollment._id, customer: customer._id, phone: customer.phone,
-      wamid: 'wamid.BRANCH_END', messageType: 'template', messageNode: endNode._id, status: 'sent', sentAt: new Date(),
+      wamid: 'wamid.BRANCH_END', messageType: 'template', messageNode: endNode._id, status: 'sent', sentAt: new Date(), workspaceId,
     });
     try {
       await tapButton('wamid.BRANCH_END', endNode._id, 0);

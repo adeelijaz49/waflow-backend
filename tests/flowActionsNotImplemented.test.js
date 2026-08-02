@@ -2,6 +2,7 @@ require('dotenv').config();
 const request = require('supertest');
 
 const { connectOnce } = require('./dbSetup');
+const { getTestWorkspaceId } = require('./testAuth');
 const app = require('../server');
 const Customer = require('../models/Customer');
 const CampaignMessage = require('../models/CampaignMessage');
@@ -19,17 +20,19 @@ async function waitUntil(checkFn, { timeout = 4000, interval = 100 } = {}) {
 }
 
 describe('flow branching: apply_discount / redeem_points are visible no-ops', () => {
-  let customer, node;
+  let customer, node, workspaceId;
 
   beforeAll(async () => {
     await connectOnce();
-    customer = await Customer.create({ firstname: '__test_notimpl_customer__', lastname: 'Test', phone: '15559199' });
+    workspaceId = await getTestWorkspaceId(app);
+    customer = await Customer.create({ firstname: '__test_notimpl_customer__', lastname: 'Test', phone: '15559199', workspaceId });
     node = await MessageNode.create({
       ownerType: 'flow', ownerId: customer._id, isEntryNode: true, bodyText: 'Pick one, {{1}}',
       buttons: [
         { position: 0, label: 'Discount', nextAction: { type: 'apply_discount' } },
         { position: 1, label: 'Redeem', nextAction: { type: 'redeem_points' } },
       ],
+      workspaceId,
     });
   }, 15000);
 
@@ -53,7 +56,7 @@ describe('flow branching: apply_discount / redeem_points are visible no-ops', ()
   test('tapping "apply_discount" does not crash and records a visible not-implemented marker', async () => {
     const cm = await CampaignMessage.create({
       kind: 'flow', customer: customer._id, phone: customer.phone,
-      wamid: 'wamid.NOTIMPL_DISCOUNT', messageType: 'template', messageNode: node._id, status: 'sent', sentAt: new Date(),
+      wamid: 'wamid.NOTIMPL_DISCOUNT', messageType: 'template', messageNode: node._id, status: 'sent', sentAt: new Date(), workspaceId,
     });
     await tapButton('wamid.NOTIMPL_DISCOUNT', 0);
 
@@ -70,7 +73,7 @@ describe('flow branching: apply_discount / redeem_points are visible no-ops', ()
   test('tapping "redeem_points" does not crash and records a visible not-implemented marker', async () => {
     const cm = await CampaignMessage.create({
       kind: 'flow', customer: customer._id, phone: customer.phone,
-      wamid: 'wamid.NOTIMPL_REDEEM', messageType: 'template', messageNode: node._id, status: 'sent', sentAt: new Date(),
+      wamid: 'wamid.NOTIMPL_REDEEM', messageType: 'template', messageNode: node._id, status: 'sent', sentAt: new Date(), workspaceId,
     });
     await tapButton('wamid.NOTIMPL_REDEEM', 1);
 

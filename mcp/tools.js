@@ -1,6 +1,7 @@
 const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const ops = require('../shared/operations');
+const Workspace = require('../models/Workspace');
 
 function ok(data) {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
@@ -8,9 +9,23 @@ function ok(data) {
 function fail(err) {
   return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
 }
+
+// MCP tools serve a single deployment-wide admin identity (Claude.ai/ChatGPT
+// connectors), not a per-user authenticated session — there's no req.user to
+// read a workspaceId from. Resolve the oldest workspace (today's only real
+// one) fresh on every call rather than caching, since correctness matters
+// more than shaving one indexed query off an already-infrequent call path.
+async function resolveDefaultWorkspaceId() {
+  const workspace = await Workspace.findOne().sort({ createdAt: 1 });
+  return workspace?._id;
+}
+
 function wrap(fn) {
   return async (args) => {
-    try { return ok(await fn(args)); }
+    try {
+      const workspaceId = await resolveDefaultWorkspaceId();
+      return ok(await fn({ ...args, workspaceId }));
+    }
     catch (err) { return fail(err); }
   };
 }
@@ -501,7 +516,12 @@ function createMcpServer() {
       currency: z.string().optional(),
       flowCooldownDays: z.number().min(0).optional(),
     },
-  }, wrap(ops.updateLoyaltySettings));
+  }, async (args) => {
+    try {
+      const workspaceId = await resolveDefaultWorkspaceId();
+      return ok(await ops.updateLoyaltySettings(args, { workspaceId }));
+    } catch (err) { return fail(err); }
+  });
 
   return server;
 }

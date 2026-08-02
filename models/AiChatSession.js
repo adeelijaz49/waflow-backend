@@ -15,6 +15,7 @@ const pendingActionSchema = new mongoose.Schema({
 }, { _id: false });
 
 const schema = new mongoose.Schema({
+  workspaceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   sessionId: { type: String, required: true, unique: true }, // frontend-generated, stored in localStorage
   messages: [messageSchema],
   pendingAction: { type: pendingActionSchema, default: null },
