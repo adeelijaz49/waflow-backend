@@ -17,6 +17,7 @@ const POST_PURCHASE_TEMPLATE = process.env.WA_POST_PURCHASE_TEMPLATE || 'waflow_
 const POINTS_NUDGE_TEMPLATE = process.env.WA_POINTS_NUDGE_TEMPLATE || 'waflow_points_nudge';
 const NO_SHOW_TEMPLATE = process.env.WA_NO_SHOW_TEMPLATE || 'waflow_no_show';
 const OTP_TEMPLATE = process.env.WA_OTP_TEMPLATE || 'waflow_login_otp';
+const INVITE_TEMPLATE = process.env.WA_INVITE_TEMPLATE || 'waflow_team_invite';
 
 let cachedWabaId = process.env.WA_WABA_ID || null;
 
@@ -219,6 +220,27 @@ async function sendOtpTemplate(to, code) {
         { type: 'body', parameters: [{ type: 'text', text: String(code) }] },
         { type: 'button', sub_type: 'copy_code', index: '0', parameters: [{ type: 'coupon_code', coupon_code: String(code) }] },
       ],
+    },
+  });
+}
+
+async function createInviteTemplate() {
+  // UTILITY, not AUTHENTICATION — this is a business notification (team
+  // invite), not an OTP code, so it uses the same shape as every other
+  // template in this app via createTemplate() rather than OTP's bespoke one.
+  return createTemplate(INVITE_TEMPLATE, "Hi! You've been invited to join {{1}} on Waflow. Open the app and log in with this WhatsApp number to get started — no password needed.", 'UTILITY');
+}
+
+async function sendInviteTemplate(to, workspaceName) {
+  await ensureTemplateExists(INVITE_TEMPLATE, createInviteTemplate);
+  return waPost({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name: INVITE_TEMPLATE,
+      language: { code: 'en' },
+      components: [{ type: 'body', parameters: [{ type: 'text', text: workspaceName }] }],
     },
   });
 }
@@ -1023,6 +1045,7 @@ module.exports = {
   createPointsNudgeTemplate,
   createNoShowTemplate,
   createOtpTemplate,
+  createInviteTemplate,
   createTemplate,
   deleteTemplate,
   sendPromoTemplate,
@@ -1032,6 +1055,7 @@ module.exports = {
   sendPointsNudgeTemplate,
   sendNoShowTemplate,
   sendOtpTemplate,
+  sendInviteTemplate,
   // Branching
   sendCustomFlowTemplate,
   sendMessageNodeFollowUp,

@@ -5,6 +5,7 @@ const LoginChallenge = require('../models/LoginChallenge');
 const User = require('../models/User');
 const Workspace = require('../models/Workspace');
 const Membership = require('../models/Membership');
+const Invite = require('../models/Invite');
 const { sendOtpTemplate } = require('../utils/whatsapp');
 const { sendMagicLinkEmail } = require('../utils/email');
 const { FRONTEND_URL } = require('../utils/config');
@@ -54,14 +55,33 @@ function issuePreAuthToken(userId) {
 }
 
 // Shared post-verification step: resolve which workspace(s) a confirmed User
-// belongs to. Zero memberships -> self-serve into a brand-new workspace as
-// Owner (confirmed product decision — this is what makes login = signup for
-// a first-time contact). Exactly one -> issue the real session immediately.
-// Two or more -> hand back a picker instead of guessing.
+// belongs to. Zero memberships -> check for a pending Invite matching this
+// contact first (join that workspace with the invited role - "logs in using
+// the same passwordless methods above, and lands directly in the right
+// workspace with the right role already assigned"); no invite -> self-serve
+// into a brand-new workspace as Owner (this is what makes login = signup for
+// a first-time contact). Exactly one membership -> issue the real session
+// immediately. Two or more -> hand back a picker instead of guessing.
 async function resolveSessionForUser(res, user) {
   const memberships = await Membership.find({ userId: user._id });
 
   if (memberships.length === 0) {
+    const contactFilters = [];
+    if (user.phone) contactFilters.push({ contactType: 'phone', contact: user.phone });
+    if (user.email) contactFilters.push({ contactType: 'email', contact: user.email });
+    const invite = contactFilters.length
+      ? await Invite.findOne({ status: 'pending', expiresAt: { $gt: new Date() }, $or: contactFilters })
+      : null;
+
+    if (invite) {
+      await Membership.create({ userId: user._id, workspaceId: invite.workspaceId, role: invite.role });
+      invite.status = 'accepted';
+      await invite.save();
+      const workspace = await Workspace.findById(invite.workspaceId);
+      const token = issueSessionToken(user._id, invite.workspaceId, invite.role);
+      return res.json({ token, workspace: { id: workspace._id, name: workspace.name }, role: invite.role });
+    }
+
     const workspace = await Workspace.create({ name: `${user.name || user.phone || user.email}'s Workspace` });
     await Membership.create({ userId: user._id, workspaceId: workspace._id, role: 'owner' });
     const token = issueSessionToken(user._id, workspace._id, 'owner');
