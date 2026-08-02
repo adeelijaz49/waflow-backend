@@ -165,7 +165,12 @@ router.post('/magic-link/request', async (req, res) => {
     });
 
     if (TEST_MODE) return res.json({ success: true, testToken: token });
-    await sendMagicLinkEmail(email, `${FRONTEND_URL}/auth/verify?token=${token}`);
+    try {
+      await sendMagicLinkEmail(email, `${FRONTEND_URL}/auth/verify?token=${token}`);
+    } catch (err) {
+      console.error('[auth] magic-link email send failed:', err.message);
+      return res.status(503).json({ error: "We couldn't send that email right now — please try WhatsApp instead, or try again shortly." });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

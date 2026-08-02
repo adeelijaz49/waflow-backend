@@ -14,8 +14,19 @@ function resend() {
   return _resend;
 }
 
+// Resend's SDK does NOT throw on an API-level failure (bad key, unverified
+// domain, etc.) — send() resolves with { data: null, error: {...} } instead.
+// Silently "succeeding" here is exactly how the magic-link route reported
+// success to the merchant while never actually sending anything - always
+// unwrap and throw on `error` so callers' try/catch actually catches it.
+async function send(payload) {
+  const { data, error } = await resend().emails.send(payload);
+  if (error) throw new Error(`Resend: ${error.message || error.name || JSON.stringify(error)}`);
+  return data;
+}
+
 async function sendMagicLinkEmail(to, link) {
-  return resend().emails.send({
+  return send({
     from: FROM,
     to,
     subject: 'Your Waflow login link',
@@ -26,7 +37,7 @@ async function sendMagicLinkEmail(to, link) {
 }
 
 async function sendInviteEmail(to, workspaceName, link) {
-  return resend().emails.send({
+  return send({
     from: FROM,
     to,
     subject: `You've been invited to join ${workspaceName} on Waflow`,
