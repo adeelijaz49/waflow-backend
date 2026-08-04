@@ -46,4 +46,20 @@ async function sendInviteEmail(to, workspaceName, link) {
   });
 }
 
-module.exports = { sendMagicLinkEmail, sendInviteEmail };
+const SUPPORT_DESK_EMAIL = process.env.SUPPORT_DESK_EMAIL || 'support@waflow.app';
+
+async function sendSupportTicketEmail({ workspaceName, userLabel, contactEmail, message }) {
+  return send({
+    from: FROM,
+    to: SUPPORT_DESK_EMAIL,
+    replyTo: contactEmail,
+    subject: `Support request from ${workspaceName}`,
+    html: `<p><strong>Workspace:</strong> ${workspaceName}</p>
+<p><strong>From:</strong> ${userLabel}</p>
+<p><strong>Contact email:</strong> ${contactEmail}</p>
+<p><strong>Message:</strong></p>
+<p>${message.replace(/\n/g, '<br>')}</p>`,
+  });
+}
+
+module.exports = { sendMagicLinkEmail, sendInviteEmail, sendSupportTicketEmail };
