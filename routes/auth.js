@@ -62,6 +62,13 @@ function issuePreAuthToken(userId) {
 // into a brand-new workspace as Owner (this is what makes login = signup for
 // a first-time contact). Exactly one membership -> issue the real session
 // immediately. Two or more -> hand back a picker instead of guessing.
+function workspaceSummary(workspace) {
+  return {
+    id: workspace._id, name: workspace.name,
+    onboarding: { completed: workspace.onboarding?.completed !== false, currentStep: workspace.onboarding?.currentStep || 1 },
+  };
+}
+
 async function resolveSessionForUser(res, user) {
   const memberships = await Membership.find({ userId: user._id });
 
@@ -79,20 +86,26 @@ async function resolveSessionForUser(res, user) {
       await invite.save();
       const workspace = await Workspace.findById(invite.workspaceId);
       const token = issueSessionToken(user._id, invite.workspaceId, invite.role);
-      return res.json({ token, workspace: { id: workspace._id, name: workspace.name }, role: invite.role });
+      return res.json({ token, workspace: workspaceSummary(workspace), role: invite.role });
     }
 
-    const workspace = await Workspace.create({ name: `${user.name || user.phone || user.email}'s Workspace` });
+    // Explicitly false — this is the one place the onboarding wizard actually
+    // gets triggered from; the schema default (true) is what keeps every
+    // pre-existing workspace unaffected by this field's introduction.
+    const workspace = await Workspace.create({
+      name: `${user.name || user.phone || user.email}'s Workspace`,
+      onboarding: { completed: false, currentStep: 1 },
+    });
     await Membership.create({ userId: user._id, workspaceId: workspace._id, role: 'owner' });
     const token = issueSessionToken(user._id, workspace._id, 'owner');
-    return res.json({ token, workspace: { id: workspace._id, name: workspace.name }, role: 'owner' });
+    return res.json({ token, workspace: workspaceSummary(workspace), role: 'owner' });
   }
 
   if (memberships.length === 1) {
     const m = memberships[0];
     const workspace = await Workspace.findById(m.workspaceId);
     const token = issueSessionToken(user._id, m.workspaceId, m.role);
-    return res.json({ token, workspace: { id: workspace._id, name: workspace.name }, role: m.role });
+    return res.json({ token, workspace: workspaceSummary(workspace), role: m.role });
   }
 
   const workspaces = await Workspace.find({ _id: { $in: memberships.map(m => m.workspaceId) } });
@@ -238,7 +251,7 @@ router.post('/select-workspace', async (req, res) => {
 
     const workspace = await Workspace.findById(workspaceId);
     const token = issueSessionToken(payload.sub, workspaceId, membership.role);
-    res.json({ token, workspace: { id: workspace._id, name: workspace.name }, role: membership.role });
+    res.json({ token, workspace: workspaceSummary(workspace), role: membership.role });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -278,7 +291,7 @@ router.get('/me', require('../middleware/requireAuth').requireAuth, async (req, 
     if (!user || !workspace) return res.status(401).json({ error: 'Session no longer valid' });
     res.json({
       user: { id: user._id, name: user.name, phone: user.phone, email: user.email },
-      workspace: { id: workspace._id, name: workspace.name },
+      workspace: workspaceSummary(workspace),
       role: req.user.role,
     });
   } catch (err) {

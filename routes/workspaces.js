@@ -119,4 +119,22 @@ router.delete('/me/invites/:id', requireOwner, async (req, res) => {
   }
 });
 
+// ── Onboarding ───────────────────────────────────────────────────────────────
+// Not Owner-gated — any authenticated member can be the one running through
+// first-time setup, same as Products/Customers/Promotions creation.
+
+router.patch('/me/onboarding', async (req, res) => {
+  try {
+    const update = {};
+    if (typeof req.body.completed === 'boolean') update['onboarding.completed'] = req.body.completed;
+    if (typeof req.body.currentStep === 'number') update['onboarding.currentStep'] = req.body.currentStep;
+
+    const workspace = await Workspace.findByIdAndUpdate(req.user.workspaceId, { $set: update }, { new: true });
+    if (!workspace) return res.status(404).json({ error: 'Not found' });
+    res.json({ completed: workspace.onboarding?.completed !== false, currentStep: workspace.onboarding?.currentStep || 1 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
