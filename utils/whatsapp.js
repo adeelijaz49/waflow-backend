@@ -675,52 +675,22 @@ async function sendPromoAnnouncement(to, customer, promotion, items) {
   return waPost({ messaging_product: 'whatsapp', to, type: 'interactive', interactive });
 }
 
-// Send one rich button card per product (image + price + Add to Cart).
-// Uses image.link directly — no pre-upload needed.
-async function sendProductCards(to, products, promotion) {
-  const isPoints = promotion?.customerType === 'points';
-  const disc     = promotion?.discountPercent || 0;
-  const ptPrice  = promotion?.pointsPrice || 0;
-  const currency = await getCurrency();
-
-  for (const p of products) {
-    const salePrice = isPoints ? null : +(p.basePrice * (1 - disc / 100)).toFixed(2);
-    const priceStr  = isPoints
-      ? `💎 ${ptPrice} pts`
-      : disc > 0
-        ? `${money(salePrice, currency)} _(was ${money(p.basePrice, currency)})_`
-        : money(p.basePrice, currency);
-
-    const bodyText = `*${p.name}*\n${priceStr}${p.description ? '\n\n' + p.description.slice(0, 150) : ''}`;
-
-    const interactive = {
-      type:   'button',
-      body:   { text: bodyText },
-      action: { buttons: [{ type: 'reply', reply: { id: `cart_${p._id}`, title: isPoints ? 'Redeem 💎' : 'Add to Cart 🛒' } }] },
-    };
-
-    if (p.images?.[0] && isSupportedImageLink(p.images[0])) {
-      interactive.header = { type: 'image', image: { link: p.images[0] } };
-    }
-
-    await waPost({ messaging_product: 'whatsapp', to, type: 'interactive', interactive })
-      .catch(e => console.warn(`Product card failed for ${p.name}:`, e.response?.data || e.message));
-  }
-}
-
 // Product browsing for a promotion batch.
 // NOTE: WhatsApp Cloud API has no documented 'carousel' interactive type (valid types are
 // button, list, product, product_list, catalog_message, flow, call_permission_request).
 // An earlier version of this function tried interactive.type:'carousel', which the API
-// silently mishandled — only the first card ever reached the customer. Use the reliable,
-// documented message types instead: individual rich cards (≤5) or a list message (>5).
+// silently mishandled — only the first card ever reached the customer. A later version sent
+// ≤5 products as separate sequential messages via sendProductCards (one bubble per product,
+// stacked vertically) — functional, but visually the opposite of a scrollable list, so it's
+// gone too. Always use sendCatalog's WhatsApp list message: one message, tap to open a native
+// scrollable list of rows — the only reliably-documented consolidated multi-product UI this
+// API actually supports (a true horizontally-swipeable image carousel needs Meta Carousel
+// Templates instead — a different, pre-approval-gated API surface, not this one).
 async function sendProductCarousel(to, products, promotion, batchStart = 0) {
   const batch     = products.slice(batchStart, batchStart + 10);
   const remaining = products.length - batchStart - batch.length;
 
-  const result = batch.length <= 5
-    ? await sendProductCards(to, batch, promotion)
-    : await sendCatalog(to, batch, promotion);
+  const result = await sendCatalog(to, batch, promotion);
 
   if (remaining > 0) {
     await waPost({
@@ -1065,7 +1035,6 @@ module.exports = {
   sendPromoAnnouncement,
   buildPromoAnnouncementPayload,
   sendProductCarousel,
-  sendProductCards,
   sendVariantPicker,
   // Session messages (require 24h window)
   sendPromoMessage,
