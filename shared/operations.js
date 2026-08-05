@@ -1009,7 +1009,15 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
     if (!demo) await new Promise(r => setTimeout(r, 300)); // real-send throttle only
   }
 
-  await Promotion.updateOne({ _id: promotion._id }, { sentAt: new Date(), sentCount, status: 'active' });
+  // Best-effort, like the CampaignMessage writes above — the real WhatsApp
+  // sends already happened by this point, so a bookkeeping-only failure here
+  // must never make the whole call throw. It used to: a transient DB error on
+  // this single updateOne turned a real, successful send into a 500 the
+  // merchant would read as "nothing sent" and could retry, double-messaging
+  // every customer who'd already received it.
+  await Promotion.updateOne({ _id: promotion._id }, { sentAt: new Date(), sentCount, status: 'active' }).catch(err => {
+    console.error('[sendPromotion] post-send Promotion update failed:', err.message);
+  });
   // demoCount lets callers (esp. AI Mode) tell the merchant when a "successful"
   // send was actually simulated — see the Demo Mode isolation note above.
   return { success: true, sentCount, skippedOptedOut, errors, demoCount };
