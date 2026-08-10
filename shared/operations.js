@@ -1090,6 +1090,7 @@ async function updateLoyaltySettings(data, { workspaceId } = {}) {
   if (data.currency) s.currency = data.currency;
   if (data.flowCooldownDays != null) s.flowCooldownDays = data.flowCooldownDays;
   if (data.merchantName != null) s.merchantName = data.merchantName;
+  if (data.defaultCountryCode != null) s.defaultCountryCode = data.defaultCountryCode;
   await s.save();
   settingsCache.invalidate();
   return s;

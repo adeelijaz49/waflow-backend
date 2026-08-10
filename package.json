@@ -33,6 +33,7 @@
     "multer": "^2.1.1",
     "resend": "^6.18.1",
     "stripe": "^22.2.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^4.4.3"
   }
 }

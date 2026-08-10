@@ -12,9 +12,9 @@ router.get('/loyalty', async (req, res) => {
 
 router.put('/loyalty', async (req, res) => {
   try {
-    const { loyaltyPointsPerUnit, minPointsPerPurchase, currency, flowCooldownDays, merchantName } = req.body;
+    const { loyaltyPointsPerUnit, minPointsPerPurchase, currency, flowCooldownDays, merchantName, defaultCountryCode } = req.body;
     const s = await ops.updateLoyaltySettings(
-      { loyaltyPointsPerUnit, minPointsPerPurchase, currency, flowCooldownDays, merchantName },
+      { loyaltyPointsPerUnit, minPointsPerPurchase, currency, flowCooldownDays, merchantName, defaultCountryCode },
       { workspaceId: req.user.workspaceId }
     );
     res.json(s);

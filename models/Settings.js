@@ -11,6 +11,11 @@ const schema = new mongoose.Schema({
   currency:             { type: String, default: 'AUD' },
   flowCooldownDays:     { type: Number, default: 3 }, // global cross-flow cooldown — see utils/flowScheduler.js
   merchantName:         { type: String, default: '' }, // greets the merchant in AI Mode
+  // Bare calling-code digits (no '+'), e.g. '966' for Saudi Arabia — used by
+  // the CSV import engine's phone dedup to resolve a bare local number
+  // (0501234567) and its full international form (+966501234567) to the
+  // same customer. See utils/phoneNormalize.js.
+  defaultCountryCode:   { type: String, default: '966' },
 }, { collection: 'settings' });
 
 module.exports = mongoose.model('Settings', schema);

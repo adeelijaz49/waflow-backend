@@ -7,6 +7,7 @@ const schema = new mongoose.Schema({
   phone:     { type: String, required: true },
   email:     { type: String },
   address:   { type: String },
+  notes:     { type: String }, // freeform — e.g. from a CSV import's optional "tags/notes" column
   loyaltyPoints: { type: Number, default: 0 },
   loyaltyPointsUpdatedAt: { type: Date }, // set whenever loyaltyPoints changes — drives the points_balance_reminder flow trigger
   isDemo:    { type: Boolean, default: false }, // flags seeded demo customers (see seed/seed-demo.js)
