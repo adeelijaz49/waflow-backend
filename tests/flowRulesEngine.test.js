@@ -6,6 +6,7 @@ const scheduler = require('../utils/flowScheduler');
 const pointsThreshold = require('../utils/flowTriggers/pointsThreshold');
 const purchaseFrequency = require('../utils/flowTriggers/purchaseFrequency');
 const Customer = require('../models/Customer');
+const { createConsentedCustomer } = require('./testFixtures');
 const Order = require('../models/Order');
 const Promotion = require('../models/Promotion');
 const Flow = require('../models/Flow');
@@ -22,7 +23,7 @@ describe('flowTriggers: points_threshold', () => {
   beforeAll(async () => {
     await connectOnce();
     flow = await Flow.create({ name: '__test_points_threshold_flow__', triggerType: 'points_threshold', pointsThreshold: 1000 });
-    customer = await Customer.create({ firstname: '__test_pt_customer__', lastname: 'Test', phone: '15559100', loyaltyPoints: 1500 });
+    customer = await createConsentedCustomer({ firstname: '__test_pt_customer__', lastname: 'Test', phone: '15559100', loyaltyPoints: 1500 });
   });
 
   afterAll(async () => {
@@ -62,7 +63,7 @@ describe('flowTriggers: purchase_frequency', () => {
   beforeAll(async () => {
     await connectOnce();
     flow = await Flow.create({ name: '__test_purchase_freq_flow__', triggerType: 'purchase_frequency', inactivityDays: 30, orderCountThreshold: 2 });
-    customer = await Customer.create({ firstname: '__test_pf_customer__', lastname: 'Test', phone: '15559101' });
+    customer = await createConsentedCustomer({ firstname: '__test_pf_customer__', lastname: 'Test', phone: '15559101' });
     await Order.create({ customer: customer._id, subtotal: 10, total: 10, status: 'confirmed', createdAt: new Date(Date.now() - 5 * DAYS) });
     await Order.create({ customer: customer._id, subtotal: 10, total: 10, status: 'confirmed', createdAt: new Date(Date.now() - 10 * DAYS) });
   });
@@ -81,7 +82,7 @@ describe('flowTriggers: purchase_frequency', () => {
   });
 
   test('a customer with only 1 order in the window is not eligible', async () => {
-    const lonelyCustomer = await Customer.create({ firstname: '__test_pf_lonely__', lastname: 'Test', phone: '15559102' });
+    const lonelyCustomer = await createConsentedCustomer({ firstname: '__test_pf_lonely__', lastname: 'Test', phone: '15559102' });
     await Order.create({ customer: lonelyCustomer._id, subtotal: 10, total: 10, status: 'confirmed', createdAt: new Date() });
     try {
       const eligible = await purchaseFrequency.findEligible(flow);
@@ -126,7 +127,7 @@ describe('DEFECT-03: Flow.promotionId send path', () => {
   // the very next tick for any *other* flow within the cooldown window),
   // exactly like flowBranching.test.js's makeStaleCustomer per sub-test.
   async function makeStaleCustomer(phoneSuffix) {
-    const customer = await Customer.create({ firstname: '__test_flow_promo_customer__', lastname: 'Test', phone: `1555910${phoneSuffix}` });
+    const customer = await createConsentedCustomer({ firstname: '__test_flow_promo_customer__', lastname: 'Test', phone: `1555910${phoneSuffix}` });
     await Order.create({ customer: customer._id, subtotal: 10, total: 10, status: 'delivered', createdAt: new Date(Date.now() - 70 * DAYS) });
     return customer;
   }
@@ -219,7 +220,7 @@ describe('DEFECT-03 §8.3: requiresPriorFlowId cascade exclusion', () => {
   beforeAll(async () => {
     await connectOnce();
     priorFlow = await Flow.create({ name: '__test_cascade_prior_flow__', triggerType: 'inactive_customer', inactivityDays: 30 });
-    customer = await Customer.create({ firstname: '__test_cascade_customer__', lastname: 'Test', phone: '15559104' });
+    customer = await createConsentedCustomer({ firstname: '__test_cascade_customer__', lastname: 'Test', phone: '15559104' });
     await Order.create({ customer: customer._id, subtotal: 10, total: 10, status: 'delivered', createdAt: new Date(Date.now() - 70 * DAYS) });
   });
 

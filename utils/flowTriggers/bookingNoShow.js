@@ -35,8 +35,10 @@ async function revalidate(flow, enrollment) {
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   // Demo customers must never receive a real WhatsApp send from an unattended
   // scheduler tick — findEligible here is Booking-sourced (no customer-level
-  // filter available), so this revalidate gate is the only checkpoint.
+  // filter available), so this revalidate gate is the only checkpoint. Checked
+  // before marketingConsent since demo/fake data never sends for real anyway.
   if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
+  if (!customer.marketingConsent) return { outcome: 'exit', reason: 'no_marketing_consent' };
 
   const booking = await Booking.findById(enrollment.sourceRef);
   if (!booking) return { outcome: 'exit', reason: 'booking_deleted' };

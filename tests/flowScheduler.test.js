@@ -3,6 +3,7 @@ require('dotenv').config();
 const { connectOnce } = require('./dbSetup');
 const scheduler = require('../utils/flowScheduler');
 const Customer = require('../models/Customer');
+const { createConsentedCustomer } = require('./testFixtures');
 const Order = require('../models/Order');
 const Flow = require('../models/Flow');
 const FlowEnrollment = require('../models/FlowEnrollment');
@@ -26,7 +27,7 @@ describe('flow scheduler: enrollment + send concurrency, exit-before-send', () =
   });
 
   async function makeStaleCustomer(phoneSuffix, opts = {}) {
-    const customer = await Customer.create({
+    const customer = await createConsentedCustomer({
       firstname: '__test_scheduler_customer__', lastname: 'Test', phone: `1555100${phoneSuffix}`,
       optedOut: opts.optedOut || false,
     });

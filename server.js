@@ -8,6 +8,7 @@ const FormData = require("form-data");
 const mime     = require("mime-types");
 const Stripe   = require("stripe");
 const mongoose = require("mongoose");
+const helmet   = require("helmet");
 
 const { PORT, APP_URL } = require("./utils/config");
 const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pendingSlotSelections, pendingServiceCheckouts, pendingVariantSelections, pendingPayLaterSlots } = require("./utils/state");
@@ -42,11 +43,25 @@ app.post("/stripe-webhook", express.raw({ type: "application/json" }), handleStr
 app.use(express.json());
 app.use(express.urlencoded({ extended: true })); // OAuth token/authorize endpoints use form-encoded bodies
 app.use(cors());
+// Cheap, real HTTP header hardening (HSTS, X-Content-Type-Options, etc.) —
+// contentSecurityPolicy off because the MCP OAuth login page and the new
+// /internal-admin pages use inline <style>/onsubmit, and building a correct
+// policy for those two hand-rolled pages is out of scope here.
+// crossOriginResourcePolicy off because the dashboard (a different origin)
+// loads product/service images directly from /uploads/*.
+app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false }));
 
 // ─── MongoDB ─────────────────────────────────────────────────────────────────
 mongoose.connect(MONGODB_URI)
   .then(() => console.log("MongoDB connected"))
   .catch(err => console.error("MongoDB connection error:", err.message));
+// Warn (not fail) at boot if the connection string looks like it drops TLS —
+// Cosmos DB for MongoDB connection strings already include tls=true, this is
+// a sanity check against a misconfigured/copied-wrong MONGODB_URI, not a new
+// encryption mechanism (see the Data Protection Compliance plan's §8).
+if (!/^mongodb:\/\/(localhost|127\.0\.0\.1)/.test(MONGODB_URI) && !/[?&](tls|ssl)=true/i.test(MONGODB_URI)) {
+  console.warn("[startup] MONGODB_URI does not appear to enforce TLS (no tls=true/ssl=true) and isn't localhost — double-check the connection string.");
+}
 
 // ─── Auth (passwordless login) — must stay public ───────────────────────────
 app.use("/api/auth", require("./routes/auth"));
@@ -77,6 +92,11 @@ app.use("/mcp", require("./mcp"));
 
 // ─── ChatGPT Custom GPT Actions — REST + OpenAPI, separate API-key auth ─────
 app.use("/gpt-api", require("./gpt/routes"));
+
+// ─── Internal admin (Data Protection Compliance) — Waflow-staff-only PII
+// deletion/correction tooling, separate credential from both the merchant
+// JWT auth above and the MCP admin login ─────────────────────────────────────
+app.use("/internal-admin", require("./middleware/requireInternalAdmin"), require("./routes/internalAdmin"));
 
 // ─── Stripe ──────────────────────────────────────────────────────────────────
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
@@ -447,9 +467,15 @@ async function handleStripeWebhook(req, res) {
             }
           }
 
-          await waPost({ messaging_product: "whatsapp", to: buyerPhone, type: "text",
-            text: { body: `✅ *Booking Confirmed!*\n\n📋 ${serviceName}\n📅 ${slotLabel}\n💰 ${money(amountAud, currency)} paid\n\nSee you then! 🎉` },
-          }).catch(err => console.error("Service booking WA error:", err.message));
+          const bookingConfirmedBody = `✅ *Booking Confirmed!*\n\n📋 ${serviceName}\n📅 ${slotLabel}\n💰 ${money(amountAud, currency)} paid\n\nSee you then! 🎉`;
+          if (customer) {
+            const { sendUtilityMessageWithConsentAsk } = require('./shared/consent');
+            await sendUtilityMessageWithConsentAsk({ customer, workspaceId, body: bookingConfirmedBody })
+              .catch(err => console.error("Service booking WA error:", err.message));
+          } else {
+            await waPost({ messaging_product: "whatsapp", to: buyerPhone, type: "text", text: { body: bookingConfirmedBody } })
+              .catch(err => console.error("Service booking WA error:", err.message));
+          }
         } catch (err) {
           console.error("Service booking post-payment error:", err.message);
         }
@@ -469,12 +495,13 @@ async function handleStripeWebhook(req, res) {
     const cartItems = carts.get(buyerPhone) || [];
     carts.delete(buyerPhone);
 
+    let customer = null;
     if (buyerPhone) {
       // Persist loyalty points + update/create the order in MongoDB
       try {
         const Customer = require('./models/Customer');
         const Order    = require('./models/Order');
-        const customer = await Customer.findOneAndUpdate(
+        customer = await Customer.findOneAndUpdate(
           withWorkspace({ phone: buyerPhone }, workspaceId),
           { $inc: { loyaltyPoints: points }, $set: { loyaltyPointsUpdatedAt: new Date() } },
           { new: true }
@@ -525,12 +552,15 @@ async function handleStripeWebhook(req, res) {
         console.error("MongoDB post-payment update error:", err.message);
       }
 
-      await waPost({
-        messaging_product: "whatsapp",
-        to: buyerPhone,
-        type: "text",
-        text: { body: `✅ Payment of ${money(amountAud, currency)} received! Your order is confirmed.\n\n🎁 You've earned *${points} loyalty points*! Thank you for shopping with us! 🎉` },
-      }).catch(err => console.error("Payment confirmation error:", err.message));
+      const paymentConfirmedBody = `✅ Payment of ${money(amountAud, currency)} received! Your order is confirmed.\n\n🎁 You've earned *${points} loyalty points*! Thank you for shopping with us! 🎉`;
+      if (customer) {
+        const { sendUtilityMessageWithConsentAsk } = require('./shared/consent');
+        await sendUtilityMessageWithConsentAsk({ customer, workspaceId, body: paymentConfirmedBody })
+          .catch(err => console.error("Payment confirmation error:", err.message));
+      } else {
+        await waPost({ messaging_product: "whatsapp", to: buyerPhone, type: "text", text: { body: paymentConfirmedBody } })
+          .catch(err => console.error("Payment confirmation error:", err.message));
+      }
     }
   }
   res.sendStatus(200);
@@ -1054,6 +1084,26 @@ app.post("/webhook", async (req, res) => {
           await waPost({ messaging_product: "whatsapp", to: from, type: "text",
             text: { body: "📍 Please reply with your delivery address for this redemption order." } }).catch(() => {});
         }
+
+      } else if (buttonId.startsWith("consent_yes_")) {
+        const Customer = require("./models/Customer");
+        const { grantMarketingConsent } = require("./shared/consent");
+        const customer = await Customer.findOne(withWorkspace({ _id: buttonId.slice(12) }, workspaceId));
+        if (customer) {
+          await grantMarketingConsent({ customer, method: 'whatsapp_button', source: 'order/booking confirmation consent button', workspaceId });
+          await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "🎉 You're subscribed! We'll send occasional offers and updates. Reply STOP anytime to opt out." } }).catch(() => {});
+        }
+
+      } else if (buttonId.startsWith("consent_no_")) {
+        const Customer = require("./models/Customer");
+        const { declineMarketingConsent } = require("./shared/consent");
+        const customer = await Customer.findOne(withWorkspace({ _id: buttonId.slice(11) }, workspaceId));
+        if (customer) {
+          await declineMarketingConsent({ customer, method: 'whatsapp_button', source: 'order/booking confirmation consent button', workspaceId });
+          await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "No problem! You can always opt in later." } }).catch(() => {});
+        }
       }
     }
     return;
@@ -1068,16 +1118,24 @@ app.post("/webhook", async (req, res) => {
     // the "Reply STOP to unsubscribe" promise already in the promo template footer.
     if (upperText === "STOP" || upperText === "UNSUBSCRIBE") {
       const Customer = require("./models/Customer");
-      await Customer.findOneAndUpdate(withWorkspace({ phone: from }, workspaceId), { optedOut: true, optedOutAt: new Date() });
+      const { withdrawMarketingConsent } = require("./shared/consent");
+      const customer = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
+      if (customer) await withdrawMarketingConsent({ customer, method: 'whatsapp_stop_command', source: 'WhatsApp STOP reply', workspaceId });
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: "You've been unsubscribed from promotional messages. Reply START to opt back in anytime." } }).catch(() => {});
       return;
     }
     if (upperText === "START" || upperText === "SUBSCRIBE") {
       const Customer = require("./models/Customer");
-      await Customer.findOneAndUpdate(withWorkspace({ phone: from }, workspaceId), { optedOut: false, optedOutAt: null });
+      const { reinstateMarketingConsent } = require("./shared/consent");
+      const customer = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
+      // Never fabricates consent — only clears optedOut if this customer had
+      // genuinely opted in before (marketingConsent already true).
+      const reinstated = customer ? await reinstateMarketingConsent({ customer, method: 'whatsapp_start_command', source: 'WhatsApp START reply', workspaceId }) : false;
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
-        text: { body: "You're subscribed to promotional messages again. Welcome back! 🎉" } }).catch(() => {});
+        text: { body: reinstated
+          ? "You're subscribed to promotional messages again. Welcome back! 🎉"
+          : "Got it — you won't receive promotional messages unless you opt in." } }).catch(() => {});
       return;
     }
 
@@ -1115,8 +1173,11 @@ app.post("/webhook", async (req, res) => {
             pointsUsed:   pending.totalPointsCost,
             workspaceId:  pending.workspaceId,
           });
-          await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
-            text: { body: `✅ *Booked!*\n\n📋 ${pending.service.name}\n📅 ${pending.slot.date} at ${pending.slot.startTime}\n💎 ${pending.totalPointsCost} points redeemed\n\nRemaining points: ${customer.loyaltyPoints} pts\n\nSee you then! 🎉` } }).catch(() => {});
+          const { sendUtilityMessageWithConsentAsk } = require('./shared/consent');
+          await sendUtilityMessageWithConsentAsk({
+            customer, workspaceId: pending.workspaceId,
+            body: `✅ *Booked!*\n\n📋 ${pending.service.name}\n📅 ${pending.slot.date} at ${pending.slot.startTime}\n💎 ${pending.totalPointsCost} points redeemed\n\nRemaining points: ${customer.loyaltyPoints} pts\n\nSee you then! 🎉`,
+          }).catch(() => {});
         } catch (err) {
           console.error('Service points booking error:', err.message);
         }
@@ -1173,8 +1234,11 @@ app.post("/webhook", async (req, res) => {
               await CampaignMessage.findByIdAndUpdate(pending.campaignMessageId, { order: order._id }).catch(() => {});
             }
           }
-          await waPost({ messaging_product: 'whatsapp', to: from, type: 'text',
-            text: { body: `✅ *Order Confirmed!*\n\n💎 ${pending.totalPointsCost} points redeemed successfully.\n📍 Delivering to: ${pending.address}\n\nRemaining points: ${customer.loyaltyPoints} pts\n\nThank you for shopping with us! 🎉` } }).catch(() => {});
+          const { sendUtilityMessageWithConsentAsk } = require('./shared/consent');
+          await sendUtilityMessageWithConsentAsk({
+            customer, workspaceId: pending.workspaceId,
+            body: `✅ *Order Confirmed!*\n\n💎 ${pending.totalPointsCost} points redeemed successfully.\n📍 Delivering to: ${pending.address}\n\nRemaining points: ${customer.loyaltyPoints} pts\n\nThank you for shopping with us! 🎉`,
+          }).catch(() => {});
         } catch (err) {
           console.error('Points redemption error:', err.message);
         }

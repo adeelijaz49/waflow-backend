@@ -1,5 +1,6 @@
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
+const { MARKETING_ELIGIBLE_QUERY } = require('../../shared/consent');
 
 // DEFECT-03 §8.1: "Points threshold — customer earns more than [1000] points."
 // A value-crossing trigger, not a recurring reminder (unlike
@@ -11,7 +12,7 @@ async function findEligible(flow) {
 
   const qualifying = await Customer.find({
     loyaltyPoints: { $gte: threshold },
-    optedOut: { $ne: true },
+    ...MARKETING_ELIGIBLE_QUERY,
     isDemo: { $ne: true },
   }, '_id');
   if (!qualifying.length) return [];
@@ -36,6 +37,7 @@ async function revalidate(flow, enrollment) {
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
+  if (!customer.marketingConsent) return { outcome: 'exit', reason: 'no_marketing_consent' };
   // Points dropped below threshold (e.g. redeemed) between enrollment and
   // send — the crossing that triggered this is no longer true.
   if (customer.loyaltyPoints < (flow.pointsThreshold || 0)) return { outcome: 'exit', reason: 'points_dropped_below_threshold' };

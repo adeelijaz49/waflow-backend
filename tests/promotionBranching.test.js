@@ -6,6 +6,7 @@ const { getTestWorkspaceId } = require('./testAuth');
 const app = require('../server');
 const ops = require('../shared/operations');
 const Customer = require('../models/Customer');
+const { createConsentedCustomer } = require('./testFixtures');
 const Promotion = require('../models/Promotion');
 const CampaignMessage = require('../models/CampaignMessage');
 const MessageNode = require('../models/MessageNode');
@@ -31,7 +32,7 @@ describe('promotion branching: entry send (entryNodeId)', () => {
   beforeAll(async () => {
     await connectOnce();
     promotion = await Promotion.create({ name: '__test_promo_branch_entry__', scope: 'products', customerType: 'cash', type: 'store_wide', discountPercent: 10 });
-    customer = await Customer.create({ firstname: '__test_promo_branch_customer__', lastname: 'Test', phone: '15558800' });
+    customer = await createConsentedCustomer({ firstname: '__test_promo_branch_customer__', lastname: 'Test', phone: '15558800' });
   }, 15000);
 
   afterAll(async () => {

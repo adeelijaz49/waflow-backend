@@ -17,6 +17,7 @@ const CampaignMessage = require('../models/CampaignMessage');
 const Settings = require('../models/Settings');
 const MessageNode = require('../models/MessageNode');
 const triggers = require('./flowTriggers');
+const { canSendMarketing } = require('../shared/consent');
 
 const FLOW_SCHEDULER_INTERVAL_MS = +(process.env.FLOW_SCHEDULER_INTERVAL_MS || 5 * 60 * 1000);
 const LOCK_ID = 'flowScheduler';
@@ -114,10 +115,10 @@ async function processEnrollment(flow, enrollment) {
   if (blockedByOtherFlow) return; // skip this tick only — retried once the cooldown window rolls past
 
   const customer = await Customer.findById(enrollment.customer);
-  if (!customer || customer.optedOut) { // defense in depth — most triggers already check this in revalidate
+  if (!customer || !canSendMarketing(customer)) { // defense in depth — most triggers already check this in revalidate
     await FlowEnrollment.findOneAndUpdate(
       { _id: enrollment._id, state: 'enrolled' },
-      { state: 'exited', exitedAt: new Date(), exitReason: 'opted_out' },
+      { state: 'exited', exitedAt: new Date(), exitReason: customer && !customer.optedOut ? 'no_marketing_consent' : 'opted_out' },
     );
     return;
   }

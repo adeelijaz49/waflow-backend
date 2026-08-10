@@ -38,6 +38,12 @@ const schema = new mongoose.Schema({
   rowErrors:     { type: [rowErrorSchema], default: [] },
   discrepancies: { type: [discrepancySchema], default: [] },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  // Customer imports only — file-level attestation checkbox from the upload
+  // step ("these contacts have agreed to receive marketing messages"). When
+  // true, every clean/duplicate customer row grants marketingConsent with a
+  // logged ConsentEvent; left unchecked, imported customers stay unconsented
+  // until captured some other way. See shared/importEngine.js#runImport.
+  marketingConsentAttested: { type: Boolean, default: false },
 }, { timestamps: true });
 
 schema.index({ workspaceId: 1, createdAt: -1 });

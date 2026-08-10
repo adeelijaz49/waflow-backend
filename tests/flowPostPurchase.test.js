@@ -3,6 +3,7 @@ require('dotenv').config();
 const { connectOnce } = require('./dbSetup');
 const scheduler = require('../utils/flowScheduler');
 const Customer = require('../models/Customer');
+const { createConsentedCustomer } = require('./testFixtures');
 const Order = require('../models/Order');
 const Flow = require('../models/Flow');
 const FlowEnrollment = require('../models/FlowEnrollment');
@@ -24,7 +25,7 @@ describe('flow trigger: post_purchase_points', () => {
   });
 
   async function makeCustomer(phoneSuffix) {
-    return Customer.create({ firstname: '__test_pp_customer__', lastname: 'Test', phone: `1555200${phoneSuffix}` });
+    return createConsentedCustomer({ firstname: '__test_pp_customer__', lastname: 'Test', phone: `1555200${phoneSuffix}` });
   }
 
   async function cleanup(customer, order) {

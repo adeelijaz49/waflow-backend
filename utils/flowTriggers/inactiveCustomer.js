@@ -2,6 +2,7 @@ const Order = require('../../models/Order');
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
 const { sendWinbackTemplate, sendCustomFlowTemplate } = require('../whatsapp');
+const { MARKETING_ELIGIBLE_QUERY } = require('../../shared/consent');
 
 const DEFAULT_INACTIVITY_DAYS = 60;
 
@@ -37,7 +38,7 @@ async function findEligible(flow) {
   const remaining = customerIds.filter(id => !enrolledSet.has(id.toString()));
   if (!remaining.length) return [];
 
-  const eligible = await Customer.find({ _id: { $in: remaining }, optedOut: { $ne: true }, isDemo: { $ne: true } }, '_id');
+  const eligible = await Customer.find({ _id: { $in: remaining }, ...MARKETING_ELIGIBLE_QUERY, isDemo: { $ne: true } }, '_id');
   return eligible.map(c => ({ customerId: c._id }));
 }
 
@@ -47,7 +48,10 @@ async function revalidate(flow, enrollment) {
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   // Demo customers must never receive a real WhatsApp send from an unattended
   // scheduler tick — defense in depth alongside findEligible's own exclusion.
+  // Checked before marketingConsent since demo/fake data was never subject to
+  // real consent requirements in the first place — nothing real ever sends.
   if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
+  if (!customer.marketingConsent) return { outcome: 'exit', reason: 'no_marketing_consent' };
 
   const cutoff = cutoffFor(flow);
   const mostRecent = await Order.findOne({ customer: customer._id, status: { $ne: 'cancelled' } }).sort({ createdAt: -1 });

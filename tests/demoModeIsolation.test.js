@@ -87,6 +87,22 @@ describe('Demo Mode isolation — zero real WhatsApp API calls', () => {
     const cm = await CampaignMessage.findOne({ promotion: demoPromotion._id, customer: demoCustomer._id }).sort({ createdAt: -1 });
     expect(cm.wamid || '').not.toMatch(/^demo_/);
   });
+
+  // Data Protection Compliance: real customers now need an affirmative
+  // marketingConsent:true before any marketing send reaches them (see
+  // shared/consent.js#canSendMarketing). demoCustomer above was created with
+  // NO marketingConsent set (defaults false) and still sent successfully in
+  // the first test — this formalizes why: demo/fake data is exempt from the
+  // consent gate entirely (shared/operations.js#sendPromotion/sendLoyaltyReminders),
+  // since nothing real ever reaches Meta for it regardless of consent state.
+  // This IS "Sandbox/Demo Mode never uses real customer data" — the isolation
+  // is per-record (isDemo), not a new workspace-level toggle.
+  test('a demo customer with no marketing consent still simulates a send (consent gate does not apply to demo data)', async () => {
+    expect(demoCustomer.marketingConsent).toBeFalsy();
+    const res = await ops.sendLoyaltyReminders({ customerIds: [demoCustomer._id] });
+    expect(res.sentCount).toBe(1);
+    expect(res.skippedNoConsent).toBe(0);
+  });
 });
 
 describe('Demo Mode isolation — Automated Flows never enroll demo customers', () => {

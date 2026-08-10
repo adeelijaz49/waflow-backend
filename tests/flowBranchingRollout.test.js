@@ -3,6 +3,7 @@ require('dotenv').config();
 const { connectOnce } = require('./dbSetup');
 const scheduler = require('../utils/flowScheduler');
 const Customer = require('../models/Customer');
+const { createConsentedCustomer } = require('./testFixtures');
 const Order = require('../models/Order');
 const Service = require('../models/Service');
 const TimeSlot = require('../models/TimeSlot');
@@ -31,7 +32,7 @@ describe('flow branching Phase 2: entry send rollout to remaining trigger types'
       buttons: [{ position: 0, label: 'Shop', nextAction: { type: 'end_flow' } }],
     });
     const freshFlow = await Flow.findByIdAndUpdate(flow._id, { entryNodeId: node._id }, { new: true });
-    const customer = await Customer.create({ firstname: '__test_rollout_pp_customer__', lastname: 'Test', phone: '15558001', loyaltyPoints: 250 });
+    const customer = await createConsentedCustomer({ firstname: '__test_rollout_pp_customer__', lastname: 'Test', phone: '15558001', loyaltyPoints: 250 });
     const order = await Order.create({ customer: customer._id, subtotal: 10, total: 10, paymentStatus: 'paid', paidAt: new Date(Date.now() - 3 * HOURS) });
     try {
       const enrollment = await FlowEnrollment.create({ flow: flow._id, customer: customer._id, state: 'enrolled', sourceModel: 'Order', sourceRef: order._id });
@@ -59,7 +60,7 @@ describe('flow branching Phase 2: entry send rollout to remaining trigger types'
       buttons: [{ position: 0, label: 'Redeem', nextAction: { type: 'end_flow' } }],
     });
     const freshFlow = await Flow.findByIdAndUpdate(flow._id, { entryNodeId: node._id }, { new: true });
-    const customer = await Customer.create({
+    const customer = await createConsentedCustomer({
       firstname: '__test_rollout_pr_customer__', lastname: 'Test', phone: '15558002',
       loyaltyPoints: 500, loyaltyPointsUpdatedAt: new Date(Date.now() - 40 * DAYS),
     });
@@ -88,7 +89,7 @@ describe('flow branching Phase 2: entry send rollout to remaining trigger types'
       buttons: [{ position: 0, label: 'Rebook', nextAction: { type: 'end_flow' } }],
     });
     const freshFlow = await Flow.findByIdAndUpdate(flow._id, { entryNodeId: node._id }, { new: true });
-    const customer = await Customer.create({ firstname: '__test_rollout_ns_customer__', lastname: 'Test', phone: '15558003' });
+    const customer = await createConsentedCustomer({ firstname: '__test_rollout_ns_customer__', lastname: 'Test', phone: '15558003' });
     const service = await Service.create({ name: '__test_rollout_ns_service__', basePrice: 50 });
     const slot = await TimeSlot.create({ serviceId: service._id, date: '2020-01-01', startTime: '09:00', endTime: '10:00' });
     const booking = await Booking.create({

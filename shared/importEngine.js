@@ -11,6 +11,7 @@ const PointsLedgerEntry = require('../models/PointsLedgerEntry');
 const { withWorkspace } = require('./operations');
 const { normalizePhoneForDedup } = require('../utils/phoneNormalize');
 const { parsePrice } = require('../utils/currency');
+const { grantMarketingConsent } = require('./consent');
 
 const MAX_ROWS = 5000;
 
@@ -250,7 +251,7 @@ function summarize(results) {
 }
 
 // ─── Job lifecycle ──────────────────────────────────────────────────────────────
-async function createImportJob({ file, entityType, workspaceId, userId }) {
+async function createImportJob({ file, entityType, workspaceId, userId, marketingConsentAttested }) {
   if (!file) throw new Error('No file uploaded');
   getConfig(entityType); // throws on an unknown entityType
 
@@ -265,6 +266,7 @@ async function createImportJob({ file, entityType, workspaceId, userId }) {
     headers, rows, totalRows: rows.length,
     columnMapping: autoDetectMapping(headers, entityType),
     status: 'mapping', createdBy: userId,
+    marketingConsentAttested: entityType === 'customer' && marketingConsentAttested === true,
   });
 
   return {
@@ -372,6 +374,19 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
           if (mapped.notes !== undefined) $set.notes = mapped.notes;
           if (Object.keys($set).length) await Customer.updateOne({ _id: existingId }, { $set });
 
+          if (job.marketingConsentAttested) {
+            // Only when not already consented — avoids a duplicate ConsentEvent
+            // on repeat re-imports of the same list.
+            const existingCustomer = await Customer.findById(existingId);
+            if (existingCustomer && !existingCustomer.marketingConsent) {
+              await grantMarketingConsent({
+                customer: existingCustomer, method: 'checkbox_csv_import',
+                source: `CSV import job ${job._id}`, performedBy: job.createdBy,
+                workspaceId, importJobId: job._id,
+              });
+            }
+          }
+
           if (mapped.startingPoints !== undefined) {
             const prior = importedBalanceTotals.get(String(existingId));
             if (prior === undefined) {
@@ -400,6 +415,13 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
           if (mapped.startingPoints) {
             await PointsLedgerEntry.create({ workspaceId, customerId: doc._id, type: 'imported_balance', amount: mapped.startingPoints, importJobId: job._id });
             importedBalanceTotals.set(String(doc._id), mapped.startingPoints);
+          }
+          if (job.marketingConsentAttested) {
+            await grantMarketingConsent({
+              customer: doc, method: 'checkbox_csv_import',
+              source: `CSV import job ${job._id}`, performedBy: job.createdBy,
+              workspaceId, importJobId: job._id,
+            });
           }
           importedCount++;
           if (key) index.set(key, doc._id);

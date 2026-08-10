@@ -3,6 +3,7 @@ require('dotenv').config();
 const { connectOnce } = require('./dbSetup');
 const scheduler = require('../utils/flowScheduler');
 const Customer = require('../models/Customer');
+const { createConsentedCustomer } = require('./testFixtures');
 const Service = require('../models/Service');
 const TimeSlot = require('../models/TimeSlot');
 const Booking = require('../models/Booking');
@@ -30,7 +31,7 @@ describe('flow trigger: booking_no_show', () => {
   });
 
   async function makeCustomer(phoneSuffix) {
-    return Customer.create({ firstname: '__test_noshow_customer__', lastname: 'Test', phone: `1555300${phoneSuffix}` });
+    return createConsentedCustomer({ firstname: '__test_noshow_customer__', lastname: 'Test', phone: `1555300${phoneSuffix}` });
   }
 
   // Bypasses Mongoose's timestamps hook via the native collection so updatedAt

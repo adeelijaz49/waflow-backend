@@ -18,6 +18,7 @@ const CampaignMessage = require('../models/CampaignMessage');
 const Flow            = require('../models/Flow');
 const FlowEnrollment  = require('../models/FlowEnrollment');
 const MessageNode     = require('../models/MessageNode');
+const ConsentEvent    = require('../models/ConsentEvent');
 const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
   sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
@@ -32,6 +33,7 @@ const { APP_URL } = require('../utils/config');
 const { money } = require('../utils/currency');
 const settingsCache = require('../utils/settingsCache');
 const { getCurrency } = settingsCache;
+const { canSendMarketing, grantMarketingConsent, sendUtilityMessageWithConsentAsk } = require('./consent');
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const SHIPPING_COST = 0.5; // flat rate, matches server.js's WhatsApp checkout flow
@@ -245,10 +247,15 @@ async function confirmBooking({ bookingId, workspaceId }) {
   booking.status = 'confirmed';
   await booking.save();
   try {
-    const result = await waPost({
-      messaging_product: 'whatsapp', to: booking.phone, type: 'text',
-      text: { body: `✅ *Booking Confirmed!*\n\n📋 ${booking.serviceId?.name}\n📅 ${booking.slotId?.date} at ${booking.slotId?.startTime}\n\nSee you then! 🎉` },
-    });
+    const body = `✅ *Booking Confirmed!*\n\n📋 ${booking.serviceId?.name}\n📅 ${booking.slotId?.date} at ${booking.slotId?.startTime}\n\nSee you then! 🎉`;
+    // This confirmation is a merchant reviewing a "pay in person" request,
+    // possibly well after the customer's own message — sendUtilityMessage
+    // WithConsentAsk falls back to a plain-text send if the interactive
+    // consent-ask fails outside the 24h session window.
+    const customer = booking.customerId ? await Customer.findById(booking.customerId) : null;
+    const result = customer
+      ? await sendUtilityMessageWithConsentAsk({ customer, workspaceId, body })
+      : await waPost({ messaging_product: 'whatsapp', to: booking.phone, type: 'text', text: { body } });
     if (booking.customerId) {
       await CampaignMessage.create({
         kind: 'booking_notification', booking: booking._id, customer: booking.customerId, phone: booking.phone,
@@ -351,14 +358,50 @@ async function getCustomerWhatsAppHistory({ customerId, workspaceId }) {
     .populate('booking');
 }
 
-async function createCustomer(data) {
-  return Customer.create(data);
+// marketingConsent/performedBy are pulled out rather than passed straight to
+// Customer.create — every consent grant must go through grantMarketingConsent
+// so it's logged to ConsentEvent, never silently set as a bare field. MCP/GPT
+// Actions tool schemas don't declare marketingConsent, so it can never arrive
+// here through those surfaces (same precedent as allowRealDemoSend).
+async function createCustomer({ marketingConsent, performedBy, ...data }) {
+  const customer = await Customer.create(data); // always created with schema default marketingConsent:false
+  if (marketingConsent === true) {
+    await grantMarketingConsent({ customer, method: 'checkbox_manual', source: 'Add Customer form', performedBy, workspaceId: data.workspaceId });
+  }
+  return customer;
 }
 
 async function updateCustomer({ id, workspaceId, ...data }) {
+  // These five fields are mutable ONLY via shared/consent.js's helpers, so
+  // every change is guaranteed to also write a ConsentEvent — stripped here
+  // regardless of caller, since this generic edit path has no way to log one.
+  delete data.marketingConsent; delete data.marketingConsentAt; delete data.marketingConsentMethod;
+  delete data.optedOut; delete data.optedOutAt;
   const customer = await Customer.findOneAndUpdate(scopedFilter(id, workspaceId), data, { new: true, runValidators: true });
   if (!customer) throw new Error('Customer not found');
   return customer;
+}
+
+// Backs the Settings "Privacy & Compliance" section — a workspace-scoped
+// summary of where customers stand on marketing consent, plus a recent
+// ConsentEvent feed so a merchant can see consent/opt-out activity happening.
+async function getConsentStats({ workspaceId }) {
+  const [consented, optedOut, total, recentEvents] = await Promise.all([
+    Customer.countDocuments(withWorkspace({ marketingConsent: true, optedOut: { $ne: true } }, workspaceId)),
+    Customer.countDocuments(withWorkspace({ optedOut: true }, workspaceId)),
+    Customer.countDocuments(withWorkspace({}, workspaceId)),
+    ConsentEvent.find(withWorkspace({}, workspaceId)).sort({ createdAt: -1 }).limit(20)
+      .populate('customerId', 'firstname lastname phone').lean(),
+  ]);
+  const notYetConsented = total - consented - optedOut;
+  return {
+    consented, optedOut, notYetConsented, total,
+    recentEvents: recentEvents.map(e => ({
+      type: e.type, method: e.method, source: e.source, createdAt: e.createdAt,
+      customerName: e.customerId ? `${e.customerId.firstname} ${e.customerId.lastname}`.trim() : undefined,
+      phone: e.phone,
+    })),
+  };
 }
 
 // ─── Orders ──────────────────────────────────────────────────────────────────
@@ -662,11 +705,9 @@ async function createOrder({ customerId, items, shippingAddress, workspaceId }) 
   carts.set(customer.phone, cartItems);
 
   const summary = cartItems.map((it, i) => `${i + 1}. ${it.name} — ${money(it.priceAud, currency)}`).join('\n');
-  await waPost({
-    messaging_product: 'whatsapp', to: customer.phone, type: 'text',
-    text: {
-      body: `🛒 *Your Order Summary*\n\n${summary}\n\nSubtotal: ${money(subtotal, currency)}\nShipping: ${money(SHIPPING_COST, currency)}\n*Total: ${money(total, currency)}*\n\n📍 Delivering to:\n${address}\n\nPay securely:\n${APP_URL}/pay/${pi.id}`,
-    },
+  await sendUtilityMessageWithConsentAsk({
+    customer, workspaceId,
+    body: `🛒 *Your Order Summary*\n\n${summary}\n\nSubtotal: ${money(subtotal, currency)}\nShipping: ${money(SHIPPING_COST, currency)}\n*Total: ${money(total, currency)}*\n\n📍 Delivering to:\n${address}\n\nPay securely:\n${APP_URL}/pay/${pi.id}`,
   });
 
   return { success: true, paymentIntentId: pi.id, paymentLink: `${APP_URL}/pay/${pi.id}`, subtotal, shippingCost: SHIPPING_COST, total, itemCount: cartItems.length };
@@ -927,8 +968,13 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
   const promotion = await Promotion.findOne(scopedFilter(promotionId, workspaceId)).populate('products').populate('services');
   if (!promotion) throw new Error('Promotion not found');
   const requested = await Customer.find(withWorkspace({ _id: { $in: customerIds } }, workspaceId));
-  const customers = requested.filter(c => !c.optedOut);
-  const skippedOptedOut = requested.length - customers.length;
+  // Demo/fake data (this promotion or the customer themselves) is exempt from
+  // the consent gate — nothing real ever sends to it regardless (see the
+  // `demo` check in the loop below), so requiring consent bookkeeping on
+  // synthetic sales-demo data would be pure friction with no compliance benefit.
+  const customers = requested.filter(c => canSendMarketing(c) || promotion.isDemo || c.isDemo);
+  const skippedOptedOut = requested.filter(c => c.optedOut).length;
+  const skippedNoConsent = requested.length - customers.length - skippedOptedOut;
 
   const items = await resolvePromoItems(promotion);
   // DEFECT-02: optional merchant-authored custom entry message + branching.
@@ -1020,14 +1066,17 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
   });
   // demoCount lets callers (esp. AI Mode) tell the merchant when a "successful"
   // send was actually simulated — see the Demo Mode isolation note above.
-  return { success: true, sentCount, skippedOptedOut, errors, demoCount };
+  return { success: true, sentCount, skippedOptedOut, skippedNoConsent, errors, demoCount };
 }
 
 async function sendLoyaltyReminders({ customerIds, workspaceId } = {}) {
   const filter = withWorkspace(customerIds?.length ? { _id: { $in: customerIds } } : { loyaltyPoints: { $gt: 0 } }, workspaceId);
   const requested = await Customer.find(filter);
-  const customers = requested.filter(c => !c.optedOut);
+  // Demo customers are exempt from the consent gate — see sendPromotion's
+  // identical reasoning above.
+  const customers = requested.filter(c => canSendMarketing(c) || c.isDemo);
   const skippedOptedOut = requested.filter(c => c.optedOut).length;
+  const skippedNoConsent = requested.length - customers.length - skippedOptedOut;
   let sentCount = 0;
   let demoCount = 0;
   for (const c of customers) {
@@ -1066,7 +1115,7 @@ async function sendLoyaltyReminders({ customerIds, workspaceId } = {}) {
     }).catch(() => {});
     if (!demo) await new Promise(r => setTimeout(r, 300));
   }
-  return { success: true, sentCount, skippedOptedOut, demoCount };
+  return { success: true, sentCount, skippedOptedOut, skippedNoConsent, demoCount };
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────
@@ -1598,7 +1647,7 @@ module.exports = {
   listServices, getService, createService, updateService, deactivateService,
   createTimeSlot, listBookings, cancelBooking, rescheduleBooking, completeBooking,
   confirmBooking, declineBooking, markNoShow,
-  listCustomers, getCustomer, createCustomer, updateCustomer, getCustomerWhatsAppHistory,
+  listCustomers, getCustomer, createCustomer, updateCustomer, getCustomerWhatsAppHistory, getConsentStats,
   listOrders, getOrder, updateOrderStatus, refundOrder, getOrderStats, createOrder, getPaymentStatus,
   listPromotions, getPromotion, createPromotion, updatePromotion, deletePromotion,
   getRecommendedCustomers, sendPromotion, sendLoyaltyReminders, getCampaignReport,

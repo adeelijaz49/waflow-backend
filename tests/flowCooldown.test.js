@@ -3,6 +3,7 @@ require('dotenv').config();
 const { connectOnce } = require('./dbSetup');
 const scheduler = require('../utils/flowScheduler');
 const Customer = require('../models/Customer');
+const { createConsentedCustomer } = require('./testFixtures');
 const Flow = require('../models/Flow');
 const FlowEnrollment = require('../models/FlowEnrollment');
 const CampaignMessage = require('../models/CampaignMessage');
@@ -29,7 +30,7 @@ describe('cross-flow cooldown guardrail', () => {
   });
 
   async function makeCustomer(phoneSuffix) {
-    return Customer.create({
+    return createConsentedCustomer({
       firstname: '__test_cooldown_customer__', lastname: 'Test', phone: `1555400${phoneSuffix}`,
       loyaltyPoints: 500, loyaltyPointsUpdatedAt: new Date(Date.now() - 40 * DAYS),
     });

@@ -1,6 +1,7 @@
 const Order = require('../../models/Order');
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
+const { MARKETING_ELIGIBLE_QUERY } = require('../../shared/consent');
 
 const DEFAULT_WINDOW_DAYS = 30;
 const DEFAULT_ORDER_THRESHOLD = 2;
@@ -35,7 +36,7 @@ async function findEligible(flow) {
   if (!remaining.length) return [];
 
   const eligible = await Customer.find({
-    _id: { $in: remaining }, optedOut: { $ne: true }, isDemo: { $ne: true },
+    _id: { $in: remaining }, ...MARKETING_ELIGIBLE_QUERY, isDemo: { $ne: true },
   }, '_id');
   return eligible.map(c => ({ customerId: c._id }));
 }
@@ -45,6 +46,7 @@ async function revalidate(flow, enrollment) {
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
+  if (!customer.marketingConsent) return { outcome: 'exit', reason: 'no_marketing_consent' };
   return { outcome: 'proceed' };
 }
 

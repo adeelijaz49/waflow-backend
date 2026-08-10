@@ -1,6 +1,7 @@
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
 const { sendPointsNudgeTemplate, sendCustomFlowTemplate } = require('../whatsapp');
+const { MARKETING_ELIGIBLE_QUERY } = require('../../shared/consent');
 
 const DEFAULT_INACTIVITY_DAYS = 30;
 
@@ -21,7 +22,7 @@ async function findEligible(flow) {
   const stale = await Customer.find({
     loyaltyPoints: { $gt: 0 },
     loyaltyPointsUpdatedAt: { $lte: cutoff },
-    optedOut: { $ne: true },
+    ...MARKETING_ELIGIBLE_QUERY,
     isDemo: { $ne: true },
   }, '_id');
   if (!stale.length) return [];
@@ -42,6 +43,7 @@ async function revalidate(flow, enrollment) {
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
+  if (!customer.marketingConsent) return { outcome: 'exit', reason: 'no_marketing_consent' };
   if (customer.loyaltyPoints <= 0) return { outcome: 'exit', reason: 'points_redeemed' };
 
   const cutoff = cutoffFor(flow);

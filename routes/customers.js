@@ -10,6 +10,15 @@ router.get('/', async (req, res) => {
   }
 });
 
+// Must stay above /:id — otherwise Express would match "consent-stats" as an id.
+router.get('/consent-stats', async (req, res) => {
+  try {
+    res.json(await ops.getConsentStats({ workspaceId: req.user.workspaceId }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     res.json(await ops.getCustomer({ id: req.params.id, workspaceId: req.user.workspaceId }));
@@ -37,7 +46,7 @@ router.get('/:id/bookings', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    res.status(201).json(await ops.createCustomer({ ...req.body, workspaceId: req.user.workspaceId }));
+    res.status(201).json(await ops.createCustomer({ ...req.body, workspaceId: req.user.workspaceId, performedBy: req.user.id }));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

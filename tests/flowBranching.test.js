@@ -7,6 +7,7 @@ const app = require('../server');
 const scheduler = require('../utils/flowScheduler');
 const ops = require('../shared/operations');
 const Customer = require('../models/Customer');
+const { createConsentedCustomer } = require('./testFixtures');
 const Order = require('../models/Order');
 const Flow = require('../models/Flow');
 const FlowEnrollment = require('../models/FlowEnrollment');
@@ -37,7 +38,7 @@ async function waitUntil(checkFn, { timeout = 4000, interval = 100 } = {}) {
 }
 
 async function makeStaleCustomer(phoneSuffix) {
-  const customer = await Customer.create({ firstname: '__test_branch_customer__', lastname: 'Test', phone: `1555700${phoneSuffix}`, workspaceId });
+  const customer = await createConsentedCustomer({ firstname: '__test_branch_customer__', lastname: 'Test', phone: `1555700${phoneSuffix}`, workspaceId });
   await Order.create({ customer: customer._id, subtotal: 10, total: 10, status: 'delivered', createdAt: new Date(Date.now() - 70 * DAYS), workspaceId });
   return customer;
 }

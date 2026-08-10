@@ -36,7 +36,11 @@ describe('webhook: status callbacks, opt-out, and click correlation', () => {
   beforeAll(async () => {
     await connectOnce();
     const workspaceId = await getTestWorkspaceId(app);
-    customer = await Customer.create({ firstname: 'Test', lastname: 'Webhook', phone: TEST_PHONE, workspaceId });
+    // marketingConsent:true — this fixture simulates a customer who already
+    // opted in before this test drives them through STOP then START; START
+    // only reinstates a real prior consent, it never fabricates one (see
+    // shared/consent.js#reinstateMarketingConsent).
+    customer = await Customer.create({ firstname: 'Test', lastname: 'Webhook', phone: TEST_PHONE, workspaceId, marketingConsent: true, marketingConsentAt: new Date(), marketingConsentMethod: 'checkbox_manual' });
     promotion = await Promotion.create({ name: '__test_campaign__', scope: 'products', customerType: 'cash', workspaceId });
     cm = await CampaignMessage.create({
       kind: 'promotion', promotion: promotion._id, customer: customer._id, phone: TEST_PHONE,

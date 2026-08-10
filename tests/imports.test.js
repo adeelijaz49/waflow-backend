@@ -7,6 +7,7 @@ const Customer = require('../models/Customer');
 const Product = require('../models/Product');
 const PointsLedgerEntry = require('../models/PointsLedgerEntry');
 const ImportJob = require('../models/ImportJob');
+const ConsentEvent = require('../models/ConsentEvent');
 const { normalizePhoneForDedup } = require('../utils/phoneNormalize');
 
 function csvBuffer(rows) {
@@ -19,7 +20,7 @@ describe('Bulk CSV/XLSX import', () => {
   // the test derives the expected NORMALIZED value from the real function
   // under test + the workspace's actual configured country code, rather
   // than hardcoding an assumed result.
-  const localPhones = ['0555999701', '0555999702', '0555999703'];
+  const localPhones = ['0555999701', '0555999702', '0555999703', '0555999704'];
   const testProductNames = ['__test_import_widget_a__', '__test_import_widget_b__'];
 
   beforeAll(async () => {
@@ -35,6 +36,7 @@ describe('Bulk CSV/XLSX import', () => {
     const customers = await Customer.find({ workspaceId, phone: { $in: normalizedPhones } }).select('_id').lean();
     const ids = customers.map(c => c._id);
     await PointsLedgerEntry.deleteMany({ customerId: { $in: ids } });
+    await ConsentEvent.deleteMany({ customerId: { $in: ids } });
     await Customer.deleteMany({ _id: { $in: ids } });
     await Customer.deleteMany({ workspaceId, firstname: 'Import', lastname: 'Test Two' });
     await Product.deleteMany({ name: { $in: testProductNames } });
@@ -180,5 +182,54 @@ describe('Bulk CSV/XLSX import', () => {
       .attach('file', csv, '__test_import_products3.csv');
     const validate = await request.patch(`/api/imports/${upload.body.id}/mapping`).send({ columnMapping: upload.body.columnMapping });
     expect(validate.body.preview.error[0].errors[0].reason).toBe('Price is required');
+  }, 30000);
+
+  test('marketing consent attestation checkbox: checked grants consent, unchecked leaves customers unconsented', async () => {
+    // Unattested — the default, safe behaviour.
+    const csvA = csvBuffer([
+      ['Name', 'Phone'],
+      ['Import Test One', localPhones[0]],
+    ]);
+    const uploadA = await request.post('/api/imports')
+      .field('entityType', 'customer')
+      .attach('file', csvA, '__test_import_noconsent.csv');
+    await request.patch(`/api/imports/${uploadA.body.id}/mapping`).send({ columnMapping: uploadA.body.columnMapping });
+    await request.post(`/api/imports/${uploadA.body.id}/run`).send({});
+
+    const normalizedA = normalizePhoneForDedup(localPhones[0], countryCode);
+    const createdA = await Customer.findOne({ workspaceId, phone: normalizedA }).lean();
+    expect(createdA.marketingConsent).toBe(false);
+    const eventsA = await ConsentEvent.find({ customerId: createdA._id });
+    expect(eventsA.length).toBe(0);
+
+    // Attested — the file-level checkbox checked.
+    const csvB = csvBuffer([
+      ['Name', 'Phone'],
+      ['Import Test Consented', localPhones[3]],
+    ]);
+    const uploadB = await request.post('/api/imports')
+      .field('entityType', 'customer')
+      .field('marketingConsentAttested', 'true')
+      .attach('file', csvB, '__test_import_consent.csv');
+    await request.patch(`/api/imports/${uploadB.body.id}/mapping`).send({ columnMapping: uploadB.body.columnMapping });
+    await request.post(`/api/imports/${uploadB.body.id}/run`).send({});
+
+    const normalizedB = normalizePhoneForDedup(localPhones[3], countryCode);
+    const createdB = await Customer.findOne({ workspaceId, phone: normalizedB }).lean();
+    expect(createdB.marketingConsent).toBe(true);
+    expect(createdB.marketingConsentMethod).toBe('checkbox_csv_import');
+    const eventsB = await ConsentEvent.find({ customerId: createdB._id });
+    expect(eventsB.length).toBe(1);
+    expect(eventsB[0].type).toBe('consent_given');
+
+    // Re-importing the same attested file again must not double-log a second event.
+    const uploadC = await request.post('/api/imports')
+      .field('entityType', 'customer')
+      .field('marketingConsentAttested', 'true')
+      .attach('file', csvB, '__test_import_consent2.csv');
+    await request.patch(`/api/imports/${uploadC.body.id}/mapping`).send({ columnMapping: uploadC.body.columnMapping });
+    await request.post(`/api/imports/${uploadC.body.id}/run`).send({});
+    const eventsAfterReimport = await ConsentEvent.find({ customerId: createdB._id });
+    expect(eventsAfterReimport.length).toBe(1); // still just the one — no duplicate consent_given
   }, 30000);
 });

@@ -20,6 +20,7 @@ router.post('/', (req, res) => {
       const result = await engine.createImportJob({
         file: req.file, entityType: req.body.entityType,
         workspaceId: req.user.workspaceId, userId: req.user.id,
+        marketingConsentAttested: req.body.marketingConsentAttested === 'true',
       });
       res.status(201).json(result);
     } catch (err) {

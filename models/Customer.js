@@ -13,6 +13,16 @@ const schema = new mongoose.Schema({
   isDemo:    { type: Boolean, default: false }, // flags seeded demo customers (see seed/seed-demo.js)
   optedOut:    { type: Boolean, default: false }, // replied STOP — blocks marketing sends (promotions, loyalty reminders)
   optedOutAt:  { type: Date },
+  // Affirmative opt-in — NOT the inverse of optedOut. Defaults to false so every
+  // customer starts marketing-ineligible until real consent is captured (WhatsApp
+  // button, manual/CSV checkbox). Mutate only via shared/consent.js so every change
+  // is logged to ConsentEvent — never set these directly through ops.updateCustomer.
+  marketingConsent:        { type: Boolean, default: false },
+  marketingConsentAt:      { type: Date },
+  marketingConsentMethod:  { type: String, enum: ['whatsapp_button', 'checkbox_manual', 'checkbox_csv_import', 'admin_tool'] },
+  marketingConsentAskedAt: { type: Date }, // WhatsApp consent button offered once — prevents re-asking on every order/booking
+  deletedAt:      { type: Date }, // set by the internal admin tool's erasure action — PII anonymized, record retained for referential integrity
+  deletionReason: { type: String },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Customer', schema);

@@ -3,6 +3,7 @@ require('dotenv').config();
 const { connectOnce } = require('./dbSetup');
 const scheduler = require('../utils/flowScheduler');
 const Customer = require('../models/Customer');
+const { createConsentedCustomer } = require('./testFixtures');
 const Flow = require('../models/Flow');
 const FlowEnrollment = require('../models/FlowEnrollment');
 const CampaignMessage = require('../models/CampaignMessage');
@@ -29,7 +30,7 @@ describe('flow trigger: points_balance_reminder', () => {
   }
 
   test('a customer with a stale, unused balance is eligible and gets sent', async () => {
-    const customer = await Customer.create({
+    const customer = await createConsentedCustomer({
       firstname: '__test_points_stale__', lastname: 'Test', phone: '15552001',
       loyaltyPoints: 500, loyaltyPointsUpdatedAt: new Date(Date.now() - 40 * DAYS),
     });
@@ -78,7 +79,7 @@ describe('flow trigger: points_balance_reminder', () => {
   });
 
   test('a balance that changes between enrollment and send exits instead of sending', async () => {
-    const customer = await Customer.create({
+    const customer = await createConsentedCustomer({
       firstname: '__test_points_changes__', lastname: 'Test', phone: '15552004',
       loyaltyPoints: 500, loyaltyPointsUpdatedAt: new Date(Date.now() - 40 * DAYS),
     });
