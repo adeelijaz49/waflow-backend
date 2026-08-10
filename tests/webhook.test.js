@@ -7,6 +7,7 @@ const app             = require('../server');
 const Customer        = require('../models/Customer');
 const Promotion       = require('../models/Promotion');
 const CampaignMessage = require('../models/CampaignMessage');
+const ConsentEvent    = require('../models/ConsentEvent');
 
 // Obviously-synthetic number — not a real WhatsApp account, used only so the
 // webhook's own (try/catch-guarded) reply attempts have somewhere to fail quietly.
@@ -50,6 +51,7 @@ describe('webhook: status callbacks, opt-out, and click correlation', () => {
 
   afterAll(async () => {
     await CampaignMessage.deleteMany({ customer: customer._id });
+    await ConsentEvent.deleteMany({ customerId: customer._id });
     await Promotion.findByIdAndDelete(promotion._id);
     await Customer.findByIdAndDelete(customer._id);
   });
