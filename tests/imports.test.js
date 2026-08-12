@@ -172,6 +172,61 @@ describe('Bulk CSV/XLSX import', () => {
     expect(products[0].basePrice).toBe(60); // price updated in place
   }, 30000);
 
+  test('product import: Size/Color/Stock/Image columns populate variants and images', async () => {
+    const csv = csvBuffer([
+      ['Product Name', 'Price', 'Category', 'Size', 'Color', 'Stock Quantity', 'SKU', 'Image URL'],
+      [testProductNames[0], 'SAR 45.00', 'Gadgets', 'S', 'Red', '12', 'W-S-RED', 'https://example.com/img.jpg'],
+    ]);
+    const upload = await request.post('/api/imports')
+      .field('entityType', 'product')
+      .attach('file', csv, '__test_import_products_variant1.csv');
+    expect(upload.body.columnMapping.size).toBe('Size');
+    expect(upload.body.columnMapping.color).toBe('Color');
+    expect(upload.body.columnMapping.stock).toBe('Stock Quantity');
+    expect(upload.body.columnMapping.imageUrl).toBe('Image URL');
+    await request.patch(`/api/imports/${upload.body.id}/mapping`).send({ columnMapping: upload.body.columnMapping });
+    const run = await request.post(`/api/imports/${upload.body.id}/run`).send({});
+    expect(run.body.importedCount).toBe(1);
+
+    const product = await Product.findOne({ workspaceId, name: testProductNames[0] }).lean();
+    expect(product.variants).toEqual([{ size: 'S', color: 'Red', stock: 12, sku: 'W-S-RED' }]);
+    expect(product.images).toEqual(['https://example.com/img.jpg']);
+  }, 30000);
+
+  test('product import: a second row with the same name adds another variant instead of overwriting the product', async () => {
+    const first = csvBuffer([
+      ['Product Name', 'Price', 'Category', 'Size', 'Color', 'Stock Quantity'],
+      [testProductNames[0], 'SAR 45.00', 'Gadgets', 'S', 'Red', '10'],
+      [testProductNames[0], 'SAR 45.00', 'Gadgets', 'M', 'Red', '5'],
+    ]);
+    const upload = await request.post('/api/imports')
+      .field('entityType', 'product')
+      .attach('file', first, '__test_import_products_variant2.csv');
+    await request.patch(`/api/imports/${upload.body.id}/mapping`).send({ columnMapping: upload.body.columnMapping });
+    const run = await request.post(`/api/imports/${upload.body.id}/run`).send({});
+    expect(run.body.importedCount).toBe(1); // one product...
+    expect(run.body.skippedDuplicateCount).toBe(1); // ...the second row merged as a variant, not a new product
+
+    let product = await Product.findOne({ workspaceId, name: testProductNames[0] }).lean();
+    expect(product.variants.length).toBe(2);
+    expect(product.variants.map(v => `${v.size}/${v.color}/${v.stock}`).sort()).toEqual(['M/Red/5', 'S/Red/10']);
+
+    // Re-importing the same size+color again updates stock in place, not a third variant.
+    const second = csvBuffer([
+      ['Product Name', 'Price', 'Category', 'Size', 'Color', 'Stock Quantity'],
+      [testProductNames[0], 'SAR 45.00', 'Gadgets', 'S', 'Red', '99'],
+    ]);
+    const upload2 = await request.post('/api/imports')
+      .field('entityType', 'product')
+      .attach('file', second, '__test_import_products_variant3.csv');
+    await request.patch(`/api/imports/${upload2.body.id}/mapping`).send({ columnMapping: upload2.body.columnMapping });
+    await request.post(`/api/imports/${upload2.body.id}/run`).send({});
+
+    product = await Product.findOne({ workspaceId, name: testProductNames[0] }).lean();
+    expect(product.variants.length).toBe(2); // still 2, not 3
+    expect(product.variants.find(v => v.size === 'S' && v.color === 'Red').stock).toBe(99);
+  }, 30000);
+
   test('a row missing the required Price field is a plain-language error, not a raw parser exception', async () => {
     const csv = csvBuffer([
       ['Product Name', 'Price'],

@@ -47,6 +47,25 @@ const ENTITY_CONFIGS = {
         aliases: ['category', 'type'] },
       { key: 'description', label: 'Description', required: false, type: 'string',
         aliases: ['description', 'desc'] },
+      // Size/Color/Stock map onto Product.variants[], which requires size AND
+      // color together on every entry (models/Product.js) — a row only forms
+      // a variant when both are present; stock defaults to 0 if left blank.
+      // A second row sharing an existing product's exact Name is treated as
+      // ANOTHER variant of that same product (see runImport), not a plain
+      // field update — the natural "one row per size/color" shape a merchant's
+      // existing spreadsheet export already has, no new syntax to learn.
+      { key: 'size', label: 'Size', required: false, type: 'string',
+        aliases: ['size', 'sizes', 'variant size'] },
+      { key: 'color', label: 'Color', required: false, type: 'string',
+        aliases: ['color', 'colour', 'colors', 'colours', 'variant color'] },
+      { key: 'stock', label: 'Stock Quantity', required: false, type: 'number',
+        aliases: ['stock', 'stock quantity', 'quantity', 'qty', 'inventory'] },
+      { key: 'sku', label: 'SKU', required: false, type: 'string',
+        aliases: ['sku', 'variant sku'] },
+      // A CSV cell can't hold a binary upload — this accepts an already-hosted
+      // image URL (e.g. from a prior store export) rather than a file.
+      { key: 'imageUrl', label: 'Image URL', required: false, type: 'string',
+        aliases: ['image', 'image url', 'photo', 'photo url', 'picture'] },
     ],
   },
   service: {
@@ -427,7 +446,14 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
           if (key) index.set(key, doc._id);
         }
       } else {
-        // product / service — identical shape, just a different Model + field set.
+        // product / service — mostly identical shape, but products alone carry
+        // variants (Size+Color+Stock) and an Image URL. A variant only forms
+        // when both Size and Color are present on the row (Product.variants[]
+        // requires both) — stock defaults to 0 if left blank.
+        const variant = (job.entityType === 'product' && mapped.size && mapped.color)
+          ? { size: mapped.size, color: mapped.color, stock: mapped.stock || 0, ...(mapped.sku ? { sku: mapped.sku } : {}) }
+          : null;
+
         if (existingId) {
           skippedDuplicateCount++;
           const $set = {};
@@ -436,12 +462,37 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
           if (mapped.description !== undefined) $set.description = mapped.description;
           if (job.entityType === 'service' && mapped.duration !== undefined) $set.duration = mapped.duration;
           if (Object.keys($set).length) await config.Model.updateOne({ _id: existingId }, { $set });
+
+          // A second row sharing an existing product's exact name — matched by
+          // this same dedup index whether it's the same file (a prior row in
+          // THIS import already created it) or a re-import of an existing
+          // catalog entry — is treated as another variant of that product, not
+          // just a field update. Existing size+color updates that variant's
+          // stock in place rather than adding a duplicate.
+          if (job.entityType === 'product' && (variant || mapped.imageUrl)) {
+            const existingProduct = await Product.findById(existingId);
+            if (existingProduct) {
+              if (variant) {
+                const match = existingProduct.variants.find(v => v.size === variant.size && v.color === variant.color);
+                if (match) match.stock = variant.stock;
+                else existingProduct.variants.push(variant);
+              }
+              if (mapped.imageUrl && !existingProduct.images.includes(mapped.imageUrl)) {
+                existingProduct.images.push(mapped.imageUrl);
+              }
+              await existingProduct.save();
+            }
+          }
         } else {
           const doc = await config.Model.create({
             workspaceId, name: mapped.name, basePrice: mapped.basePrice,
             category: job.entityType === 'product' ? (mapped.category || 'Uncategorized') : mapped.category,
             description: mapped.description,
             ...(job.entityType === 'service' && mapped.duration !== undefined ? { duration: mapped.duration } : {}),
+            ...(job.entityType === 'product' ? {
+              variants: variant ? [variant] : [],
+              images: mapped.imageUrl ? [mapped.imageUrl] : [],
+            } : {}),
           });
           importedCount++;
           if (key) index.set(key, doc._id);
@@ -474,7 +525,13 @@ function toCsv(headerRow, dataRows) {
 
 const SAMPLE_VALUES = {
   customer: [['Sara Ahmed', '0501234567', 'sara@example.com', '500', 'VIP customer']],
-  product:  [['Beard Balm', 'SAR 45.00', 'Grooming', 'Hydrating beard balm, 50ml']],
+  // Two rows, same Name — demonstrates that a product with multiple
+  // size/color variants gets one row per variant, not a made-up combined
+  // syntax in a single cell.
+  product:  [
+    ['Classic T-Shirt', 'SAR 45.00', 'Apparel', 'Soft cotton tee', 'S', 'Blue', '20', 'TS-S-BLU', 'https://example.com/images/tshirt-blue.jpg'],
+    ['Classic T-Shirt', 'SAR 45.00', 'Apparel', 'Soft cotton tee', 'M', 'Blue', '15', 'TS-M-BLU', 'https://example.com/images/tshirt-blue.jpg'],
+  ],
   service:  [['Classic Haircut', 'SAR 60.00', 'Hair', 'Includes wash and style', '45']],
 };
 
