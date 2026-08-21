@@ -1,24 +1,15 @@
 const router = require('express').Router();
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const { APP_URL, UPLOAD_DIR } = require('../utils/config');
-
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const { uploadImage } = require('../utils/blobStorage');
 
 const ALLOWED_TYPES = { 'image/png': '.png', 'image/jpeg': '.jpg' };
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const ext = ALLOWED_TYPES[file.mimetype] || path.extname(file.originalname) || '';
-    cb(null, `${Date.now().toString(36)}${crypto.randomBytes(6).toString('hex')}${ext}`);
-  },
-});
-
+// memoryStorage — the buffer goes straight to Azure Blob Storage (or the
+// local-disk fallback) via utils/blobStorage.js, never touching this app's
+// own filesystem in production. See blobStorage.js for why local disk was
+// dropped as the durable store.
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
   fileFilter: (req, file, cb) => {
     if (!ALLOWED_TYPES[file.mimetype]) return cb(new Error('Only PNG and JPEG images are allowed'));
@@ -27,10 +18,15 @@ const upload = multer({
 });
 
 router.post('/image', (req, res) => {
-  upload.single('image')(req, res, (err) => {
+  upload.single('image')(req, res, async (err) => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'No image file provided' });
-    res.json({ url: `${APP_URL}/uploads/${req.file.filename}` });
+    try {
+      const url = await uploadImage(req.file.buffer, req.file.mimetype, req.file.originalname);
+      res.json({ url });
+    } catch (uploadErr) {
+      res.status(500).json({ error: uploadErr.message });
+    }
   });
 });
 

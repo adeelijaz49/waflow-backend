@@ -9,10 +9,12 @@ const APP_URL = /^https?:\/\//.test(rawAppUrl) ? rawAppUrl : `https://${rawAppUr
 const rawFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:4200';
 const FRONTEND_URL = /^https?:\/\//.test(rawFrontendUrl) ? rawFrontendUrl : `https://${rawFrontendUrl}`;
 
-// Azure App Service (Linux) persists everything under /home across deploys and
-// restarts — a deploy only replaces /home/site/wwwroot, so uploaded files
-// living anywhere else under /home survive. Falls back to a local ./uploads
-// dir (gitignored) outside of Azure.
+// Local-dev-only fallback for uploaded images (utils/blobStorage.js).
+// Previously assumed Azure App Service's /home path survives deploys/restarts —
+// in production every previously-uploaded image was found missing (confirmed
+// via direct testing), so that assumption didn't hold in practice. Production
+// now uses Azure Blob Storage instead; this dir is only ever written to when
+// AZURE_STORAGE_CONNECTION_STRING is unset (local dev).
 const UPLOAD_DIR = path.join(process.env.HOME || path.join(__dirname, '..'), 'uploads');
 
 module.exports = { PORT, APP_URL, FRONTEND_URL, UPLOAD_DIR };
