@@ -18,6 +18,7 @@ const POINTS_NUDGE_TEMPLATE = process.env.WA_POINTS_NUDGE_TEMPLATE || 'waflow_po
 const NO_SHOW_TEMPLATE = process.env.WA_NO_SHOW_TEMPLATE || 'waflow_no_show';
 const OTP_TEMPLATE = process.env.WA_OTP_TEMPLATE || 'waflow_login_otp';
 const INVITE_TEMPLATE = process.env.WA_INVITE_TEMPLATE || 'waflow_team_invite';
+const CONSENT_REQUEST_TEMPLATE = process.env.WA_CONSENT_REQUEST_TEMPLATE || 'waflow_consent_request';
 
 let cachedWabaId = process.env.WA_WABA_ID || null;
 
@@ -241,6 +242,44 @@ async function sendInviteTemplate(to, workspaceName) {
       name: INVITE_TEMPLATE,
       language: { code: 'en' },
       components: [{ type: 'body', parameters: [{ type: 'text', text: workspaceName }] }],
+    },
+  });
+}
+
+// UTILITY, not MARKETING — this message IS the compliance mechanism that
+// captures marketing consent in the first place, so gating it behind prior
+// consent would be circular. Same reasoning as createInviteTemplate above.
+// Bulk consent-request sends (shared/operations.js#sendConsentRequests) go
+// to an existing customer list, almost always outside the 24h session
+// window — a real approved template is required, unlike the free-form
+// interactive "Yes, sign me up" button that rides on order/booking
+// confirmations (always inside the window since the customer just acted).
+async function createConsentRequestTemplate() {
+  return createTemplate(
+    CONSENT_REQUEST_TEMPLATE,
+    "Hi {{1}}! We'd love to keep you posted with occasional offers and updates from us on WhatsApp. Would you like to opt in?",
+    'UTILITY',
+    ['Yes, sign me up', 'No thanks'],
+  );
+}
+
+// customerId fills both quick-reply button payloads so the webhook (button
+// prefix dispatch in server.js) can resolve back to the exact customer,
+// same consent_yes_/consent_no_ scheme the free-form interactive ask uses.
+async function sendConsentRequestTemplate(to, customerName, customerId) {
+  await ensureTemplateExists(CONSENT_REQUEST_TEMPLATE, createConsentRequestTemplate);
+  return waPost({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'template',
+    template: {
+      name: CONSENT_REQUEST_TEMPLATE,
+      language: { code: 'en' },
+      components: [
+        { type: 'body', parameters: [{ type: 'text', text: customerName || 'there' }] },
+        { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: `consent_yes_${customerId}` }] },
+        { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: `consent_no_${customerId}` }] },
+      ],
     },
   });
 }
@@ -1046,6 +1085,7 @@ module.exports = {
   createNoShowTemplate,
   createOtpTemplate,
   createInviteTemplate,
+  createConsentRequestTemplate,
   createTemplate,
   deleteTemplate,
   sendPromoTemplate,
@@ -1056,6 +1096,7 @@ module.exports = {
   sendNoShowTemplate,
   sendOtpTemplate,
   sendInviteTemplate,
+  sendConsentRequestTemplate,
   // Branching
   sendCustomFlowTemplate,
   sendMessageNodeFollowUp,
@@ -1083,6 +1124,7 @@ module.exports = {
   POST_PURCHASE_TEMPLATE,
   POINTS_NUDGE_TEMPLATE,
   NO_SHOW_TEMPLATE,
+  CONSENT_REQUEST_TEMPLATE,
   // Body copy (for preview rendering — see shared/operations.js#previewFlowMessage)
   WINBACK_BODY,
   POST_PURCHASE_BODY,

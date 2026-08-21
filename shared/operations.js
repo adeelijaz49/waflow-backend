@@ -22,8 +22,8 @@ const ConsentEvent    = require('../models/ConsentEvent');
 const {
   sendPromoAnnouncement, sendPointsPromoMessage, sendPromoTemplate,
   sendLoyaltyTemplate, sendLoyaltyReminder, sendRebookMessage, waPost,
-  sendCustomFlowTemplate,
-  PROMO_TEMPLATE, LOYALTY_TEMPLATE, WINBACK_TEMPLATE, POST_PURCHASE_TEMPLATE, POINTS_NUDGE_TEMPLATE, NO_SHOW_TEMPLATE,
+  sendCustomFlowTemplate, sendConsentRequestTemplate,
+  PROMO_TEMPLATE, LOYALTY_TEMPLATE, WINBACK_TEMPLATE, POST_PURCHASE_TEMPLATE, POINTS_NUDGE_TEMPLATE, NO_SHOW_TEMPLATE, CONSENT_REQUEST_TEMPLATE,
   WINBACK_BODY, POST_PURCHASE_BODY, POINTS_NUDGE_BODY, NO_SHOW_BODY,
   buildPromoAnnouncementPayload, buildPointsPromoPayload,
   createTemplate, getTemplate,
@@ -382,26 +382,72 @@ async function updateCustomer({ id, workspaceId, ...data }) {
   return customer;
 }
 
+// Customers who've never been asked at all — not yet consented, not opted
+// out, not demo data, and marketingConsentAskedAt still unset (so this never
+// re-asks someone who already tapped "No thanks" via either method, or who's
+// waiting on the order-confirmation ask to land). Shared by getConsentStats'
+// count and sendConsentRequests' actual send loop so they can never drift.
+function consentRequestEligibleFilter(workspaceId, customerIds) {
+  return withWorkspace({
+    marketingConsent: { $ne: true },
+    marketingConsentAskedAt: { $exists: false },
+    optedOut: { $ne: true },
+    isDemo: { $ne: true },
+    ...(customerIds?.length ? { _id: { $in: customerIds } } : {}),
+  }, workspaceId);
+}
+
 // Backs the Settings "Privacy & Compliance" section — a workspace-scoped
 // summary of where customers stand on marketing consent, plus a recent
 // ConsentEvent feed so a merchant can see consent/opt-out activity happening.
 async function getConsentStats({ workspaceId }) {
-  const [consented, optedOut, total, recentEvents] = await Promise.all([
+  const [consented, optedOut, total, eligibleForConsentRequest, recentEvents] = await Promise.all([
     Customer.countDocuments(withWorkspace({ marketingConsent: true, optedOut: { $ne: true } }, workspaceId)),
     Customer.countDocuments(withWorkspace({ optedOut: true }, workspaceId)),
     Customer.countDocuments(withWorkspace({}, workspaceId)),
+    Customer.countDocuments(consentRequestEligibleFilter(workspaceId)),
     ConsentEvent.find(withWorkspace({}, workspaceId)).sort({ createdAt: -1 }).limit(20)
       .populate('customerId', 'firstname lastname phone').lean(),
   ]);
   const notYetConsented = total - consented - optedOut;
   return {
-    consented, optedOut, notYetConsented, total,
+    consented, optedOut, notYetConsented, total, eligibleForConsentRequest,
     recentEvents: recentEvents.map(e => ({
       type: e.type, method: e.method, source: e.source, createdAt: e.createdAt,
       customerName: e.customerId ? `${e.customerId.firstname} ${e.customerId.lastname}`.trim() : undefined,
       phone: e.phone,
     })),
   };
+}
+
+// Bulk "ask for consent" campaign for customers already in the system before
+// this feature shipped (or who simply haven't placed a fresh order/booking
+// since) — the only other consent-capture paths (the order-confirmation
+// button, and the manual/CSV checkbox) don't reach them. Sends a real
+// approved WhatsApp template (see utils/whatsapp.js#sendConsentRequestTemplate)
+// since these customers are almost always outside the 24h session window,
+// unlike the free-form interactive ask. Asked at most once — see
+// consentRequestEligibleFilter — matching the order-confirmation ask's own
+// "once per customer" rule.
+async function sendConsentRequests({ workspaceId, customerIds } = {}) {
+  const customers = await Customer.find(consentRequestEligibleFilter(workspaceId, customerIds));
+  let sentCount = 0;
+  const errors = [];
+  for (const c of customers) {
+    try {
+      const result = await sendConsentRequestTemplate(c.phone, c.firstname, c._id);
+      await Customer.findByIdAndUpdate(c._id, { marketingConsentAskedAt: new Date() });
+      await CampaignMessage.create({
+        workspaceId, kind: 'consent_request', customer: c._id, phone: c.phone,
+        wamid: wamidOf(result), messageType: 'template', templateName: CONSENT_REQUEST_TEMPLATE,
+        status: 'sent', sentAt: new Date(),
+      }).catch(() => {});
+      sentCount++;
+    } catch (err) {
+      errors.push({ customerId: c._id, phone: c.phone, error: err.message });
+    }
+  }
+  return { totalEligible: customers.length, sentCount, errors };
 }
 
 // ─── Orders ──────────────────────────────────────────────────────────────────
@@ -1647,7 +1693,7 @@ module.exports = {
   listServices, getService, createService, updateService, deactivateService,
   createTimeSlot, listBookings, cancelBooking, rescheduleBooking, completeBooking,
   confirmBooking, declineBooking, markNoShow,
-  listCustomers, getCustomer, createCustomer, updateCustomer, getCustomerWhatsAppHistory, getConsentStats,
+  listCustomers, getCustomer, createCustomer, updateCustomer, getCustomerWhatsAppHistory, getConsentStats, sendConsentRequests,
   listOrders, getOrder, updateOrderStatus, refundOrder, getOrderStats, createOrder, getPaymentStatus,
   listPromotions, getPromotion, createPromotion, updatePromotion, deletePromotion,
   getRecommendedCustomers, sendPromotion, sendLoyaltyReminders, getCampaignReport,

@@ -9,7 +9,7 @@ const mongoose = require('mongoose');
 // are both built from.
 const schema = new mongoose.Schema({
   workspaceId:  { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
-  kind:         { type: String, enum: ['promotion', 'booking_notification', 'loyalty_reminder', 'flow'], required: true, default: 'promotion' },
+  kind:         { type: String, enum: ['promotion', 'booking_notification', 'loyalty_reminder', 'flow', 'consent_request'], required: true, default: 'promotion' },
   promotion:    { type: mongoose.Schema.Types.ObjectId, ref: 'Promotion' },
   booking:      { type: mongoose.Schema.Types.ObjectId, ref: 'Booking' },
   flow:           { type: mongoose.Schema.Types.ObjectId, ref: 'Flow' },

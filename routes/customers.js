@@ -61,4 +61,15 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+// Bulk "ask for consent" campaign — see shared/operations.js#sendConsentRequests.
+// Optional customerIds narrows to a specific selection; omitted sends to every
+// not-yet-asked customer in the workspace.
+router.post('/consent-requests', async (req, res) => {
+  try {
+    res.json(await ops.sendConsentRequests({ workspaceId: req.user.workspaceId, customerIds: req.body.customerIds }));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 module.exports = router;

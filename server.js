@@ -940,6 +940,31 @@ app.post("/webhook", async (req, res) => {
       // a template (see models/MessageNode.js).
       const parts = payload.slice(8).split("_");
       await handleMessageNodeTap({ from, wamid: message.context?.id, nodeId: parts[0], position: +parts[1], workspaceId });
+    } else if (payload.startsWith("consent_yes_")) {
+      // Same consent_yes_/consent_no_ scheme as the free-form interactive ask
+      // on order/booking confirmations — this branch is the bulk consent-
+      // request campaign's template quick-reply instead (see shared/
+      // operations.js#sendConsentRequests), a different WhatsApp message
+      // shape but the same customerId payload and consent write-path.
+      const Customer = require("./models/Customer");
+      const { grantMarketingConsent } = require("./shared/consent");
+      await correlateClick({ from, wamid: message.context?.id, workspaceId });
+      const customer = await Customer.findOne(withWorkspace({ _id: payload.slice(12) }, workspaceId));
+      if (customer) {
+        await grantMarketingConsent({ customer, method: 'whatsapp_button', source: 'bulk consent-request campaign', workspaceId });
+        await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+          text: { body: "🎉 You're subscribed! We'll send occasional offers and updates. Reply STOP anytime to opt out." } }).catch(() => {});
+      }
+    } else if (payload.startsWith("consent_no_")) {
+      const Customer = require("./models/Customer");
+      const { declineMarketingConsent } = require("./shared/consent");
+      await correlateClick({ from, wamid: message.context?.id, workspaceId });
+      const customer = await Customer.findOne(withWorkspace({ _id: payload.slice(11) }, workspaceId));
+      if (customer) {
+        await declineMarketingConsent({ customer, method: 'whatsapp_button', source: 'bulk consent-request campaign', workspaceId });
+        await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+          text: { body: "No problem! You can always opt in later." } }).catch(() => {});
+      }
     }
     return;
   }
