@@ -382,6 +382,23 @@ async function updateCustomer({ id, workspaceId, ...data }) {
   return customer;
 }
 
+// The only dashboard path to grant an EXISTING customer's marketing consent
+// directly — the checkbox at creation only covers new customers, and the
+// WhatsApp button only fires on their next order/booking (or the bulk
+// campaign, which needs an approved template). For a merchant who already
+// has this customer's real agreement from elsewhere (in person, a prior
+// conversation, a paper form), this is the honest way to record it — same
+// method as the manual Add Customer checkbox, just applied after the fact.
+async function markCustomerConsented({ id, workspaceId, performedBy }) {
+  const customer = await Customer.findOne(scopedFilter(id, workspaceId));
+  if (!customer) throw new Error('Customer not found');
+  await grantMarketingConsent({
+    customer, method: 'checkbox_manual', source: 'Marked consented from customer detail panel',
+    performedBy, workspaceId,
+  });
+  return customer;
+}
+
 // Customers who've never been asked at all — not yet consented, not opted
 // out, not demo data, and marketingConsentAskedAt still unset (so this never
 // re-asks someone who already tapped "No thanks" via either method, or who's
@@ -1693,7 +1710,7 @@ module.exports = {
   listServices, getService, createService, updateService, deactivateService,
   createTimeSlot, listBookings, cancelBooking, rescheduleBooking, completeBooking,
   confirmBooking, declineBooking, markNoShow,
-  listCustomers, getCustomer, createCustomer, updateCustomer, getCustomerWhatsAppHistory, getConsentStats, sendConsentRequests,
+  listCustomers, getCustomer, createCustomer, updateCustomer, getCustomerWhatsAppHistory, getConsentStats, sendConsentRequests, markCustomerConsented,
   listOrders, getOrder, updateOrderStatus, refundOrder, getOrderStats, createOrder, getPaymentStatus,
   listPromotions, getPromotion, createPromotion, updatePromotion, deletePromotion,
   getRecommendedCustomers, sendPromotion, sendLoyaltyReminders, getCampaignReport,

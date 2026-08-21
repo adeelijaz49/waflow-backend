@@ -61,6 +61,17 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+// Manual "mark as consented" — the only dashboard path to grant an EXISTING
+// customer's marketing consent directly. See shared/operations.js#markCustomerConsented.
+router.post('/:id/consent', async (req, res) => {
+  try {
+    res.json(await ops.markCustomerConsented({ id: req.params.id, workspaceId: req.user.workspaceId, performedBy: req.user.id }));
+  } catch (err) {
+    if (err.message === 'Customer not found') return res.status(404).json({ error: 'Not found' });
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // Bulk "ask for consent" campaign — see shared/operations.js#sendConsentRequests.
 // Optional customerIds narrows to a specific selection; omitted sends to every
 // not-yet-asked customer in the workspace.

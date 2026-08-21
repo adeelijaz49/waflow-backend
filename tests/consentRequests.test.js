@@ -128,3 +128,45 @@ describe('Bulk consent-request campaign', () => {
     expect(doc.marketingConsent).toBe(false);
   }, 15000);
 });
+
+describe('Manual "mark as consented" (customer detail panel)', () => {
+  let req, workspaceId, customer;
+
+  beforeAll(async () => {
+    await connectOnce();
+    req = await authedAgent(app);
+    workspaceId = await getTestWorkspaceId(app);
+  }, 30000);
+
+  afterEach(async () => {
+    if (customer) {
+      await ConsentEvent.deleteMany({ customerId: customer._id });
+      await Customer.findByIdAndDelete(customer._id);
+      customer = null;
+    }
+  });
+
+  test('POST /api/customers/:id/consent grants consent and logs a checkbox_manual event', async () => {
+    customer = await Customer.create({ firstname: 'Manual', lastname: 'ConsentTest', phone: TEST_PHONE_A, workspaceId });
+
+    const res = await req.post(`/api/customers/${customer._id}/consent`);
+    expect(res.status).toBe(200);
+    expect(res.body.marketingConsent).toBe(true);
+    expect(res.body.marketingConsentMethod).toBe('checkbox_manual');
+
+    const events = await ConsentEvent.find({ customerId: customer._id });
+    expect(events.length).toBe(1);
+    expect(events[0].type).toBe('consent_given');
+    expect(events[0].method).toBe('checkbox_manual');
+    expect(events[0].performedBy).toBeTruthy(); // attributed to the logged-in user, not anonymous
+  }, 15000);
+
+  test('a customer subsequently passes the marketing-send gate', async () => {
+    customer = await Customer.create({ firstname: 'Manual', lastname: 'GateTest', phone: TEST_PHONE_A, workspaceId });
+    await req.post(`/api/customers/${customer._id}/consent`);
+
+    const { canSendMarketing } = require('../shared/consent');
+    const updated = await Customer.findById(customer._id);
+    expect(canSendMarketing(updated)).toBe(true);
+  }, 15000);
+});
