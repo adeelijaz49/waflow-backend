@@ -10,7 +10,12 @@ const WA_BASE     = 'https://graph.facebook.com/v25.0';
 const WA_MSGS_URL = `${WA_BASE}/${WA_PHONE_ID}/messages`;
 
 // Template names — override via env vars
-const PROMO_TEMPLATE   = process.env.WA_PROMO_TEMPLATE   || 'waflow_promo';
+// v2 — added the Opt Out quick-reply button. Meta doesn't let an already-
+// approved template's button structure be changed in place (ensureTemplateExists
+// only ever creates a template once, never re-submits an existing name), so
+// this needed a new template name to actually pick up the change, rather than
+// silently keeping the old 1-button version live.
+const PROMO_TEMPLATE   = process.env.WA_PROMO_TEMPLATE   || 'waflow_promo_v2';
 const LOYALTY_TEMPLATE = process.env.WA_LOYALTY_TEMPLATE || 'waflow_loyalty';
 const WINBACK_TEMPLATE = process.env.WA_WINBACK_TEMPLATE || 'waflow_winback';
 const POST_PURCHASE_TEMPLATE = process.env.WA_POST_PURCHASE_TEMPLATE || 'waflow_post_purchase';
@@ -314,7 +319,10 @@ async function createPromoTemplate() {
       components: [
         bodyComponentWithExample(body),
         { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
-        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
+        { type: 'BUTTONS', buttons: [
+          { type: 'QUICK_REPLY', text: 'Shop Now' },
+          { type: 'QUICK_REPLY', text: 'Opt Out' },
+        ] },
       ],
     },
     { headers: getHeaders() },
@@ -459,12 +467,19 @@ async function sendPromoTemplate(to, customer, product, promotion) {
             { type: 'text', text: currency },
           ],
         },
-        // Dynamic quick-reply payload carries the promotion ID back via webhook
+        // Dynamic quick-reply payloads carry the promotion ID back via webhook —
+        // index must match each button's position in createPromoTemplate's BUTTONS array.
         {
           type: 'button',
           sub_type: 'quick_reply',
           index: '0',
           parameters: [{ type: 'payload', payload: `promo_${promotion._id}` }],
+        },
+        {
+          type: 'button',
+          sub_type: 'quick_reply',
+          index: '1',
+          parameters: [{ type: 'payload', payload: `optout_${promotion._id}` }],
         },
       ],
     },
@@ -701,7 +716,12 @@ function buildPromoAnnouncementPayload(customer, promotion, items) {
   const interactive = {
     type:   'button',
     body:   { text: body },
-    action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: cta } }] },
+    // Opt Out always sits below the shop/book action — same order on every
+    // promo send, matching the merchant's explicit ask.
+    action: { buttons: [
+      { type: 'reply', reply: { id: `promo_${promotion._id}`, title: cta } },
+      { type: 'reply', reply: { id: `optout_${promotion._id}`, title: 'Opt Out' } },
+    ] },
   };
   if (firstImage) interactive.header = { type: 'image', image: { link: firstImage } };
   return interactive;
@@ -1031,9 +1051,14 @@ function buildPointsPromoPayload(customer, promotion, products) {
     interactive: {
       type:   'button',
       body:   { text: bodyText },
-      action: { buttons: [{ type: 'reply', reply: { id: `promo_${promotion._id}`, title: 'Shop Now! 💎' } }] },
+      action: { buttons: [
+        { type: 'reply', reply: { id: `promo_${promotion._id}`, title: 'Shop Now! 💎' } },
+        { type: 'reply', reply: { id: `optout_${promotion._id}`, title: 'Opt Out' } },
+      ] },
     },
-    textFallback: bodyText + '\n\nReply *SHOP* or tap our link to browse.',
+    // No button in the plain-text fallback (WhatsApp text messages can't carry
+    // buttons) — STOP already works as the text-equivalent opt-out.
+    textFallback: bodyText + '\n\nReply *SHOP* to browse, or *STOP* to opt out.',
   };
 }
 

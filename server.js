@@ -965,6 +965,23 @@ app.post("/webhook", async (req, res) => {
         await waPost({ messaging_product: "whatsapp", to: from, type: "text",
           text: { body: "No problem! You can always opt in later." } }).catch(() => {});
       }
+    } else if (payload.startsWith("optout_")) {
+      // The "Opt Out" quick-reply on the template fallback of a promo send
+      // (see utils/whatsapp.js#createPromoTemplate/sendPromoTemplate). Resolved
+      // by phone rather than an embedded customer id — same lookup STOP already
+      // uses — since this button always applies to whoever tapped it, regardless
+      // of which promotion carried it. withdrawMarketingConsent runs
+      // unconditionally (no "already opted out" skip), so it's always safe to
+      // re-tap.
+      const Customer = require("./models/Customer");
+      const { withdrawMarketingConsent } = require("./shared/consent");
+      await correlateClick({ from, wamid: message.context?.id, promotionId: payload.slice(7), workspaceId });
+      const customer = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
+      if (customer) {
+        await withdrawMarketingConsent({ customer, method: 'whatsapp_optout_button', source: `Opt Out button on promotion ${payload.slice(7)}`, workspaceId });
+        await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+          text: { body: "You've been unsubscribed from promotional messages. Reply START to opt back in anytime." } }).catch(() => {});
+      }
     }
     return;
   }
@@ -1128,6 +1145,21 @@ app.post("/webhook", async (req, res) => {
           await declineMarketingConsent({ customer, method: 'whatsapp_button', source: 'order/booking confirmation consent button', workspaceId });
           await waPost({ messaging_product: "whatsapp", to: from, type: "text",
             text: { body: "No problem! You can always opt in later." } }).catch(() => {});
+        }
+
+      } else if (buttonId.startsWith("optout_")) {
+        // The "Opt Out" quick-reply on the interactive (session-window) promo
+        // send — see utils/whatsapp.js#buildPromoAnnouncementPayload/
+        // buildPointsPromoPayload. Same withdrawMarketingConsent path as the
+        // template fallback's optout_ branch above; always runs, never skips
+        // even if the customer is already opted out.
+        const Customer = require("./models/Customer");
+        const { withdrawMarketingConsent } = require("./shared/consent");
+        const customer = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
+        if (customer) {
+          await withdrawMarketingConsent({ customer, method: 'whatsapp_optout_button', source: `Opt Out button on promotion ${buttonId.slice(7)}`, workspaceId });
+          await waPost({ messaging_product: "whatsapp", to: from, type: "text",
+            text: { body: "You've been unsubscribed from promotional messages. Reply START to opt back in anytime." } }).catch(() => {});
         }
       }
     }

@@ -973,6 +973,7 @@ async function previewPromotionMessage({ promotionId, workspaceId }) {
         body,
         buttonLabel: entryNode.buttons[0]?.label || null,
         templateStatus: entryNode.templateStatus,
+        isCustomEntryNode: true, // no Opt Out button here — this is the merchant's own message tree
       };
     }
   }
