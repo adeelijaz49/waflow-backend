@@ -11,7 +11,7 @@ function createConsentedCustomer(overrides = {}) {
   return Customer.create({
     marketingConsent: true,
     marketingConsentAt: new Date(),
-    marketingConsentMethod: 'checkbox_manual',
+    marketingConsentMethod: 'manual_staff_entry',
     ...overrides,
   });
 }

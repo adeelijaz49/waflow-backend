@@ -366,7 +366,7 @@ async function getCustomerWhatsAppHistory({ customerId, workspaceId }) {
 async function createCustomer({ marketingConsent, performedBy, ...data }) {
   const customer = await Customer.create(data); // always created with schema default marketingConsent:false
   if (marketingConsent === true) {
-    await grantMarketingConsent({ customer, method: 'checkbox_manual', source: 'Add Customer form', performedBy, workspaceId: data.workspaceId });
+    await grantMarketingConsent({ customer, method: 'manual_staff_entry', source: 'Add Customer form', performedBy, workspaceId: data.workspaceId });
   }
   return customer;
 }
@@ -393,7 +393,7 @@ async function markCustomerConsented({ id, workspaceId, performedBy }) {
   const customer = await Customer.findOne(scopedFilter(id, workspaceId));
   if (!customer) throw new Error('Customer not found');
   await grantMarketingConsent({
-    customer, method: 'checkbox_manual', source: 'Marked consented from customer detail panel',
+    customer, method: 'manual_staff_entry', source: 'Marked consented from customer detail panel',
     performedBy, workspaceId,
   });
   return customer;

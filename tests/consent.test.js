@@ -35,16 +35,16 @@ describe('shared/consent.js', () => {
   });
 
   test('grantMarketingConsent sets fields and writes exactly one consent_given event', async () => {
-    await grantMarketingConsent({ customer, method: 'checkbox_manual', source: 'test' });
+    await grantMarketingConsent({ customer, method: 'manual_staff_entry', source: 'test' });
     const updated = await Customer.findById(customer._id);
     expect(updated.marketingConsent).toBe(true);
     expect(updated.marketingConsentAt).toBeTruthy();
-    expect(updated.marketingConsentMethod).toBe('checkbox_manual');
+    expect(updated.marketingConsentMethod).toBe('manual_staff_entry');
 
     const events = await ConsentEvent.find({ customerId: customer._id });
     expect(events.length).toBe(1);
     expect(events[0].type).toBe('consent_given');
-    expect(events[0].method).toBe('checkbox_manual');
+    expect(events[0].method).toBe('manual_staff_entry');
     expect(events[0].phone).toBe(customer.phone);
   });
 
@@ -72,7 +72,7 @@ describe('shared/consent.js', () => {
   });
 
   test('reinstateMarketingConsent clears optedOut and logs an event when consent was real', async () => {
-    await grantMarketingConsent({ customer, method: 'checkbox_manual', source: 'test' });
+    await grantMarketingConsent({ customer, method: 'manual_staff_entry', source: 'test' });
     await withdrawMarketingConsent({ customer, method: 'whatsapp_stop_command', source: 'test' });
 
     const reinstated = await reinstateMarketingConsent({ customer, method: 'whatsapp_start_command', source: 'test' });

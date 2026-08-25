@@ -399,7 +399,7 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
             const existingCustomer = await Customer.findById(existingId);
             if (existingCustomer && !existingCustomer.marketingConsent) {
               await grantMarketingConsent({
-                customer: existingCustomer, method: 'checkbox_csv_import',
+                customer: existingCustomer, method: 'manual_staff_entry',
                 source: `CSV import job ${job._id}`, performedBy: job.createdBy,
                 workspaceId, importJobId: job._id,
               });
@@ -437,7 +437,7 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
           }
           if (job.marketingConsentAttested) {
             await grantMarketingConsent({
-              customer: doc, method: 'checkbox_csv_import',
+              customer: doc, method: 'manual_staff_entry',
               source: `CSV import job ${job._id}`, performedBy: job.createdBy,
               workspaceId, importJobId: job._id,
             });

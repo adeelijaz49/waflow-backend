@@ -68,7 +68,7 @@ describe('webhook: Opt Out button tap withdraws consent', () => {
     const phone = '15559995001';
     const customer = await Customer.create({
       firstname: 'Test', lastname: 'OptOutInteractive', phone, workspaceId,
-      marketingConsent: true, marketingConsentAt: new Date(), marketingConsentMethod: 'checkbox_manual',
+      marketingConsent: true, marketingConsentAt: new Date(), marketingConsentMethod: 'manual_staff_entry',
     });
     try {
       await request(app).post('/webhook').send({

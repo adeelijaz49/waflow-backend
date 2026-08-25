@@ -272,7 +272,7 @@ describe('Bulk CSV/XLSX import', () => {
     const normalizedB = normalizePhoneForDedup(localPhones[3], countryCode);
     const createdB = await Customer.findOne({ workspaceId, phone: normalizedB }).lean();
     expect(createdB.marketingConsent).toBe(true);
-    expect(createdB.marketingConsentMethod).toBe('checkbox_csv_import');
+    expect(createdB.marketingConsentMethod).toBe('manual_staff_entry');
     const eventsB = await ConsentEvent.find({ customerId: createdB._id });
     expect(eventsB.length).toBe(1);
     expect(eventsB[0].type).toBe('consent_given');

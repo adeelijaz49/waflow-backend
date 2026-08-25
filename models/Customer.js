@@ -19,7 +19,7 @@ const schema = new mongoose.Schema({
   // is logged to ConsentEvent — never set these directly through ops.updateCustomer.
   marketingConsent:        { type: Boolean, default: false },
   marketingConsentAt:      { type: Date },
-  marketingConsentMethod:  { type: String, enum: ['whatsapp_button', 'checkbox_manual', 'checkbox_csv_import', 'admin_tool'] },
+  marketingConsentMethod:  { type: String, enum: ['whatsapp_button', 'manual_staff_entry'] },
   marketingConsentAskedAt: { type: Date }, // WhatsApp consent button offered once — prevents re-asking on every order/booking
   deletedAt:      { type: Date }, // set by the internal admin tool's erasure action — PII anonymized, record retained for referential integrity
   deletionReason: { type: String },

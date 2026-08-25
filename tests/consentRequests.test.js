@@ -146,18 +146,18 @@ describe('Manual "mark as consented" (customer detail panel)', () => {
     }
   });
 
-  test('POST /api/customers/:id/consent grants consent and logs a checkbox_manual event', async () => {
+  test('POST /api/customers/:id/consent grants consent and logs a manual_staff_entry event', async () => {
     customer = await Customer.create({ firstname: 'Manual', lastname: 'ConsentTest', phone: TEST_PHONE_A, workspaceId });
 
     const res = await req.post(`/api/customers/${customer._id}/consent`);
     expect(res.status).toBe(200);
     expect(res.body.marketingConsent).toBe(true);
-    expect(res.body.marketingConsentMethod).toBe('checkbox_manual');
+    expect(res.body.marketingConsentMethod).toBe('manual_staff_entry');
 
     const events = await ConsentEvent.find({ customerId: customer._id });
     expect(events.length).toBe(1);
     expect(events[0].type).toBe('consent_given');
-    expect(events[0].method).toBe('checkbox_manual');
+    expect(events[0].method).toBe('manual_staff_entry');
     expect(events[0].performedBy).toBeTruthy(); // attributed to the logged-in user, not anonymous
   }, 15000);
 

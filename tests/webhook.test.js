@@ -41,7 +41,7 @@ describe('webhook: status callbacks, opt-out, and click correlation', () => {
     // opted in before this test drives them through STOP then START; START
     // only reinstates a real prior consent, it never fabricates one (see
     // shared/consent.js#reinstateMarketingConsent).
-    customer = await Customer.create({ firstname: 'Test', lastname: 'Webhook', phone: TEST_PHONE, workspaceId, marketingConsent: true, marketingConsentAt: new Date(), marketingConsentMethod: 'checkbox_manual' });
+    customer = await Customer.create({ firstname: 'Test', lastname: 'Webhook', phone: TEST_PHONE, workspaceId, marketingConsent: true, marketingConsentAt: new Date(), marketingConsentMethod: 'manual_staff_entry' });
     promotion = await Promotion.create({ name: '__test_campaign__', scope: 'products', customerType: 'cash', workspaceId });
     cm = await CampaignMessage.create({
       kind: 'promotion', promotion: promotion._id, customer: customer._id, phone: TEST_PHONE,
