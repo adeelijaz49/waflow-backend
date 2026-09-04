@@ -94,8 +94,11 @@ async function previewCarouselPromotion({ promotionId, workspaceId }) {
   return {
     carousel: true,
     ineligible: false,
-    headerBody: `Hi there! ✨ *${promotion.name}* — swipe to explore, tap a card to continue →`,
-    footer: 'Reply STOP to unsubscribe',
+    // Matches utils/whatsappCarousel.js#createCarouselTemplate's real body
+    // text exactly — Meta rejects any footer/header on a carousel's main
+    // bubble (confirmed live), so the opt-out notice folds into the body
+    // instead of sitting in a separate component like every other template.
+    headerBody: `Hi there! ✨ *${promotion.name}* — swipe to explore, tap a card to continue →\n\nReply STOP to unsubscribe.`,
     cards,
   };
 }

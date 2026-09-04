@@ -90,11 +90,15 @@ async function createCarouselTemplate(cardCount, exampleImageUrls) {
   const cards = handles.map(handle => ({
     components: [
       { type: 'HEADER', format: 'IMAGE', example: { header_handle: [handle] } },
-      // Meta rejects any {{n}} body without an `example` (same lesson already
-      // learned the hard way in ./whatsapp.js's bodyComponentWithExample) —
-      // applies here too even though the docs only explicitly demo it for
-      // send-time card body params, not creation-time examples.
-      { type: 'BODY', text: '{{1}}', example: { body_text: [['Sample Item — $19.99']] } },
+      // A body that's ONLY a variable ('{{1}}', confirmed live via a direct
+      // create-template call: Meta rejected it with error_subcode 2388293,
+      // "Parameters words ratio exceeds limit" — its anti-spam heuristic on
+      // variable-to-word ratio) gets flatly rejected. Real static wrapper text
+      // around the variable keeps the ratio well under what this account's
+      // other already-approved templates use (~30%, e.g. createPromoTemplate's
+      // body). Also needs an `example` for the {{n}}, same DEFECT-05/06 lesson
+      // already learned the hard way in ./whatsapp.js's bodyComponentWithExample.
+      { type: 'BODY', text: '{{1}}\n\nTap below to add this to your cart.', example: { body_text: [['Sample Item — $19.99']] } },
       { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'View' }] },
     ],
   }));
@@ -105,9 +109,14 @@ async function createCarouselTemplate(cardCount, exampleImageUrls) {
       name,
       language: 'en',
       category: 'MARKETING',
+      // Confirmed live via a direct create-template call: Meta rejects any
+      // FOOTER (or HEADER) on the main carousel bubble outright
+      // (error_subcode 2388208, "Carousel main message bubble cannot have a
+      // header or footer") — unlike every other template in this app. The
+      // opt-out notice folds into the body text instead, since there's
+      // nowhere else on a carousel template to put it.
       components: [
-        { type: 'BODY', text: 'Hi {{1}}! ✨ *{{2}}* — swipe to explore, tap a card to continue →', example: { body_text: [['Sarah', 'Summer Sale']] } },
-        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+        { type: 'BODY', text: 'Hi {{1}}! ✨ *{{2}}* — swipe to explore, tap a card to continue →\n\nReply STOP to unsubscribe.', example: { body_text: [['Sarah', 'Summer Sale']] } },
         { type: 'CAROUSEL', cards },
       ],
     },
