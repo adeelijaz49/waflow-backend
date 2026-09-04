@@ -15,6 +15,21 @@ const { pendingSlotSelections } = require('../utils/state');
 
 const TEST_PHONE = '15550003333';
 
+// Root-caused via a real incident: an earlier version of this file's afterAll
+// blocks ran cleanup steps as a plain sequential list — when an earlier
+// beforeAll step failed partway through (leaving some fixtures created and
+// others undefined), the very first afterAll line touching an undefined
+// fixture threw, and every cleanup step AFTER it in that block silently never
+// ran. That left a real test promotion + its fake-image products sitting in
+// the shared/production-adjacent database, visible in the live app. Every
+// cleanup step below now runs independently — one failing (or a fixture
+// never having been created) can never block the others from attempting theirs.
+async function safeCleanup(steps) {
+  for (const step of steps) {
+    try { await step(); } catch (err) { console.error('[test cleanup] step failed (non-fatal):', err.message); }
+  }
+}
+
 function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 async function waitUntil(checkFn, { timeout = 4000, interval = 100 } = {}) {
   const start = Date.now();
@@ -63,8 +78,13 @@ describe('resolveCarouselEligibleItems', () => {
   }, 20000);
 
   afterAll(async () => {
-    await Product.deleteMany({ _id: { $in: [productA._id, productB._id, productNoImage._id, productWebp._id] } });
-    if (promotion) await Promotion.findByIdAndDelete(promotion._id);
+    await safeCleanup([
+      () => productA && Product.findByIdAndDelete(productA._id),
+      () => productB && Product.findByIdAndDelete(productB._id),
+      () => productNoImage && Product.findByIdAndDelete(productNoImage._id),
+      () => productWebp && Product.findByIdAndDelete(productWebp._id),
+      () => promotion && Promotion.findByIdAndDelete(promotion._id),
+    ]);
   });
 
   test('excludes items with no image or an unsupported (webp) image, caps eligible at 10, flags <2 as ineligible', async () => {
@@ -114,10 +134,14 @@ describe('sendCarouselPromotion', () => {
   }, 20000);
 
   afterAll(async () => {
-    await CampaignMessage.deleteMany({ promotion: promotion._id });
-    await Customer.deleteMany({ _id: { $in: [customerA._id, optedOutCustomer._id] } });
-    await Promotion.findByIdAndDelete(promotion._id);
-    await Product.deleteMany({ _id: { $in: [productA._id, productB._id] } });
+    await safeCleanup([
+      () => promotion && CampaignMessage.deleteMany({ promotion: promotion._id }),
+      () => customerA && Customer.findByIdAndDelete(customerA._id),
+      () => optedOutCustomer && Customer.findByIdAndDelete(optedOutCustomer._id),
+      () => promotion && Promotion.findByIdAndDelete(promotion._id),
+      () => productA && Product.findByIdAndDelete(productA._id),
+      () => productB && Product.findByIdAndDelete(productB._id),
+    ]);
   }, 15000);
 
   test('respects the consent gate (opted-out customer skipped) and records messageType/templateName', async () => {
@@ -145,7 +169,9 @@ describe('webhook: carouselsvc_ dispatch (service-carousel "Book Now" tap)', () 
 
   afterAll(async () => {
     pendingSlotSelections.delete(TEST_PHONE);
-    await Service.findByIdAndDelete(service._id);
+    await safeCleanup([
+      () => service && Service.findByIdAndDelete(service._id),
+    ]);
   });
 
   test('a template-shaped carouselsvc_ tap resolves the specific tapped service (not just the first one)', async () => {
