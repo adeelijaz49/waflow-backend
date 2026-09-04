@@ -26,6 +26,12 @@ const schema = new mongoose.Schema({
   // its MessageNode.templateStatus is 'approved'), that custom template is
   // sent instead, and its buttons can branch to further MessageNodes.
   entryNodeId:     { type: mongoose.Schema.Types.ObjectId, ref: 'MessageNode' },
+  // Additive, isolated feature (see shared/promotionCarousel.js + utils/whatsappCarousel.js) —
+  // completely separate send path from the default. Existing documents have no
+  // value for this field; Mongoose applies the schema default on hydrate, so
+  // every promotion that existed before this field was added reads as
+  // 'separate' automatically — no migration needed.
+  sendFormat:      { type: String, enum: ['separate', 'carousel'], default: 'separate' },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Promotion', schema);

@@ -1,5 +1,11 @@
 const router = require('express').Router();
 const ops = require('../shared/operations');
+const Promotion = require('../models/Promotion');
+// Carousel is a fully separate, additive send format — see
+// shared/promotionCarousel.js's header comment. Every route below still runs
+// its existing ops.* call exactly as before; carousel promotions are
+// dispatched to this module instead, before any existing logic runs.
+const carouselOps = require('../shared/promotionCarousel');
 
 // ─── CRUD ────────────────────────────────────────────────────────────────────
 
@@ -77,6 +83,11 @@ router.get('/:id/report', async (req, res) => {
 
 router.get('/:id/preview', async (req, res) => {
   try {
+    const promotion = await Promotion.findOne(ops.scopedFilter(req.params.id, req.user.workspaceId));
+    if (!promotion) return res.status(404).json({ error: 'Not found' });
+    if (promotion.sendFormat === 'carousel') {
+      return res.json(await carouselOps.previewCarouselPromotion({ promotionId: req.params.id, workspaceId: req.user.workspaceId }));
+    }
     res.json(await ops.previewPromotionMessage({ promotionId: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
@@ -86,6 +97,11 @@ router.get('/:id/preview', async (req, res) => {
 
 router.post('/:id/test-send', async (req, res) => {
   try {
+    const promotion = await Promotion.findOne(ops.scopedFilter(req.params.id, req.user.workspaceId));
+    if (!promotion) return res.status(404).json({ error: 'Not found' });
+    if (promotion.sendFormat === 'carousel') {
+      return res.json(await carouselOps.sendCarouselTestMessage({ promotionId: req.params.id, phone: req.body.phone, workspaceId: req.user.workspaceId }));
+    }
     res.json(await ops.sendTestMessage({ promotionId: req.params.id, phone: req.body.phone, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'phone required') return res.status(400).json({ error: err.message });
@@ -99,6 +115,11 @@ router.post('/:id/test-send', async (req, res) => {
 router.post('/:id/send', async (req, res) => {
   try {
     const { customerIds } = req.body;
+    const promotion = await Promotion.findOne(ops.scopedFilter(req.params.id, req.user.workspaceId));
+    if (!promotion) return res.status(404).json({ error: 'Not found' });
+    if (promotion.sendFormat === 'carousel') {
+      return res.json(await carouselOps.sendCarouselPromotion({ promotionId: req.params.id, customerIds, workspaceId: req.user.workspaceId }));
+    }
     // allowRealDemoSend is intentionally NOT read from req.body here — it must
     // never be client-controlled on this route. isDemo promotions/customers
     // always simulate through this endpoint; see /:id/send-live-demo below.

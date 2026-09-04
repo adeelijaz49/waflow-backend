@@ -982,6 +982,19 @@ app.post("/webhook", async (req, res) => {
         await waPost({ messaging_product: "whatsapp", to: from, type: "text",
           text: { body: "You've been unsubscribed from promotional messages. Reply START to opt back in anytime." } }).catch(() => {});
       }
+    } else if (payload.startsWith("cart_")) {
+      // "Add to Cart" tapped on a horizontal-carousel template card (see
+      // shared/promotionCarousel.js) — a carousel is always a template
+      // message, so this tap arrives here rather than in the interactive
+      // button_reply chain below where the existing per-card flow's cart_
+      // handling already lives. Resolves to the exact same, unmodified handler.
+      await handleProductSelection(from, payload.slice(5), "", workspaceId);
+    } else if (payload.startsWith("carouselsvc_")) {
+      // "Book Now" tapped on a service-carousel card — see
+      // shared/promotionCarousel.js#handleCarouselServiceSelection.
+      const { handleCarouselServiceSelection } = require("./shared/promotionCarousel");
+      const [serviceId, promoId] = payload.slice(12).split("_");
+      await handleCarouselServiceSelection(from, serviceId, promoId, workspaceId);
     }
     return;
   }
@@ -1063,6 +1076,15 @@ app.post("/webhook", async (req, res) => {
       } else if (buttonId.startsWith("cart_")) {
         // "Add to Cart" tapped on an individual product card (button_reply from sendProductCards)
         await handleProductSelection(from, buttonId.slice(5), "", workspaceId);
+
+      } else if (buttonId.startsWith("carouselsvc_")) {
+        // Defense-in-depth parity with the template chain above — a service
+        // carousel is always sent as a template today, so this branch isn't
+        // currently reachable via button_reply, but costs nothing to keep in
+        // sync (see shared/promotionCarousel.js#handleCarouselServiceSelection).
+        const { handleCarouselServiceSelection } = require("./shared/promotionCarousel");
+        const [serviceId, promoId] = buttonId.slice(12).split("_");
+        await handleCarouselServiceSelection(from, serviceId, promoId, workspaceId);
 
       } else if (buttonId.startsWith("more_")) {
         // Load next carousel batch: more_<batchStart>_<promoId>
