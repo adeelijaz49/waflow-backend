@@ -12,6 +12,12 @@ const state = {
   checkedAt: null,
 };
 
+// How often init() re-checks/re-exchanges after the initial startup check.
+// Comfortably inside the 7-day exchange-before-expiry window in refresh()
+// below, so a long-running process without a restart still renews in time.
+const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+let refreshTimer = null;
+
 // Load cached long-lived token from previous run
 try {
   if (fs.existsSync(CACHE_FILE)) {
@@ -110,6 +116,17 @@ async function init() {
     await refresh();
   } catch (err) {
     console.error('[WA Token] Init check failed:', err.message);
+  }
+
+  // Without this, refresh() only ever ran once at process startup — a token
+  // nearing its long-lived expiry would just sit there until someone
+  // manually hit "Refresh Token Now" in Settings or the App Service happened
+  // to restart. Keep re-checking for the life of the process instead.
+  if (!refreshTimer) {
+    refreshTimer = setInterval(() => {
+      refresh().catch((err) => console.error('[WA Token] Periodic check failed:', err.message));
+    }, CHECK_INTERVAL_MS);
+    refreshTimer.unref?.(); // don't hold the process open just for this timer
   }
 }
 
