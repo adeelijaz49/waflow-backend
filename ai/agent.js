@@ -15,6 +15,32 @@ Never reuse an id (promotionId, customerId, flowId, orderId) from memory or from
 
 Be concise — this is a chat interface, not a report. Use real numbers from tool results, don't guess.`;
 
+// Fallback confirmation summary for when Claude calls an action tool without
+// its own accompanying sentence (the system prompt asks it to always include
+// one, but that's not guaranteed every turn) — real incident: the raw
+// fallback used to be `I'll run ${tool.name} with ${JSON.stringify(args)}`,
+// which put a snake_case internal tool name and raw Mongo ids directly in
+// front of the merchant. Every action tool's args here are either a
+// customerIds array or a single opaque id (promotionId/flowId/orderId) that
+// means nothing to a merchant on its own — so this never surfaces either,
+// only a plain-language description and (where relevant) a customer count.
+const ACTION_LABELS = {
+  send_promotion: 'send this promotion',
+  send_test_message: 'send a test message for this promotion',
+  send_loyalty_reminders: 'send loyalty reminders',
+  activate_flow: 'activate this flow',
+  refund_order: 'refund this order',
+};
+
+function fallbackActionSummary(tool, args) {
+  const label = ACTION_LABELS[tool.name] || tool.name.replace(/_/g, ' ');
+  if (Array.isArray(args?.customerIds)) {
+    const n = args.customerIds.length;
+    return `I'll run ${label} for ${n} customer${n === 1 ? '' : 's'}.`;
+  }
+  return `I'll ${label}.`;
+}
+
 function toClaudeHistory(messages) {
   const recent = messages.slice(-HISTORY_LIMIT);
   return recent.map(m => ({ role: m.role, content: m.text }));
@@ -64,7 +90,7 @@ async function runTurn(session, userMessage, workspaceId) {
         id: crypto.randomUUID(),
         toolName: tool.name,
         args: actionBlock.input,
-        summary: textBlock?.text || `I'll run ${tool.name} with ${JSON.stringify(actionBlock.input)}`,
+        summary: textBlock?.text || fallbackActionSummary(tool, actionBlock.input),
         createdAt: new Date(),
       };
       session.pendingAction = pendingAction;
