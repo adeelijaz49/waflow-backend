@@ -68,7 +68,12 @@ async function cardPreview(item, promotion, currency) {
   const priceStr = isPoints
     ? `💎 ${promotion.pointsPrice} pts`
     : `💰 ${money(item.basePrice * (1 - disc / 100), currency)}${disc ? ` (${disc}% OFF)` : ''}`;
-  return { image: item.images[0], body: `*${item.name}*\n${priceStr}`, buttonLabel: 'View' };
+  // Single line, matching utils/whatsappCarousel.js#buildCarouselSendComponents
+  // exactly — a line break here contributed to a real Meta rejection
+  // ("Hydrated body cannot contain more than 2 line breaks") once combined
+  // with the card template's own line break, so the preview must show
+  // exactly what actually gets sent, not a prettier-but-wrong version.
+  return { image: item.images[0], body: `*${item.name}* — ${priceStr}`, buttonLabel: 'View' };
 }
 
 async function previewCarouselPromotion({ promotionId, workspaceId }) {
@@ -111,8 +116,17 @@ async function sendCarouselTestMessage({ promotionId, phone, workspaceId }) {
   if (ineligibleReason) throw new Error(ineligibleReason);
 
   await ensureCarouselTemplateExists(cardCount, items.map(i => i.images[0]));
-  const cardComponents = await buildCarouselSendComponents(items, promotion, buttonIdForItem(promotion));
-  await sendCarouselTemplate(phone, cardCount, ['there', promotion.name], cardComponents);
+  try {
+    const cardComponents = await buildCarouselSendComponents(items, promotion, buttonIdForItem(promotion));
+    await sendCarouselTemplate(phone, cardCount, ['there', promotion.name], cardComponents);
+  } catch (err) {
+    // Without this, a raw AxiosError's generic message ("Request failed with
+    // status code 400") is all that ever reached the merchant — real
+    // incident: a genuine Meta rejection (132018, hydrated body line-break
+    // limit) looked indistinguishable from a hang because the actual reason
+    // never surfaced anywhere.
+    throw new Error(err.response?.data?.error?.message || err.message);
+  }
   return { success: true };
 }
 

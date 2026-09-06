@@ -98,7 +98,14 @@ async function createCarouselTemplate(cardCount, exampleImageUrls) {
       // other already-approved templates use (~30%, e.g. createPromoTemplate's
       // body). Also needs an `example` for the {{n}}, same DEFECT-05/06 lesson
       // already learned the hard way in ./whatsapp.js's bodyComponentWithExample.
-      { type: 'BODY', text: '{{1}}\n\nTap below to add this to your cart.', example: { body_text: [['Sample Item — $19.99']] } },
+      // Single \n, not \n\n — confirmed live via error 132018 ("Hydrated body
+      // cannot contain more than 2 line breaks"): whatever line breaks the
+      // {{1}} value itself contains count against this same template-wide
+      // budget, not a separate one. Doesn't apply retroactively to an
+      // already-approved template (only the send-side fix does, see
+      // buildCarouselSendComponents below) — this is a safety margin for the
+      // next card-count template this app creates for the first time.
+      { type: 'BODY', text: '{{1}}\nTap below to add this to your cart.', example: { body_text: [['Sample Item — $19.99']] } },
       { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'View' }] },
     ],
   }));
@@ -171,7 +178,15 @@ async function buildCarouselSendComponents(items, promotion, buttonIdFor) {
       card_index: i,
       components: [
         { type: 'header', parameters: [{ type: 'image', image: { id: mediaId } }] },
-        { type: 'body', parameters: [{ type: 'text', text: `*${item.name}*\n${priceStr}` }] },
+        // Single line, no \n — confirmed live via error 132018 ("Hydrated
+        // body cannot contain more than 2 line breaks"): the card BODY
+        // template text already has its own line break(s), and this
+        // variable's content adds to that same hydrated total, not a
+        // separate budget. A line break here pushed an already-approved
+        // template over the limit at send time, with no way to know until
+        // an actual send was attempted (Meta doesn't validate this at
+        // template-creation time, only when the variables are filled in).
+        { type: 'body', parameters: [{ type: 'text', text: `*${item.name}* — ${priceStr}` }] },
         // index is a NUMBER here (not the '0' string convention used by every
         // other template button elsewhere in this codebase) — Meta's documented
         // carousel send-payload example uses numeric card-button indexes.
