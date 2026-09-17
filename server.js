@@ -20,6 +20,7 @@ const MessageNode     = require("./models/MessageNode");
 const Workspace       = require("./models/Workspace");
 const { requireAuth } = require("./middleware/requireAuth");
 const { withWorkspace, scopedFilter } = require("./shared/operations");
+const inbox            = require("./shared/inbox"); // WhatsApp Inbox — see shared/inbox.js
 
 // The WhatsApp webhook and Stripe webhook serve real customers directly, with
 // no logged-in session to read a workspaceId from. Only one platform WABA
@@ -81,6 +82,7 @@ app.use("/api/uploads",   requireAuth, require("./routes/uploads"));
 app.use("/api/workspaces", requireAuth, require("./routes/workspaces"));
 app.use("/api/support",    requireAuth, require("./routes/support"));
 app.use("/api/imports",    requireAuth, require("./routes/imports"));
+app.use("/api/inbox",      requireAuth, require("./routes/inbox"));
 // Uploaded images must stay public — WhatsApp's own servers fetch them by URL
 // with no Authorization header when rendering a message to a real customer.
 app.use("/uploads", express.static(require("./utils/config").UPLOAD_DIR));
@@ -197,6 +199,11 @@ async function handleStatusCallbacks(statuses, workspaceId) {
     } catch (err) {
       console.error("handleStatusCallbacks error:", err.message);
     }
+
+    // Same delivery/read ticks, for a manual WhatsApp Inbox send instead of a
+    // campaign one — see shared/inbox.js#updateMessageStatus. No-ops if `s.id`
+    // isn't a manual send's wamid (the common case for every other status).
+    await inbox.updateMessageStatus(s, workspaceId).catch(err => console.error("inbox updateMessageStatus error:", err.message));
   }
 }
 
@@ -918,6 +925,14 @@ app.post("/webhook", async (req, res) => {
 
   const from = message.from;
   console.log(`Incoming from ${from}:`, JSON.stringify(message, null, 2));
+
+  // WhatsApp Inbox — log every inbound message into the merchant-facing
+  // conversation thread before any of the existing shopping/flow dispatch
+  // below runs. Never throws (self-contained try/catch inside), so a logging
+  // failure can never block the customer-facing flow that follows.
+  const contactName = value?.contacts?.[0]?.profile?.name;
+  await inbox.logInboundMessage({ workspaceId, from, message, contactName })
+    .catch(err => console.error("inbox logInboundMessage error:", err.message));
 
   // ── Template quick-reply (user tapped button on a template message) ──────────
   if (message.type === "button") {

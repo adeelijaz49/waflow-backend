@@ -23,6 +23,16 @@ const schema = new mongoose.Schema({
   marketingConsentAskedAt: { type: Date }, // WhatsApp consent button offered once — prevents re-asking on every order/booking
   deletedAt:      { type: Date }, // set by the internal admin tool's erasure action — PII anonymized, record retained for referential integrity
   deletionReason: { type: String },
+  // ── WhatsApp Inbox conversation state (see shared/inbox.js) ───────────────
+  // Kept on the customer record rather than a separate conversation model —
+  // there is exactly one WhatsApp thread per customer, so a second collection
+  // would only add a join. Written by shared/inbox.js's inbound-message and
+  // manual-send paths; never touched by any other existing code path.
+  unreadCount:         { type: Number, default: 0 },
+  lastMessageAt:       { type: Date },
+  lastMessagePreview:  { type: String },
+  conversationStatus:  { type: String, enum: ['open', 'resolved'], default: 'open' },
+  assignedTo:          { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 
 module.exports = mongoose.model('Customer', schema);
