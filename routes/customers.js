@@ -3,8 +3,11 @@ const ops = require('../shared/operations');
 
 router.get('/', async (req, res) => {
   try {
-    const { search, isDemo, page = 1, limit = 50 } = req.query;
-    res.json(await ops.listCustomers({ search, isDemo, page: +page, limit: +limit, workspaceId: req.user.workspaceId }));
+    const { search, isDemo, ids, page = 1, limit = 50 } = req.query;
+    res.json(await ops.listCustomers({
+      search, isDemo, ids: ids ? ids.split(',').filter(Boolean) : undefined,
+      page: +page, limit: +limit, workspaceId: req.user.workspaceId,
+    }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

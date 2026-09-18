@@ -301,8 +301,13 @@ async function markNoShow({ bookingId, workspaceId }) {
 
 // ─── Customers ───────────────────────────────────────────────────────────────
 
-async function listCustomers({ search, isDemo, page = 1, limit = 50, workspaceId } = {}) {
+async function listCustomers({ search, isDemo, ids: filterIds, page = 1, limit = 50, workspaceId } = {}) {
   const filter = withWorkspace({}, workspaceId);
+  // Smart Insights' "View Customers" CTAs land here with the exact matching
+  // customer ids from whatever aggregation produced the insight (e.g. the 20
+  // inactive customers) — a fixed id list, not a new filter language to build
+  // and maintain server-side.
+  if (filterIds?.length) filter._id = { $in: filterIds };
   if (search) filter.$or = [
     { firstname: { $regex: search, $options: 'i' } },
     { lastname: { $regex: search, $options: 'i' } },
@@ -469,10 +474,11 @@ async function sendConsentRequests({ workspaceId, customerIds } = {}) {
 
 // ─── Orders ──────────────────────────────────────────────────────────────────
 
-async function listOrders({ status, source, page = 1, limit = 50, workspaceId } = {}) {
+async function listOrders({ status, source, paymentStatus, page = 1, limit = 50, workspaceId } = {}) {
   const filter = withWorkspace({}, workspaceId);
   if (status) filter.status = status;
   if (source) filter.source = source;
+  if (paymentStatus) filter.paymentStatus = paymentStatus;
   const skip = (page - 1) * limit;
   const [orders, total] = await Promise.all([
     Order.find(filter).populate('customer', 'firstname lastname phone').sort({ createdAt: -1 }).skip(skip).limit(limit),

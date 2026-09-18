@@ -8,8 +8,16 @@
 // routes/aiChat.js's POST /confirm-action handler, after explicit user
 // confirmation. That's the entire confirm-gate; see ai/agent.js.
 const ops = require('../shared/operations');
+const insights = require('../shared/insights');
 
 const TOOLS = [
+  {
+    name: 'get_smart_insights',
+    description: 'Ranked list of the merchant\'s current actionable business recommendations (Smart Insights) — e.g. best/worst campaign this week, customers who haven\'t returned, unused loyalty points, abandoned payments, best-selling product. Call this for "what should I do today", "which campaign should I run again", "which customers should I target", "what\'s my biggest opportunity", or "which customers are at risk" style questions — answer from these real, currently-true insights rather than guessing, and propose the matching action (e.g. create_promotion/send_promotion) if the merchant wants to act on one.',
+    input_schema: { type: 'object', properties: {}, additionalProperties: false },
+    isAction: false,
+    run: (args, workspaceId) => insights.generateInsights({ workspaceId, surface: 'aimode' }),
+  },
   {
     name: 'get_order_stats',
     description: 'Dashboard-style summary of the store: total orders, total customers, 30-day revenue, order status breakdown, repeat-customer count, campaign-attributed revenue, WhatsApp messages sent, loyalty points issued, conversion rate. Call this for broad "how is the store doing" or revenue/order-count questions.',

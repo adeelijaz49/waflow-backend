@@ -3,8 +3,8 @@ const ops = require('../shared/operations');
 
 router.get('/', async (req, res) => {
   try {
-    const { status, source, page = 1, limit = 50 } = req.query;
-    res.json(await ops.listOrders({ status, source, page: +page, limit: +limit, workspaceId: req.user.workspaceId }));
+    const { status, source, paymentStatus, page = 1, limit = 50 } = req.query;
+    res.json(await ops.listOrders({ status, source, paymentStatus, page: +page, limit: +limit, workspaceId: req.user.workspaceId }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
