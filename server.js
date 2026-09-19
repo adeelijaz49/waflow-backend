@@ -84,6 +84,7 @@ app.use("/api/support",    requireAuth, require("./routes/support"));
 app.use("/api/imports",    requireAuth, require("./routes/imports"));
 app.use("/api/inbox",      requireAuth, require("./routes/inbox"));
 app.use("/api/insights",   requireAuth, require("./routes/insights"));
+app.use("/api/entitlements", requireAuth, require("./routes/entitlements"));
 // Uploaded images must stay public — WhatsApp's own servers fetch them by URL
 // with no Authorization header when rendering a message to a real customer.
 app.use("/uploads", express.static(require("./utils/config").UPLOAD_DIR));
@@ -100,6 +101,9 @@ app.use("/gpt-api", require("./gpt/routes"));
 // deletion/correction tooling, separate credential from both the merchant
 // JWT auth above and the MCP admin login ─────────────────────────────────────
 app.use("/internal-admin", require("./middleware/requireInternalAdmin"), require("./routes/internalAdmin"));
+// Entitlements/billing admin tool — same Basic Auth gate, separate path
+// prefix so mounting it here doesn't touch the router above.
+app.use("/internal-admin-billing", require("./middleware/requireInternalAdmin"), require("./routes/adminEntitlements"));
 
 // ─── Stripe ──────────────────────────────────────────────────────────────────
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
