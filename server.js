@@ -85,6 +85,7 @@ app.use("/api/imports",    requireAuth, require("./routes/imports"));
 app.use("/api/inbox",      requireAuth, require("./routes/inbox"));
 app.use("/api/insights",   requireAuth, require("./routes/insights"));
 app.use("/api/entitlements", requireAuth, require("./routes/entitlements"));
+app.use("/api/legal",      requireAuth, require("./routes/legal"));
 // Uploaded images must stay public — WhatsApp's own servers fetch them by URL
 // with no Authorization header when rendering a message to a real customer.
 app.use("/uploads", express.static(require("./utils/config").UPLOAD_DIR));
