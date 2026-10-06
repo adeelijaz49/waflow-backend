@@ -22,6 +22,7 @@ const { requireAuth } = require("./middleware/requireAuth");
 const { withWorkspace, scopedFilter } = require("./shared/operations");
 const inbox            = require("./shared/inbox"); // WhatsApp Inbox — see shared/inbox.js
 const referrals         = require("./shared/referrals"); // Referral Promotions — see shared/referrals.js
+const instagram         = require("./shared/instagram"); // Instagram Promotion Scheduler — see shared/instagram.js
 
 // The WhatsApp webhook and Stripe webhook serve real customers directly, with
 // no logged-in session to read a workspaceId from. Only one platform WABA
@@ -88,6 +89,9 @@ app.use("/api/insights",   requireAuth, require("./routes/insights"));
 app.use("/api/entitlements", requireAuth, require("./routes/entitlements"));
 app.use("/api/legal",      requireAuth, require("./routes/legal"));
 app.use("/api/referrals",  requireAuth, require("./routes/referrals"));
+app.use("/api/instagram-posts", requireAuth, require("./routes/instagramPosts"));
+app.use("/api/instagram-media", requireAuth, require("./routes/instagramMedia"));
+app.use("/api/social-accounts",  requireAuth, require("./routes/socialAccounts"));
 // Uploaded images must stay public — WhatsApp's own servers fetch them by URL
 // with no Authorization header when rendering a message to a real customer.
 app.use("/uploads", express.static(require("./utils/config").UPLOAD_DIR));
@@ -95,6 +99,9 @@ app.use(require("./routes/pay"));
 // Public referral-link redirects (/r/:code, /c/:code) — a friend's browser
 // hits these directly, with no logged-in session.
 app.use(require("./routes/referralRedirect"));
+// Public Instagram tracking redirects (/t/:code) and the Meta OAuth callback
+// (Meta redirects the merchant's bare browser here, no session available).
+app.use(require("./routes/instagramRedirect"));
 
 // ─── MCP (Model Context Protocol) — lets Claude connect as tools ────────────
 app.use(require("./mcp/oauth").router);
@@ -110,6 +117,8 @@ app.use("/internal-admin", require("./middleware/requireInternalAdmin"), require
 // Entitlements/billing admin tool — same Basic Auth gate, separate path
 // prefix so mounting it here doesn't touch the router above.
 app.use("/internal-admin-billing", require("./middleware/requireInternalAdmin"), require("./routes/adminEntitlements"));
+// Instagram Promotion Scheduler add-on toggle — same pattern.
+app.use("/internal-admin-instagram", require("./middleware/requireInternalAdmin"), require("./routes/adminInstagram"));
 
 // ─── Stripe ──────────────────────────────────────────────────────────────────
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
@@ -955,6 +964,13 @@ app.post("/webhook", async (req, res) => {
   await referrals.handleInboundReferralCode({ workspaceId, from, message, contactName })
     .catch(err => console.error("referrals handleInboundReferralCode error:", err.message));
 
+  // Instagram Promotion Scheduler — same "must run before Inbox's auto-
+  // create" reasoning as Referral Promotions above. Detects its own
+  // distinct "Code: IG-XXXXXXXX" pattern (never ambiguous with the Referral
+  // Promotions feature's plain-hex code — see shared/instagram.js).
+  await instagram.handleInboundTrackingCode({ workspaceId, from, message, contactName })
+    .catch(err => console.error("instagram handleInboundTrackingCode error:", err.message));
+
   // WhatsApp Inbox — log every inbound message into the merchant-facing
   // conversation thread before any of the existing shopping/flow dispatch
   // below runs. Never throws (self-contained try/catch inside), so a logging
@@ -1461,6 +1477,7 @@ if (require.main === module) {
     tokenManager.init(); // validate + auto-refresh WA token in background
     require("./utils/flowScheduler").startFlowScheduler();
     referrals.startReferralScheduler();
+    instagram.startInstagramScheduler();
   });
 }
 

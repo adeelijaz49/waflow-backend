@@ -32,7 +32,7 @@ router.get('/promotions/:id', async (req, res) => {
 
 router.put('/promotions/:id', async (req, res) => {
   try {
-    res.json(await referrals.updateReferralPromotion({ id: req.params.id, workspaceId: req.user.workspaceId, ...req.body }));
+    res.json(await referrals.updateReferralPromotion({ ...req.body, id: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Referral promotion not found') return res.status(404).json({ error: 'Not found' });
     res.status(400).json({ error: err.message });
