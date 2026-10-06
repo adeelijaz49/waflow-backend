@@ -1,0 +1,23 @@
+◇ injected env (24) from .env // tip: ⌘ override existing { override: true }
+[WA Token] Loaded from cache, expires 2026-11-03T07:03:16.000Z
+Server running on http://localhost:3000
+[WA Token] Valid, expires 2026-11-03T07:03:16.000Z
+MongoDB connected
+Incoming from 61411716324: {
+  "from": "61411716324",
+  "id": "wamid.TESTFRIEND1",
+  "type": "text",
+  "text": {
+    "body": "Hi, I'd like to claim my referral offer. Code: 9E66397674"
+  },
+  "timestamp": "1700000000"
+}
+Incoming from 61422286126: {
+  "from": "61422286126",
+  "id": "wamid.TESTSELF1",
+  "type": "text",
+  "text": {
+    "body": "Code: 9E66397674"
+  },
+  "timestamp": "1700000001"
+}

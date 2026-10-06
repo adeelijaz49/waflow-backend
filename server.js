@@ -21,6 +21,7 @@ const Workspace       = require("./models/Workspace");
 const { requireAuth } = require("./middleware/requireAuth");
 const { withWorkspace, scopedFilter } = require("./shared/operations");
 const inbox            = require("./shared/inbox"); // WhatsApp Inbox — see shared/inbox.js
+const referrals         = require("./shared/referrals"); // Referral Promotions — see shared/referrals.js
 
 // The WhatsApp webhook and Stripe webhook serve real customers directly, with
 // no logged-in session to read a workspaceId from. Only one platform WABA
@@ -86,10 +87,14 @@ app.use("/api/inbox",      requireAuth, require("./routes/inbox"));
 app.use("/api/insights",   requireAuth, require("./routes/insights"));
 app.use("/api/entitlements", requireAuth, require("./routes/entitlements"));
 app.use("/api/legal",      requireAuth, require("./routes/legal"));
+app.use("/api/referrals",  requireAuth, require("./routes/referrals"));
 // Uploaded images must stay public — WhatsApp's own servers fetch them by URL
 // with no Authorization header when rendering a message to a real customer.
 app.use("/uploads", express.static(require("./utils/config").UPLOAD_DIR));
 app.use(require("./routes/pay"));
+// Public referral-link redirects (/r/:code, /c/:code) — a friend's browser
+// hits these directly, with no logged-in session.
+app.use(require("./routes/referralRedirect"));
 
 // ─── MCP (Model Context Protocol) — lets Claude connect as tools ────────────
 app.use(require("./mcp/oauth").router);
@@ -937,6 +942,23 @@ app.post("/webhook", async (req, res) => {
   // below runs. Never throws (self-contained try/catch inside), so a logging
   // failure can never block the customer-facing flow that follows.
   const contactName = value?.contacts?.[0]?.profile?.name;
+
+  // Referral Promotions runs FIRST, ahead of the Inbox hook below — it needs
+  // to know whether this phone was already a known customer *before this
+  // message* (its own abuse-prevention rule: a phone already known to the
+  // merchant shouldn't count as a referred "new customer"). The Inbox hook
+  // right after this one also auto-creates a Customer for any inbound
+  // message, which would make every phone look "already known" if it ran
+  // first. Detects a "Code: XXXXXXXXXX" referral code in the inbound text
+  // (present only on messages that arrived via a referral deep link); a
+  // no-op for every other message. Never throws, same reasoning as Inbox.
+  await referrals.handleInboundReferralCode({ workspaceId, from, message, contactName })
+    .catch(err => console.error("referrals handleInboundReferralCode error:", err.message));
+
+  // WhatsApp Inbox — log every inbound message into the merchant-facing
+  // conversation thread before any of the existing shopping/flow dispatch
+  // below runs. Never throws (self-contained try/catch inside), so a logging
+  // failure can never block the customer-facing flow that follows.
   await inbox.logInboundMessage({ workspaceId, from, message, contactName })
     .catch(err => console.error("inbox logInboundMessage error:", err.message));
 
@@ -1438,6 +1460,7 @@ if (require.main === module) {
     console.log(`Server running on http://localhost:${PORT}`);
     tokenManager.init(); // validate + auto-refresh WA token in background
     require("./utils/flowScheduler").startFlowScheduler();
+    referrals.startReferralScheduler();
   });
 }
 
