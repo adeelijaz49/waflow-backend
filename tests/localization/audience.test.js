@@ -529,14 +529,26 @@ describe('resolveAudience — the same-phone opt-out rule (Customer.phone is not
     expect(filters.filter((f) => f.optedOut === true)).toHaveLength(0);
   });
 
-  test('the opted-out phone list is read through loadOptedOutPhones: normalised digits only, undeliverable numbers dropped', async () => {
+  test('the opted-out phone list is read through loadOptedOutPhones: normalised digits only, junk dropped, local spellings resolved with the workspace country code (R2-03)', async () => {
     const kit = makeKit();
     addCustomer(kit, { phone: '+966 50 000 0001', optedOut: true });
-    addCustomer(kit, { phone: '0500000002', optedOut: true }); // local form: not a deliverable number, matches nobody
+    addCustomer(kit, { phone: '0500000002', optedOut: true }); // local form: resolved with the default country code (966), like H1
+    addCustomer(kit, { phone: '500000005', optedOut: true }); // bare national number
+    addCustomer(kit, { phone: '00966500000006', optedOut: true });
+    addCustomer(kit, { phone: 'not a number', optedOut: true });
     addCustomer(kit, { phone: '966500000003', optedOut: false });
     addCustomer(kit, { phone: '966500000004', optedOut: true }, OTHER_WS);
     const phones = await loadOptedOutPhones(kit.deps, WS);
-    expect([...phones]).toEqual(['966500000001']);
+    expect([...phones].sort()).toEqual(['500000005', '966500000001', '966500000002', '966500000005', '966500000006']);
+  });
+
+  test('R2-03: the workspace default country code decides what a local number means; without Settings only the international spelling is used', async () => {
+    const kit = makeKit();
+    addCustomer(kit, { phone: '0412345678', optedOut: true });
+    kit.deps.Settings = { findOne: () => ({ select: () => ({ lean: async () => ({ defaultCountryCode: '61' }) }) }) };
+    expect([...(await loadOptedOutPhones(kit.deps, WS))]).toEqual(['61412345678']);
+    delete kit.deps.Settings;
+    expect([...(await loadOptedOutPhones(kit.deps, WS))]).toEqual([]);
   });
 
   test('a workspace with more opted-out records than the limit fails CLOSED with a clear error, never a silently partial check', async () => {

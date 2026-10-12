@@ -14,6 +14,12 @@
 // string is never printed. The pure core (parseArgs / run) takes its dependencies
 // by injection so it is unit-tested without a database; the thin wrapper at the
 // bottom connects, runs and disconnects.
+//
+// The production WhatsApp webhook is single-workspace: server.js resolveWebhookWorkspaceId() serves
+// the OLDEST workspace (single-field sort on createdAt). Arabic in WhatsApp conversations therefore
+// only reaches that workspace, so `list` always shows it (marked) and `status` / `enable` print a
+// WARNING (never an error: the owner may still proceed) when the chosen workspace is another one.
+// The lookup is one read-only query and fails soft (no warning if it cannot be answered).
 const os = require('os');
 
 const COMMANDS = ['list', 'status', 'enable', 'disable'];
@@ -26,6 +32,22 @@ const USAGE = [
 ].join('\n');
 
 class UsageError extends Error {}
+
+const WEBHOOK_MARK = '[webhook workspace]';
+
+function describeWebhookWorkspace(webhook) {
+  const created = webhook.createdAt && !Number.isNaN(new Date(webhook.createdAt).getTime())
+    ? `, created ${new Date(webhook.createdAt).toISOString().slice(0, 10)}` : '';
+  return `${webhook.name || '(unnamed workspace)'} (${webhook.workspaceId}${created})`;
+}
+
+// Same wording is used on the /internal-admin-localization page (routes/adminLocalization.js).
+function webhookWarning(webhook) {
+  return 'WARNING: Arabic in WhatsApp conversations only reaches the OLDEST workspace, because the single WhatsApp '
+    + `webhook serves that workspace only: ${describeWebhookWorkspace(webhook)}. `
+    + 'This workspace is not the oldest one, so inbound WhatsApp conversations (replies, shopping journey, STOP/START) '
+    + 'will not use Arabic for it. You may still proceed.';
+}
 
 function parseArgs(argv) {
   const args = { command: null, workspaceId: null, notes: undefined, dryRun: false };
@@ -59,13 +81,36 @@ function describeFlag(flag) {
   return parts.join(' | ');
 }
 
-// deps: { findWorkspace(id), getFlag(id), listFlags(), setFlag(args), addLog(row), adminUser, print(line) }
+// The oldest workspace (the webhook one) as { workspaceId, name, createdAt } or null. Optional dependency
+// (older callers/tests omit it) and fail-soft: an error here must never block the command.
+async function lookupWebhookWorkspace(deps) {
+  if (typeof deps.findWebhookWorkspace !== 'function') return null;
+  try {
+    const w = await deps.findWebhookWorkspace();
+    if (!w || !(w.workspaceId || w._id)) return null;
+    return { workspaceId: String(w.workspaceId || w._id), name: w.name, createdAt: w.createdAt };
+  } catch (err) {
+    return null;
+  }
+}
+
+// deps: { findWorkspace(id), getFlag(id), listFlags(), setFlag(args), addLog(row), adminUser, print(line),
+//         findWebhookWorkspace() (optional, read-only) }
 async function run(args, deps) {
   const { print } = deps;
   if (args.command === 'list') {
     const rows = await deps.listFlags();
-    if (!rows.length) print('No workspace has a localisation record yet.');
-    for (const row of rows) print(`${row.workspaceId}  ${row.name || '(unknown workspace)'}  ${describeFlag(row)}`);
+    const webhook = await lookupWebhookWorkspace(deps);
+    const webhookListed = !!webhook && rows.some((row) => String(row.workspaceId) === webhook.workspaceId);
+    if (!rows.length && !webhook) print('No workspace has a localisation record yet.');
+    for (const row of rows) {
+      const mark = webhook && String(row.workspaceId) === webhook.workspaceId ? `  ${WEBHOOK_MARK}` : '';
+      print(`${row.workspaceId}  ${row.name || '(unknown workspace)'}  ${describeFlag(row)}${mark}`);
+    }
+    if (webhook && !webhookListed) {
+      print(`${webhook.workspaceId}  ${webhook.name || '(unknown workspace)'}  disabled (no localisation record yet)  ${WEBHOOK_MARK}`);
+    }
+    if (webhook) print(`${WEBHOOK_MARK} = the OLDEST workspace: the only one that Arabic in WhatsApp conversations reaches.`);
     return 0;
   }
 
@@ -77,6 +122,11 @@ async function run(args, deps) {
   const before = await deps.getFlag(args.workspaceId);
   print(`Workspace: ${workspace.name || args.workspaceId} (${args.workspaceId})`);
   print(`Before:    ${describeFlag(before)}`);
+  const webhook = await lookupWebhookWorkspace(deps);
+  if (webhook) {
+    if (webhook.workspaceId === String(args.workspaceId)) print(`This is the webhook workspace (the OLDEST workspace): Arabic in WhatsApp conversations reaches it.`);
+    else print(webhookWarning(webhook));
+  }
   if (args.command === 'status') return 0;
 
   const enabled = args.command === 'enable';
@@ -113,6 +163,11 @@ function buildDeps(print) {
     print,
     findWorkspace: (id) => Workspace.findById(id).select('name').lean(),
     getFlag: (id) => LocaleSettings.findOne({ workspaceId: id }).lean(),
+    // READ-ONLY, same query as server.js resolveWebhookWorkspaceId (single-field sort: Cosmos-safe).
+    async findWebhookWorkspace() {
+      const w = await Workspace.findOne().sort({ createdAt: 1 }).select('name createdAt').lean();
+      return w ? { workspaceId: String(w._id), name: w.name, createdAt: w.createdAt } : null;
+    },
     async listFlags() {
       // Sorted here, not by the database: Cosmos DB rejects a multi-field sort without a compound index.
       const rows = (await LocaleSettings.find({}).limit(500).lean())
@@ -155,4 +210,4 @@ if (require.main === module) {
     .catch((err) => { console.error('Failed:', err && err.message); process.exitCode = 1; });
 }
 
-module.exports = { parseArgs, run, describeFlag, UsageError, USAGE };
+module.exports = { parseArgs, run, describeFlag, webhookWarning, UsageError, USAGE, WEBHOOK_MARK };

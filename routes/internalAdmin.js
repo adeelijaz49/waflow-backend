@@ -11,6 +11,7 @@ const Order = require('../models/Order');
 const Booking = require('../models/Booking');
 const AdminAuditLog = require('../models/AdminAuditLog');
 const { trackActivity, checkBreach } = require('../utils/breachAlert');
+const { toWesternDigits } = require('../shared/localization/arabicText');
 
 function layout(title, body) {
   return `<!doctype html><html><head><title>${title} — Waflow Internal Admin</title>
@@ -59,7 +60,7 @@ router.get('/customers', async (req, res) => {
   trackActivity(req.adminIp);
 
   const isEmail = q.includes('@');
-  const filter = isEmail ? { email: new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } : { phone: new RegExp(q.replace(/\D/g, '')) };
+  const filter = isEmail ? { email: new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } : { phone: new RegExp(toWesternDigits(q).replace(/\D/g, '')) };
   const customers = await Customer.find(filter).limit(50).lean();
   const workspaceIds = [...new Set(customers.map(c => String(c.workspaceId)))];
   const workspaces = await Workspace.find({ _id: { $in: workspaceIds } }, 'name').lean();

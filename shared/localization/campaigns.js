@@ -225,10 +225,13 @@ function deliveryOf(row, message) {
   return 'sent';
 }
 
+// C3: the reason / Meta code of a delivery that came back failed (a stale value on a later delivered/read row is never shown).
+function failedDelivery(message, field) { return (message && message.status === 'failed' && message[field]) || null; }
+
 async function messageStatuses(deps, workspaceId, wamids) {
   const map = new Map();
   for (let i = 0; i < wamids.length; i += 1000) {
-    const rows = await deps.CampaignMessage.find({ workspaceId, wamid: { $in: wamids.slice(i, i + 1000) } }).select('wamid status').lean();
+    const rows = await deps.CampaignMessage.find({ workspaceId, wamid: { $in: wamids.slice(i, i + 1000) } }).select('wamid status errorCode statusReason').lean();
     for (const row of rows) map.set(row.wamid, row);
   }
   return map;
@@ -267,8 +270,9 @@ async function recipients({ workspaceId, id, query }, deps = realDeps()) {
       status: row.status,
       deliveryStatus: deliveryOf(row, messages.get(row.wamid)),
       wamid: row.wamid || null,
-      error: row.error || null,
-      errorCode: row.errorCode || null,
+      // C3: a delivery that came back failed carries Meta's reason/code from the status callback (statusErrors.js documents the codes)
+      error: row.error || failedDelivery(messages.get(row.wamid), 'statusReason'),
+      errorCode: row.errorCode || failedDelivery(messages.get(row.wamid), 'errorCode'),
     };
   });
   return { items, total, page, limit };

@@ -485,18 +485,62 @@ describe('CSV downloads', () => {
   });
 });
 
+describe('GET /customers/:id/language (profile panel, IM-D)', () => {
+  const get = (app, id) => request(app).get(`${BASE}/${id}/language`);
+
+  test('returns the same row shape as the PUT and writes nothing', async () => {
+    const res = await get(makeApp(), c.sara._id);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: c.sara._id, name: expect.any(String), phone: '966500000001', language: 'ar', languageSource: 'inferred', effectiveLanguage: 'ar' });
+    expect(CustomerLanguage.docs).toHaveLength(2);
+    expect(CustomerLanguage.calls.every((call) => call.method !== 'bulkWrite' && !/update|insert|upsert/i.test(call.method))).toBe(true);
+  });
+
+  test('no sidecar row: language unknown, effective language = the merchant default', async () => {
+    const res = await get(makeApp(), c.zed._id);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ language: 'unknown', languageSource: null, effectiveLanguage: 'ar' });
+  });
+
+  test("another workspace's customer is a 404 (a workspace-2 id under a workspace-1 token)", async () => {
+    const res = await get(makeApp(), c.theirs2._id);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: expect.any(String), code: 'CUSTOMER_NOT_FOUND' });
+  });
+
+  test.each([['erased'], ['demo']])('a %s customer is a 404', async (key) => {
+    expect((await get(makeApp(), c[key]._id)).status).toBe(404);
+  });
+
+  test('a workspaceId in the query is never read', async () => {
+    const res = await request(makeApp()).get(`${BASE}/${c.theirs._id}/language`).query({ workspaceId: W2 });
+    expect(res.status).toBe(404);
+    expectOnlyWorkspace(W1, W2);
+  });
+
+  test.each([['abc'], ['12345'], ['%7B%22%24ne%22%3Anull%7D']])('id %s -> 400 INVALID_ID', async (id) => {
+    const res = await get(makeApp(), id);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('INVALID_ID');
+  });
+
+  test('the sibling two-segment routes are not shadowed', async () => {
+    expect((await request(makeApp()).get(`${BASE}/language/template.csv`)).status).toBe(200);
+    expect((await request(makeApp()).get(`${BASE}/language/export.csv`)).status).toBe(200);
+  });
+});
+
 describe('routing', () => {
   test('routes that do not exist are 404, and verbs are respected', async () => {
     const app = makeApp();
     expect((await request(app).get(`${BASE}/language/nothing`)).status).toBe(404);
     expect((await request(app).delete(`${BASE}/${c.zed._id}/language`)).status).toBe(404);
-    expect((await request(app).get(`${BASE}/${c.zed._id}/language`)).status).toBe(404);
     expect((await request(app).post(`${BASE}/language/export.csv`)).status).toBe(404);
   });
 
   test('nothing in the router can delete: it exposes no DELETE route', () => {
     const router = require('../../routes/localization/customers');
     const verbs = router.stack.filter((l) => l.route).flatMap((l) => Object.keys(l.route.methods));
-    expect(verbs.sort()).toEqual(['get', 'get', 'get', 'post', 'post', 'put']);
+    expect(verbs.sort()).toEqual(['get', 'get', 'get', 'get', 'post', 'post', 'put']); // + GET /:id/language (IM-D)
   });
 });

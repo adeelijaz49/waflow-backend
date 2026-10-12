@@ -30,6 +30,7 @@ const { waPost } = require('../utils/whatsapp');
 const tokenManager = require('../utils/tokenManager');
 const { APP_URL } = require('../utils/config');
 const { canSendMarketing } = require('./consent');
+const { oneWordLastname } = require('./localization/nameGuard');
 
 const WA_PHONE_ID = process.env.WA_PHONE_ID || '1032683093271618';
 const WA_BASE = 'https://graph.facebook.com/v25.0';
@@ -216,21 +217,27 @@ async function sendReferralLinksToCustomers({ referralPromotionId, customerIds, 
   assertValidCustomerIds(customerIds);
   const promotion = await getReferralPromotion({ id: referralPromotionId, workspaceId });
   const customers = await Customer.find(withWorkspace({ _id: { $in: customerIds } }, workspaceId));
+  // Arabic localisation (shared/localization/legacySenders.js): null unless the merchant has Arabic on AND an Arabic customer is selected.
+  let loc = null;
+  try { loc = await require('./localization/legacySenders').begin({ sender: 'referral_link', workspaceId: workspaceId || promotion.workspaceId, customers, promotion }); } catch (_) {}
 
   let sentCount = 0;
   const skipped = [];
   for (const customer of customers) {
     if (!canSendMarketing(customer) && !customer.isDemo) { skipped.push({ customerId: customer._id, reason: 'not_consented_or_opted_out' }); continue; }
+    if (loc && loc.excludes(customer)) { skipped.push({ customerId: customer._id, reason: 'opted_out_same_phone' }); continue; }
     const code = await getOrCreateCustomerCode({ referralPromotionId, customerId: customer._id, workspaceId });
-    const body = referralMessage(customer, promotion, code);
+    const body = (loc && await loc.referralBody(customer, promotion, code)) || referralMessage(customer, promotion, code);
     try {
       await waPost({ messaging_product: 'whatsapp', to: customer.phone, type: 'text', text: { body } });
       sentCount++;
+      if (loc) await loc.record(customer, { sent: true });
     } catch (err) {
       skipped.push({ customerId: customer._id, reason: err.message });
+      if (loc) await loc.record(customer, { sent: false, failReason: err.message });
     }
   }
-  return { sentCount, skipped, total: customers.length };
+  return { sentCount, skipped, total: customers.length, ...(loc ? loc.summary() : {}) };
 }
 
 // ─── Click tracking + redirect ─────────────────────────────────────────────────
@@ -329,7 +336,7 @@ async function handleInboundReferralCode({ workspaceId, from, message, contactNa
   let friend = existedBefore;
   if (!friend) {
     const [firstname, ...rest] = (contactName || from).trim().split(/\s+/);
-    friend = await Customer.create({ workspaceId, phone: from, firstname: firstname || from, lastname: rest.join(' ') });
+    friend = await Customer.create({ workspaceId, phone: from, firstname: firstname || from, lastname: rest.join(' ') || await oneWordLastname(workspaceId) }); // IM-D B4: flagged workspaces only
   }
 
   // "A phone number already known to the merchant should not count as a new

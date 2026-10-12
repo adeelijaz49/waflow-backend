@@ -39,11 +39,11 @@ function createRouter(templates = defaultService) {
   const router = express.Router();
 
   router.get('/', route(async (req, res) => {
-    res.json(await templates.listTemplates({ workspaceId: req.user.workspaceId, ...pick(req.query, ['search', 'useCase', 'archived', 'page', 'limit']) }));
+    res.json(await templates.listTemplates({ workspaceId: req.user.workspaceId, ...pick(req.query, ['search', 'useCase', 'archived', 'page', 'limit', 'linkedPromotionId']) }));
   }));
 
   router.post('/', route(async (req, res) => {
-    res.status(201).json(await templates.createTemplate({ ...scope(req), ...body(req, ['name', 'useCase', 'category', 'variants', 'key']) }));
+    res.status(201).json(await templates.createTemplate({ ...scope(req), ...body(req, ['name', 'useCase', 'category', 'variants', 'key', 'linkedPromotionId']) }));
   }));
 
   router.get('/library', route(async (req, res) => {

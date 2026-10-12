@@ -11,6 +11,10 @@ assertThrowawayDb();
 // consented and would keep receiving campaigns. The audience resolution therefore excludes every
 // recipient whose normalised phone matches ANY opted-out record of the same workspace, counts it as
 // skipped.optedOut, and the sender honours it on every real send.
+// UPDATE (H1, approved global change, design D3): the STOP paths now ALSO opt out every other record of the same normalised
+// number in the workspace (shared/localization/samePhone.js), so the first test below asserts that instead of the old gap.
+// The exclusion stays as the second line of defence for states that exist without a STOP (CSV imports of an already opted-out
+// number, records added later); all other tests of this file build such states directly.
 //
 // Driven with the REAL models, the real inbound hook (to create the duplicate state the honest way)
 // and the real planner/sender behind a FAKE live transport: nothing can reach WhatsApp.
@@ -79,7 +83,7 @@ const spaced = (digits) => `+${digits.slice(0, 3)} ${digits.slice(3, 5)} ${digit
 const rowOf = (campaign, customer) => LocalizedSend.findOne({ campaignId: campaign._id, customerId: customer._id }).lean();
 
 describe('the real STOP path leaves the other record of the same number consented - the campaign must not reach it', () => {
-  test('STOP typed in Arabic from 966… opts out ONLY the record stored as 966… ; the +966… record is excluded from the plan and never sent to', async () => {
+  test('STOP typed in Arabic from 966… opts out the record stored as 966… AND (H1) the +966… record of the same number; neither is planned or sent to', async () => {
     const ws = await fx.makeWorkspace();
     const tpl = await fx.makeTemplate(ws.workspaceId);
     const digits = fx.nextPhone();
@@ -91,14 +95,22 @@ describe('the real STOP path leaves the other record of the same number consente
     expect(await hook.handleInbound({ workspaceId: ws.workspaceId, from: digits, message: textMsg('توقف'), contactName: 'Layla' }, hookDeps())).toBe(true);
     const afterInbox = await Customer.findById(inboxRecord._id).lean();
     const afterMerchant = await Customer.findById(merchantRecord._id).lean();
-    expect(afterInbox.optedOut).toBe(true); // the first (here: only) exact match was opted out...
-    expect(afterMerchant.optedOut).toBe(false); // ...and the other record of the same person was NOT: this is the gap
-    expect(afterMerchant.marketingConsent).toBe(true);
-    expect(await ConsentEvent.countDocuments({ customerId: merchantRecord._id })).toBe(0);
+    expect(afterInbox.optedOut).toBe(true); // the exact match was opted out...
+    // H1 (approved global change, design D3): ...and so is the OTHER record of the same person, with its own consent event. This
+    // test used to assert the old gap (afterMerchant.optedOut === false and no event); the same-phone exclusion in the planner
+    // (the other tests of this file) is now the second line of defence for states that exist without a STOP.
+    expect(afterMerchant.optedOut).toBe(true);
+    expect(afterMerchant.optedOutAt).toBeInstanceOf(Date);
+    expect(afterMerchant.marketingConsent).toBe(true); // only the opt-out flag changes, never the consent history
+    const merchantEvents = await ConsentEvent.find({ customerId: merchantRecord._id }).lean();
+    expect(merchantEvents).toHaveLength(1);
+    expect(merchantEvents[0]).toMatchObject({ type: 'consent_withdrawn', method: 'whatsapp_stop_command' });
+    expect(merchantEvents[0].source).toContain('(same number, other customer record)');
+    expect(await ConsentEvent.countDocuments({ customerId: inboxRecord._id })).toBe(1); // the primary keeps exactly the one event it always got
 
     const p = await plan(ws, tpl);
     expect(p.audience.eligible).toBe(1); // only the bystander
-    expect(p.skipped.optedOut).toBe(2); // the opted-out record + the record that shares its number
+    expect(p.skipped.optedOut).toBe(2); // both records of her number are opted out and counted, not loaded
     expect(p.canSend).toBe(true);
 
     const fake = liveFake();
@@ -106,8 +118,8 @@ describe('the real STOP path leaves the other record of the same number consente
     expect(fake.sent.map((s) => s.to)).toEqual([bystander.phone]); // Meta was never called for either record of Layla's number
     expect(campaign.status).toBe('sent'); // policy skips do not make a campaign partial
     expect(campaign.plan.skipped.optedOut).toBe(2);
-    expect(await rowOf(campaign, merchantRecord)).toMatchObject({ status: 'skipped_opted_out', errorCode: 'opted_out_same_phone' });
-    expect(await LocalizedSend.countDocuments({ campaignId: campaign._id, customerId: inboxRecord._id })).toBe(0); // opted-out records are counted, not loaded
+    expect(await LocalizedSend.countDocuments({ campaignId: campaign._id, customerId: merchantRecord._id })).toBe(0); // opted-out records are counted, not loaded
+    expect(await LocalizedSend.countDocuments({ campaignId: campaign._id, customerId: inboxRecord._id })).toBe(0);
     expect(await rowOf(campaign, bystander)).toMatchObject({ status: 'sent' });
   });
 

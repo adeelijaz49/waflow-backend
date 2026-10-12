@@ -10,6 +10,8 @@
 //   opt_in / decline  consent request answers  (payload consent_yes_/consent_no_<customerId>)
 //   opt_out           marketing opt-out        (payload optout_<campaignId>)
 //   flow_button       a button of a linked Automated-Flows message (msgnode_<nodeId>_<position>)
+//   shop_now          the "shop / book" button of a template linked to a Promotion (payload promo_<promotionId>:
+//                     opens the existing shopping journey, exactly like the English announcement's button)
 //   url               a static https link (a URL button; needs no payload)
 // Rules verified live against Meta: a body may not start or end with a variable (error 2388299),
 // submitted text carries no direction marks, and an `ar` variant needs Arabic — all errors. A
@@ -33,7 +35,7 @@ const LIMITS = Object.freeze({
   MAX_URL_BUTTONS: 2,
 });
 
-const BUTTON_ROLES = ['opt_in', 'decline', 'opt_out', 'url', 'flow_button'];
+const BUTTON_ROLES = ['opt_in', 'decline', 'opt_out', 'url', 'flow_button', 'shop_now'];
 const QUICK_REPLY_ROLES = Object.freeze(BUTTON_ROLES.filter((r) => r !== 'url'));
 const CONSENT_ROLES = Object.freeze(['opt_in', 'decline', 'opt_out']);
 const META_LANGUAGE = Object.freeze({ en: 'en', ar: 'ar', bilingual_ar_first: 'ar', bilingual_en_first: 'en' });
@@ -108,9 +110,10 @@ function bilingualWarnings(body, order, warnings) {
 }
 
 // variant: { language, body, header?, footer?, bilingualOrder?, buttons?: [{ role, text, url? }] }
-// opts: { category, linkedMessageNodeId } (flow buttons only make sense on a template linked to a flow message)
+// opts: { category, linkedMessageNodeId, linkedPromotionId } (flow buttons only make sense on a template linked to a flow
+// message, shop_now buttons only on one linked to a promotion)
 // -> { ok, errors: [{ code, field, message?, detail? }], warnings: [...], positional: {text, params} }
-function validateVariant(variant, { category = 'MARKETING', linkedMessageNodeId } = {}) {
+function validateVariant(variant, { category = 'MARKETING', linkedMessageNodeId, linkedPromotionId } = {}) {
   const errors = [];
   const warnings = [];
   const v = variant || {};
@@ -167,6 +170,7 @@ function validateVariant(variant, { category = 'MARKETING', linkedMessageNodeId 
       errors.push({ code: 'buttons_wrong_order', field });
     }
     if (role === 'flow_button' && !linkedMessageNodeId) errors.push({ code: 'flow_button_without_message_node', field });
+    if (role === 'shop_now' && !linkedPromotionId) errors.push({ code: 'shop_now_without_promotion', field });
     // Consent buttons must speak the message's language (spec §3.4).
     if (CONSENT_ROLES.includes(role) && (v.language === 'ar' || v.language === 'en')) {
       const counts = countLetters(label);

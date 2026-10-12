@@ -4,6 +4,7 @@ const wa     = require('../utils/whatsapp');
 const { carts } = require('../utils/state');
 const { APP_URL } = require('../utils/config');
 const { money } = require('../utils/currency');
+const { arabicSwitchHtml } = require('../shared/localization/pages/switchLink'); // '' unless the workspace has Arabic on (IM-D)
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const PUBLISHABLE_KEY = process.env.STRIPE_PUBLISHABLE_KEY;
@@ -12,7 +13,7 @@ function escapeHtml(str) {
   return String(str ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function pageShell(title, bodyHtml) {
+function pageShell(title, bodyHtml, extraHtml = '') {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -54,7 +55,7 @@ function pageShell(title, bodyHtml) {
 </style>
 </head>
 <body>
-<div class="card">${bodyHtml}</div>
+<div class="card">${bodyHtml}${extraHtml}</div>
 </body>
 </html>`;
 }
@@ -69,7 +70,7 @@ router.get('/pay/:piId', async (req, res) => {
   }
 
   if (pi.status === 'succeeded') {
-    return res.send(pageShell('Already paid', '<div class="icon">✅</div><h1>Already paid</h1><p class="muted">This order has already been paid. You can return to WhatsApp.</p>'));
+    return res.send(pageShell('Already paid', '<div class="icon">✅</div><h1>Already paid</h1><p class="muted">This order has already been paid. You can return to WhatsApp.</p>', await arabicSwitchHtml(res, { pi, href: `/pay/${encodeURIComponent(req.params.piId)}?lang=ar` })));
   }
 
   const phone        = pi.metadata?.buyerPhone || '';
@@ -133,7 +134,7 @@ router.get('/pay/:piId', async (req, res) => {
     </script>
   `;
 
-  res.send(pageShell('Complete Your Payment', body));
+  res.send(pageShell('Complete Your Payment', body, await arabicSwitchHtml(res, { pi, href: `/pay/${encodeURIComponent(req.params.piId)}?lang=ar` })));
 });
 
 // ── Redirect landing for 3DS / wallet payment methods ────────────────────────
@@ -149,7 +150,7 @@ router.get('/payment-result', async (req, res) => {
   }
 
   if (pi.status === 'succeeded') {
-    return res.send(pageShell('Payment successful', '<div class="icon">✅</div><h1>Payment successful!</h1><p class="muted">You can return to WhatsApp now.</p>'));
+    return res.send(pageShell('Payment successful', '<div class="icon">✅</div><h1>Payment successful!</h1><p class="muted">You can return to WhatsApp now.</p>', await arabicSwitchHtml(res, { pi, href: `/payment-result?payment_intent=${encodeURIComponent(piId)}&lang=ar` })));
   }
 
   const phone = pi.metadata?.buyerPhone || '';
@@ -159,7 +160,7 @@ router.get('/payment-result', async (req, res) => {
     <p class="muted">Your payment wasn't completed. You can try again or cancel.</p>
     <a class="exit" style="margin-top:20px" href="/pay/${encodeURIComponent(piId)}">Try Again</a>
     <a class="exit" href="/payment-cancelled?phone=${encodeURIComponent(phone)}">Cancel and return to WhatsApp</a>
-  `));
+  `, await arabicSwitchHtml(res, { pi, href: `/payment-result?payment_intent=${encodeURIComponent(piId)}&lang=ar` })));
 });
 
 // ── Explicit cancel from the payment page ────────────────────────────────────

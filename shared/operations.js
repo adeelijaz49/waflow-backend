@@ -34,12 +34,25 @@ const { money } = require('../utils/currency');
 const settingsCache = require('../utils/settingsCache');
 const { getCurrency } = settingsCache;
 const { canSendMarketing, grantMarketingConsent, sendUtilityMessageWithConsentAsk } = require('./consent');
+const { oneWordLastname } = require('./localization/nameGuard');
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const SHIPPING_COST = 0.5; // flat rate, matches server.js's WhatsApp checkout flow
 
 function wamidOf(sendResult) {
   return sendResult?.messages?.[0]?.id;
+}
+
+// Arabic localisation seam (shared/localization/legacySenders.js). Resolves to null - and the code that
+// uses it behaves exactly as before - unless the merchant has Arabic on AND an Arabic customer is in this
+// send. Never throws.
+async function localizedRun(args) {
+  try { return await require('./localization/legacySenders').begin(args); } catch (_) { return null; }
+}
+// Same idea for the session-text notices (booking / order messages). An error flagged localizedSendFailed
+// (a send WAS attempted and failed) is rethrown so the caller's own best-effort catch handles it as it does in English.
+async function localizedNotice(args) {
+  try { return await require('./localization/utilitySend').sendNotice(args); } catch (err) { if (err && err.localizedSendFailed) throw err; return null; }
 }
 
 // ─── Multi-tenant scoping (Phase 3) ─────────────────────────────────────────
@@ -192,7 +205,8 @@ async function cancelBooking({ bookingId, workspaceId }) {
   await booking.save();
   await TimeSlot.findByIdAndUpdate(booking.slotId._id, { $inc: { bookedCount: -1 } });
   try {
-    const result = await sendRebookMessage(
+    const arabic = booking.customerId ? await localizedNotice({ customerId: booking.customerId, workspaceId: booking.workspaceId, phone: booking.phone, withConsentAsk: false, refId: booking._id, localized: { key: 'senders.bookingCancelled', buttons: [{ id: `rebook_${booking.serviceId?._id}_${booking._id}`, titleKey: 'senders.bookingCancelledButton' }], values: () => require('./localization/senderValues').bookingNoticeValuesAsync(booking) } }) : null;
+    const result = arabic ? arabic.result : await sendRebookMessage(
       booking.phone, booking.customerName || 'Valued Customer',
       booking.serviceId?.name || 'your service', booking.slotId,
       booking.serviceId?._id?.toString(), booking._id.toString(),
@@ -219,7 +233,8 @@ async function rescheduleBooking({ bookingId, newSlotId, workspaceId }) {
   booking.status = 'confirmed';
   await booking.save();
   try {
-    const result = await waPost({
+    const arabic = booking.customerId ? await localizedNotice({ customerId: booking.customerId, workspaceId: booking.workspaceId, phone: booking.phone, withConsentAsk: false, refId: booking._id, localized: { key: 'senders.bookingRescheduled', values: () => require('./localization/senderValues').bookingNoticeValuesAsync(booking, newSlot) } }) : null;
+    const result = arabic ? arabic.result : await waPost({
       messaging_product: 'whatsapp', to: booking.phone, type: 'text',
       text: { body: `📅 Your booking for *${booking.serviceId?.name}* has been rescheduled to *${newSlot.date} at ${newSlot.startTime}*. See you then! 🎉` },
     });
@@ -254,7 +269,7 @@ async function confirmBooking({ bookingId, workspaceId }) {
     // consent-ask fails outside the 24h session window.
     const customer = booking.customerId ? await Customer.findById(booking.customerId) : null;
     const result = customer
-      ? await sendUtilityMessageWithConsentAsk({ customer, workspaceId, body })
+      ? await sendUtilityMessageWithConsentAsk({ customer, workspaceId, body, localized: { key: 'senders.bookingConfirmed', values: () => require('./localization/senderValues').bookingNoticeValuesAsync(booking), templateFallback: 'booking_confirmation' } })
       : await waPost({ messaging_product: 'whatsapp', to: booking.phone, type: 'text', text: { body } });
     if (booking.customerId) {
       await CampaignMessage.create({
@@ -274,7 +289,8 @@ async function declineBooking({ bookingId, workspaceId }) {
   await booking.save();
   await TimeSlot.findByIdAndUpdate(booking.slotId._id, { $inc: { bookedCount: -1 } });
   try {
-    const result = await waPost({
+    const arabic = booking.customerId ? await localizedNotice({ customerId: booking.customerId, workspaceId: booking.workspaceId, phone: booking.phone, withConsentAsk: false, refId: booking._id, localized: { key: 'senders.bookingDeclined', values: () => require('./localization/senderValues').bookingNoticeValuesAsync(booking) } }) : null;
+    const result = arabic ? arabic.result : await waPost({
       messaging_product: 'whatsapp', to: booking.phone, type: 'text',
       text: { body: `We're sorry, we're unable to accommodate your request for *${booking.serviceId?.name}* on *${booking.slotId?.date} at ${booking.slotId?.startTime}*. Please pick another time — we'd love to see you!` },
     });
@@ -369,6 +385,7 @@ async function getCustomerWhatsAppHistory({ customerId, workspaceId }) {
 // Actions tool schemas don't declare marketingConsent, so it can never arrive
 // here through those surfaces (same precedent as allowRealDemoSend).
 async function createCustomer({ marketingConsent, performedBy, ...data }) {
+  if (!String(data.lastname || '').trim()) data.lastname = (await oneWordLastname(data.workspaceId)) || data.lastname; // IM-D B4b: flagged workspaces only
   const customer = await Customer.create(data); // always created with schema default marketingConsent:false
   if (marketingConsent === true) {
     await grantMarketingConsent({ customer, method: 'manual_staff_entry', source: 'Add Customer form', performedBy, workspaceId: data.workspaceId });
@@ -455,8 +472,16 @@ async function sendConsentRequests({ workspaceId, customerIds } = {}) {
   const customers = await Customer.find(consentRequestEligibleFilter(workspaceId, customerIds));
   let sentCount = 0;
   const errors = [];
+  const loc = await localizedRun({ sender: 'consent_request', workspaceId, customers });
   for (const c of customers) {
     try {
+      // Arabic opt-in ask: loc does its own bookkeeping (asked-at stamp + consent_request CampaignMessage).
+      const arabic = loc ? await loc.trySend(c) : null;
+      if (arabic) {
+        if (arabic.skip) continue;
+        if (arabic.sent) sentCount++; else errors.push({ customerId: c._id, phone: c.phone, error: arabic.failReason });
+        continue;
+      }
       const result = await sendConsentRequestTemplate(c.phone, c.firstname, c._id);
       await Customer.findByIdAndUpdate(c._id, { marketingConsentAskedAt: new Date() });
       await CampaignMessage.create({
@@ -465,11 +490,13 @@ async function sendConsentRequests({ workspaceId, customerIds } = {}) {
         status: 'sent', sentAt: new Date(),
       }).catch(() => {});
       sentCount++;
+      if (loc) await loc.record(c, { sent: true, result });
     } catch (err) {
       errors.push({ customerId: c._id, phone: c.phone, error: err.message });
+      if (loc) await loc.record(c, { sent: false, failReason: err.message });
     }
   }
-  return { totalEligible: customers.length, sentCount, errors };
+  return { totalEligible: customers.length, sentCount, errors, ...(loc ? loc.summary() : {}) };
 }
 
 // ─── Orders ──────────────────────────────────────────────────────────────────
@@ -776,6 +803,7 @@ async function createOrder({ customerId, items, shippingAddress, workspaceId }) 
   const summary = cartItems.map((it, i) => `${i + 1}. ${it.name} — ${money(it.priceAud, currency)}`).join('\n');
   await sendUtilityMessageWithConsentAsk({
     customer, workspaceId,
+    localized: { key: 'senders.orderSummary', values: () => require('./localization/senderValues').orderSummaryValues({ workspaceId: workspaceId || customer.workspaceId, items, cartItems, subtotal, shipping: SHIPPING_COST, total, currency, address, link: `${APP_URL}/pay/${pi.id}` }) },
     body: `🛒 *Your Order Summary*\n\n${summary}\n\nSubtotal: ${money(subtotal, currency)}\nShipping: ${money(SHIPPING_COST, currency)}\n*Total: ${money(total, currency)}*\n\n📍 Delivering to:\n${address}\n\nPay securely:\n${APP_URL}/pay/${pi.id}`,
   });
 
@@ -1049,6 +1077,7 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
   const items = await resolvePromoItems(promotion);
   // DEFECT-02: optional merchant-authored custom entry message + branching.
   const entryNode = await resolveApprovedEntryNode(promotion);
+  const loc = await localizedRun({ sender: 'promotion', workspaceId: workspaceId || promotion.workspaceId, customers, promotion, items, allowRealDemoSend });
 
   let sentCount = 0;
   let demoCount = 0;
@@ -1062,12 +1091,20 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
     let templateName;
     let failReason;
     let simOutcome = null;
+    // Arabic customer of a switched-on merchant: null = the existing path below, unchanged.
+    const arabic = (!demo && loc) ? await loc.trySend(customer) : null;
+    if (arabic && arabic.skip) continue; // never message this person (same-phone opt-out / template stopped)
 
     if (demo) {
       // Zero real WhatsApp API calls for demo data — see simulateDemoConversion above.
       result = { messages: [{ id: fakeWamid() }] };
       sent = true; sentCount++;
       simOutcome = await simulateDemoConversion({ customer, promotion, items }).catch(() => null);
+    } else if (arabic) {
+      // The customer's Arabic version was attempted by loc.trySend; recorded exactly like the entry-node
+      // branch below (the CampaignMessage write after the chain is shared). Never retried in English.
+      messageType = arabic.messageType; templateName = arabic.templateName; result = arabic.result;
+      if (arabic.sent) { sent = true; sentCount++; } else { failReason = arabic.failReason; errors.push({ customer: customer._id, error: arabic.failReason }); }
     } else if (entryNode) {
       // Record which template we're using regardless of send success — a
       // template send validates the template's existence/approval synchronously
@@ -1121,6 +1158,7 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
       pointsIssued: simOutcome?.pointsIssued || 0,
       statusReason: sent ? undefined : failReason,
     }).catch(() => {}); // best-effort — a tracking-write failure shouldn't break the send loop
+    if (loc) await loc.record(customer, { sent, result, failReason }); // sidecar language row, never throws
 
     if (!demo) await new Promise(r => setTimeout(r, 300)); // real-send throttle only
   }
@@ -1136,7 +1174,7 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
   });
   // demoCount lets callers (esp. AI Mode) tell the merchant when a "successful"
   // send was actually simulated — see the Demo Mode isolation note above.
-  return { success: true, sentCount, skippedOptedOut, skippedNoConsent, errors, demoCount };
+  return { success: true, sentCount, skippedOptedOut, skippedNoConsent, errors, demoCount, ...(loc ? loc.summary() : {}) };
 }
 
 async function sendLoyaltyReminders({ customerIds, workspaceId } = {}) {
@@ -1149,6 +1187,7 @@ async function sendLoyaltyReminders({ customerIds, workspaceId } = {}) {
   const skippedNoConsent = requested.length - customers.length - skippedOptedOut;
   let sentCount = 0;
   let demoCount = 0;
+  const loc = await localizedRun({ sender: 'loyalty_reminder', workspaceId, customers });
   for (const c of customers) {
     if (!c.loyaltyPoints) continue;
     const demo = !!c.isDemo;
@@ -1157,11 +1196,16 @@ async function sendLoyaltyReminders({ customerIds, workspaceId } = {}) {
     let sent = false;
     let messageType = 'template';
     let templateName = LOYALTY_TEMPLATE;
+    const arabic = (!demo && loc) ? await loc.trySend(c) : null;
+    if (arabic && arabic.skip) continue;
 
     if (demo) {
       // Zero real WhatsApp API calls for demo data — see simulateDemoConversion above.
       result = { messages: [{ id: fakeWamid() }] };
       sent = true; sentCount++;
+    } else if (arabic) {
+      result = arabic.result; templateName = arabic.templateName; // messageType stays 'template'
+      if (arabic.sent) { sent = true; sentCount++; }
     } else {
       try {
         result = await sendLoyaltyTemplate(c.phone, c.firstname, c.loyaltyPoints);
@@ -1183,9 +1227,10 @@ async function sendLoyaltyReminders({ customerIds, workspaceId } = {}) {
       deliveredAt: demo && sent ? new Date() : undefined,
       readAt: demo && sent ? new Date() : undefined,
     }).catch(() => {});
+    if (loc) await loc.record(c, { sent, result });
     if (!demo) await new Promise(r => setTimeout(r, 300));
   }
-  return { success: true, sentCount, skippedOptedOut, skippedNoConsent, demoCount };
+  return { success: true, sentCount, skippedOptedOut, skippedNoConsent, demoCount, ...(loc ? loc.summary() : {}) };
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────

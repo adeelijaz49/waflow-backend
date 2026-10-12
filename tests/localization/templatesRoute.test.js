@@ -129,7 +129,7 @@ describe('create / list / get / update / archive', () => {
   test('POST creates (201) with the LocalizedTemplate shape; the workspace comes from the token, not the body', async () => {
     const w = world();
     const t = await create(w, { workspaceId: WS_B, createdBy: 'x', archived: true, linkedMessageNodeId: '95a1b2c3d4e5f60718293a4b', id: 'forged' });
-    expect(Object.keys(t).sort()).toEqual(['archived', 'category', 'createdAt', 'id', 'key', 'linkedMessageNodeId', 'name', 'updatedAt', 'useCase', 'variants']);
+    expect(Object.keys(t).sort()).toEqual(['archived', 'category', 'createdAt', 'id', 'key', 'linkedMessageNodeId', 'linkedPromotionId', 'name', 'updatedAt', 'useCase', 'variants']);
     expect(t).toMatchObject({ key: 'loyalty_reminder', category: 'MARKETING', archived: false, linkedMessageNodeId: null });
     expect(w.store.docs).toHaveLength(1);
     expect(w.store.docs[0]).toMatchObject({ workspaceId: WS_A, createdBy: USER_A, archived: false });

@@ -1042,6 +1042,98 @@ describe('importLanguages: files', () => {
   });
 });
 
+// ── profile panel + main-import language column (IM-D) ─────────────────────
+
+describe('getCustomerLanguage', () => {
+  test('one row in the list/PUT shape: stored language, source, effective language and name', async () => {
+    const sara = cust('سارة', 'أحمد', '966500000001');
+    const mona = cust('Mona', 'Mona', '966500000002');
+    const w = world({ customers: [sara, mona], languages: [lang(sara, 'ar', 'inferred')], merchantDefault: 'ar' });
+    expect(await svc.getCustomerLanguage({ workspaceId: W1, customerId: sara._id }, w.deps)).toEqual({
+      id: sara._id, name: 'سارة أحمد', phone: '966500000001', language: 'ar', languageSource: 'inferred', effectiveLanguage: 'ar', marketingConsent: false, optedOut: false,
+    });
+    expect(await svc.getCustomerLanguage({ workspaceId: W1, customerId: mona._id }, w.deps)).toMatchObject({ name: 'Mona', language: 'unknown', languageSource: null, effectiveLanguage: 'ar' });
+    expectScoped(w);
+    expect(w.CustomerLanguage.calls.every((call) => call.method !== 'bulkWrite')).toBe(true);
+  });
+
+  test("another workspace's, erased and demo customers are a 404; a missing workspace is refused", async () => {
+    const theirs = cust('Their', 'Person', '966500000009', {}, W2);
+    const erased = cust('Gone', 'Person', '966500000008', { deletedAt: new Date() });
+    const demo = cust('Demo', 'Person', '966500000007', { isDemo: true });
+    const w = world({ customers: [theirs, erased, demo] });
+    for (const customer of [theirs, erased, demo]) {
+      await expect(svc.getCustomerLanguage({ workspaceId: W1, customerId: customer._id }, w.deps)).rejects.toMatchObject({ status: 404, code: 'CUSTOMER_NOT_FOUND' });
+    }
+    await expect(svc.getCustomerLanguage({ workspaceId: W1, customerId: 'nope' }, w.deps)).rejects.toMatchObject({ status: 400, code: 'INVALID_ID' });
+    await expect(svc.getCustomerLanguage({ customerId: theirs._id }, w.deps)).rejects.toMatchObject({ status: 403 });
+  });
+});
+
+describe('setImportedLanguages', () => {
+  const run = (w, entries) => svc.setImportedLanguages({ workspaceId: W1, userId: USER, entries }, w.deps);
+
+  test('writes csv_import, leaves identical languages alone, protects customer_chose, overwrites merchant_set and inferred', async () => {
+    const fresh = cust('A', 'A', '966500000001');
+    const same = cust('B', 'B', '966500000002');
+    const chose = cust('C', 'C', '966500000003');
+    const merchant = cust('D', 'D', '966500000004');
+    const inferred = cust('E', 'E', '966500000005');
+    const w = world({
+      customers: [fresh, same, chose, merchant, inferred],
+      languages: [lang(same, 'ar', 'merchant_set'), lang(chose, 'en', 'customer_chose'), lang(merchant, 'en', 'merchant_set'), lang(inferred, 'en', 'inferred')],
+    });
+    const result = await run(w, [
+      { customerId: fresh._id, language: 'ar' }, { customerId: same._id, language: 'ar' }, { customerId: chose._id, language: 'ar' },
+      { customerId: merchant._id, language: 'ar' }, { customerId: inferred._id, language: 'ar' },
+    ]);
+    expect(result).toEqual({ written: 3, protected: 1, unchanged: 1, skipped: 0 });
+    const doc = (c) => w.CustomerLanguage.docs.find((d) => String(d.customerId) === String(c._id));
+    expect(doc(fresh)).toMatchObject({ language: 'ar', languageSource: 'csv_import', updatedBy: USER });
+    expect(doc(same)).toMatchObject({ language: 'ar', languageSource: 'merchant_set' }); // untouched
+    expect(doc(chose)).toMatchObject({ language: 'en', languageSource: 'customer_chose' });
+    expect(doc(merchant)).toMatchObject({ language: 'ar', languageSource: 'csv_import' });
+    expect(doc(inferred)).toMatchObject({ language: 'ar', languageSource: 'csv_import' });
+    expectScoped(w);
+  });
+
+  test('first entry per customer wins; only ar / en are written; foreign, erased and demo customers are skipped', async () => {
+    const mine = cust('Mine', 'Mine', '966500000001');
+    const theirs = cust('Their', 'Person', '966500000002', {}, W2);
+    const erased = cust('Gone', 'Person', '966500000003', { deletedAt: new Date() });
+    const demo = cust('Demo', 'Person', '966500000004', { isDemo: true });
+    const w = world({ customers: [mine, theirs, erased, demo] });
+    const result = await run(w, [
+      { customerId: mine._id, language: 'en' }, { customerId: mine._id, language: 'ar' },
+      { customerId: theirs._id, language: 'ar' }, { customerId: erased._id, language: 'ar' }, { customerId: demo._id, language: 'ar' },
+      { customerId: mine._id, language: 'unknown' }, { customerId: 'bad-id', language: 'ar' }, { language: 'ar' }, null,
+    ]);
+    expect(result).toEqual({ written: 1, protected: 0, unchanged: 0, skipped: 3 });
+    expect(w.CustomerLanguage.docs).toHaveLength(1);
+    expect(w.CustomerLanguage.docs[0]).toMatchObject({ language: 'en', languageSource: 'csv_import' });
+    expect(String(w.CustomerLanguage.docs[0].workspaceId)).toBe(W1);
+  });
+
+  test('a customer who chooses a language between the read and the write is still protected (atomic guard)', async () => {
+    const racer = cust('Racer', 'Racer', '966500000001');
+    const w = world({ customers: [racer], languages: [lang(racer, 'en', 'merchant_set')] });
+    const bulk = w.CustomerLanguage.bulkWrite.bind(w.CustomerLanguage);
+    w.CustomerLanguage.bulkWrite = async (ops, options) => {
+      w.CustomerLanguage.docs[0].languageSource = 'customer_chose'; // the customer taps a language button right now
+      return bulk(ops, options);
+    };
+    expect(await run(w, [{ customerId: racer._id, language: 'ar' }])).toEqual({ written: 0, protected: 1, unchanged: 0, skipped: 0 });
+    expect(w.CustomerLanguage.docs[0]).toMatchObject({ language: 'en', languageSource: 'customer_chose' });
+  });
+
+  test('empty input does no queries; no workspace is refused; writes never touch Customer', async () => {
+    const w = world();
+    expect(await run(w, [])).toEqual({ written: 0, protected: 0, unchanged: 0, skipped: 0 });
+    expect(w.Customer.calls).toEqual([]);
+    await expect(svc.setImportedLanguages({ entries: [] }, w.deps)).rejects.toMatchObject({ status: 403 });
+  });
+});
+
 // ── export / template ──────────────────────────────────────────────────────
 
 describe('templateCsv', () => {

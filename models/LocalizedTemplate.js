@@ -79,6 +79,11 @@ const schema = new mongoose.Schema({
   // author and track Arabic variants of a flow message (Phase 2) without
   // touching models/MessageNode.js.
   linkedMessageNodeId: { type: mongoose.Schema.Types.ObjectId, ref: 'MessageNode' },
+  // Optional link to an existing Promotion (no custom entry message needed): the Arabic version that
+  // shared/operations.js#sendPromotion sends to Arabic customers of that promotion (legacySenders.js).
+  // Enables the `shop_now` button role (payload promo_<promotionId>). Deliberately NOT indexed: the collection already exists in
+  // production (first build), so no new index is created on it; lookups use the workspaceId index (a workspace has few templates).
+  linkedPromotionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Promotion' },
   archived:  { type: Boolean, default: false },       // never hard-deleted
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });

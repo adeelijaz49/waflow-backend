@@ -71,6 +71,7 @@ async function setArabicEnabled({ workspaceId, enabled, grantedBy, notes }) {
     { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
   ).lean();
   invalidate(workspaceId);
+  try { require('./outbound').refreshFlags(); } catch (_) { /* the outbound localiser's snapshot also refreshes itself every 30 s */ }
   return { ...toView(doc), notes: doc.notes || '', arabicEnabledBy: doc.arabicEnabledBy || null };
 }
 

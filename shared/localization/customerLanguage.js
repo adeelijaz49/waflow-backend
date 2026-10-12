@@ -385,6 +385,59 @@ async function setCustomerLanguage({ workspaceId, customerId, language, userId }
   return toRow(customer, doc, await merchantDefaultLanguage(deps, ws));
 }
 
+// One customer's row for the profile panel on the existing Customers page (IM-D / B1):
+// the same shape the list and the PUT answer with. 404 for another workspace's, erased or
+// demo customer (the same customer set every other call here manages).
+async function getCustomerLanguage({ workspaceId, customerId } = {}, deps = realDeps()) {
+  const ws = requireWorkspace(workspaceId);
+  const id = parseId(customerId, 'customerId');
+  const customer = await deps.Customer.findOne({ _id: id, ...baseFilter(ws) }).select(ROW_FIELDS).lean();
+  if (!customer) throw httpError(404, 'Customer not found', 'CUSTOMER_NOT_FOUND');
+  const doc = await deps.CustomerLanguage.findOne({ workspaceId: ws, customerId: id }).select('customerId language languageSource').lean();
+  return toRow(customer, doc, await merchantDefaultLanguage(deps, ws));
+}
+
+// The main import wizard's language column (IM-D / B1). entries: [{ customerId, language }]
+// with language 'en' | 'ar' only (a blank / 'unknown' cell is "no information" and never
+// reaches this function). Exactly the hub CSV import's rules: the first entry per customer
+// wins, a customer outside this workspace (or erased / demo) is skipped, an identical
+// language is left alone (the stored source is not touched), a language the customer chose
+// themselves is never overwritten (atomic guard in the write filter), merchant_set and
+// inferred values are overwritten and recorded as csv_import. Never deletes anything.
+// -> { written, protected, unchanged, skipped }
+async function setImportedLanguages({ workspaceId, userId, entries } = {}, deps = realDeps()) {
+  const ws = requireWorkspace(workspaceId);
+  const wanted = new Map();
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const id = entry && entry.customerId !== undefined && entry.customerId !== null ? String(entry.customerId) : '';
+    if (!isObjectIdLike(id) || (entry.language !== 'en' && entry.language !== 'ar') || wanted.has(id)) continue;
+    wanted.set(id, entry.language);
+  }
+  const result = { written: 0, protected: 0, unchanged: 0, skipped: 0 };
+  if (!wanted.size) return result;
+
+  const owned = new Set();
+  for (const part of chunks(Array.from(wanted.keys()), CHUNK)) {
+    const docs = await deps.Customer.find({ _id: { $in: part }, ...baseFilter(ws) }).select('_id').lean();
+    docs.forEach((d) => owned.add(String(d._id)));
+  }
+  const languages = await languagesFor(ws, Array.from(owned), deps);
+  const operations = [];
+  for (const [id, target] of wanted) {
+    if (!owned.has(id)) { result.skipped += 1; continue; }
+    const effect = effectOf(languages.get(id), target);
+    if (effect === 'unchanged') result.unchanged += 1;
+    else if (effect === 'protected') result.protected += 1;
+    else operations.push(upsertOp(ws, id, target, 'csv_import', userId, { protectCustomerChoice: true }));
+  }
+  if (operations.length) {
+    const rejected = await runBulkWithRetry(deps.CustomerLanguage, operations); // still blocked = chosen by the customer in the meantime
+    result.protected += rejected.length;
+    result.written += operations.length - rejected.length;
+  }
+  return result;
+}
+
 // -> { updated }: exactly the requested customers that belong to this workspace.
 async function bulkSetCustomerLanguage({ workspaceId, customerIds, language, userId } = {}, deps = realDeps()) {
   const ws = requireWorkspace(workspaceId);
@@ -631,6 +684,8 @@ module.exports = {
   getCounts,
   listCustomers,
   setCustomerLanguage,
+  getCustomerLanguage,
+  setImportedLanguages,
   bulkSetCustomerLanguage,
   importLanguages,
   exportCsv,

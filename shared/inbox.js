@@ -23,6 +23,7 @@ const { APP_URL }      = require('../utils/config');
 const { money }        = require('../utils/currency');
 const { getCurrency }  = require('../utils/settingsCache');
 const { withWorkspace, scopedFilter, workspaceMatch } = require('./operations');
+const { oneWordLastname } = require('./localization/nameGuard');
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
@@ -96,7 +97,7 @@ async function logInboundMessage({ workspaceId, from, message, contactName }) {
     customer = await Customer.create({
       workspaceId, phone: from,
       firstname: firstname || from,
-      lastname: rest.join(' '),
+      lastname: rest.join(' ') || await oneWordLastname(workspaceId), // IM-D B4: flagged workspaces only, else ''
     });
   }
 
@@ -408,7 +409,9 @@ async function sendPaymentLink({ customerId, workspaceId, amount, performedBy })
   });
 
   const body = `💳 Here's your payment link for ${money(amt, currency)}:\n${APP_URL}/pay/${pi.id}`;
-  return sendManualMessage({ customerId, workspaceId, body, performedBy, messageType: 'payment' });
+  let localizedBody = null; // Arabic localisation: Arabic-speaking customer of a flagged workspace gets the Arabic text (also what the thread stores); null = unchanged
+  try { localizedBody = await require('./localization/outbound').paymentLinkBody({ workspaceId: workspaceId || customer.workspaceId, phone: customer.phone, amount: money(amt, currency), url: `${APP_URL}/pay/${pi.id}` }); } catch (_) { localizedBody = null; }
+  return sendManualMessage({ customerId, workspaceId, body: localizedBody || body, performedBy, messageType: 'payment' });
 }
 
 module.exports = {

@@ -16,5 +16,10 @@ router.use('/inbox', requireArabicEnabled, require('./inbox'));
 router.use('/ai-mode', requireArabicEnabled, require('./aiMode'));
 router.use('/flows', requireArabicEnabled, require('./flows'));
 router.use('/review', requireArabicEnabled, require('./review'));
+// Legacy senders (shared/localization/legacySenders.js): language plan for the existing promotion / loyalty reminder /
+// consent request screens, the Arabic promotion test send and the per-language send report.
+const senderRoutes = require('./senders');
+router.use('/senders', requireArabicEnabled, senderRoutes.senders);
+router.use('/promotions', requireArabicEnabled, senderRoutes.promotions);
 
 module.exports = router;

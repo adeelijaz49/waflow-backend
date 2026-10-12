@@ -293,6 +293,7 @@ function validateInContext(doc, variant) {
   const res = validateVariant(variant, {
     category: categoryOf(doc),
     linkedMessageNodeId: doc.linkedMessageNodeId,
+    linkedPromotionId: doc.linkedPromotionId,
   });
   const errors = res.errors.concat(linkedLayoutIssues(doc, variant));
   return { ok: errors.length === 0, errors, warnings: res.warnings, positionalText: res.positional.text, params: res.positional.params };
@@ -345,6 +346,7 @@ function toTemplateView(rawDoc) {
     category: categoryOf(doc),
     archived: !!doc.archived,
     linkedMessageNodeId: doc.linkedMessageNodeId ? String(doc.linkedMessageNodeId) : null,
+    linkedPromotionId: doc.linkedPromotionId ? String(doc.linkedPromotionId) : null,
     variants: variants.map((v) => toVariantView(doc, v)),
     createdAt: iso(doc.createdAt),
     updatedAt: iso(doc.updatedAt),
@@ -461,6 +463,7 @@ function defaultDeps() {
     },
     findCustomer: (workspaceId, customerId) => require('../../models/Customer')
       .findOne({ _id: customerId, workspaceId, deletedAt: { $exists: false } }).select('firstname lastname loyaltyPoints').lean(),
+    findPromotion: (workspaceId, promotionId) => require('../../models/Promotion').findOne({ _id: promotionId, workspaceId }).select('_id').lean(),
     getLibrary: () => require('./templateLibrary'),
     getCeiling: () => {
       const n = Number.parseInt(process.env.LOCALIZATION_TEMPLATE_CEILING, 10);
@@ -635,7 +638,7 @@ function createTemplatesService(overrides = {}) {
     throw new TemplateError(409, 'TEMPLATE_KEY_TAKEN', 'Could not find a free template key');
   }
 
-  async function createTemplate({ workspaceId, userId, name, useCase, category, variants, linkedMessageNodeId, key } = {}) {
+  async function createTemplate({ workspaceId, userId, name, useCase, category, variants, linkedMessageNodeId, linkedPromotionId, key } = {}) {
     const ws = assertId(workspaceId, 'workspaceId');
     const cleanName = cleanString(name, 'name', CAPS.NAME);
     if (!cleanName) throw invalid('name is required');
@@ -660,6 +663,17 @@ function createTemplatesService(overrides = {}) {
       archived: false,
     };
     if (linkedMessageNodeId !== undefined && linkedMessageNodeId !== null) base.linkedMessageNodeId = assertId(linkedMessageNodeId, 'linkedMessageNodeId');
+    if (linkedPromotionId !== undefined && linkedPromotionId !== null) {
+      // A template is linked to a flow message OR to a promotion, never both; the promotion must be this workspace's.
+      if (base.linkedMessageNodeId) throw invalid('linkedPromotionId and linkedMessageNodeId cannot be combined');
+      // A promotion message is marketing: a transactional (UTILITY-floor) use case would let it dodge the opt-out button / consent rules (review R2-02).
+      if (isTransactionalUseCase(useCaseValue)) {
+        throw new TemplateError(400, 'PROMOTION_TEMPLATE_USE_CASE', 'A template linked to a promotion is a marketing message: use the use case "promotion" (or another marketing use case), not a transactional one');
+      }
+      const promotionId = assertId(linkedPromotionId, 'linkedPromotionId');
+      if (!(await deps.findPromotion(ws, promotionId))) throw new TemplateError(404, 'PROMOTION_NOT_FOUND', 'Promotion not found');
+      base.linkedPromotionId = promotionId;
+    }
     if (optionalId(userId)) base.createdBy = optionalId(userId);
     return toTemplateView(await insertTemplate(base, { name: cleanName, explicitKey, suffixName: false }));
   }
@@ -691,7 +705,7 @@ function createTemplatesService(overrides = {}) {
     return toTemplateView(await insertTemplate(base, { name: baseName, suffixName: !given }));
   }
 
-  async function listTemplates({ workspaceId, search, useCase, archived, page, limit } = {}) {
+  async function listTemplates({ workspaceId, search, useCase, archived, page, limit, linkedPromotionId } = {}) {
     const ws = assertId(workspaceId, 'workspaceId');
     if (search !== undefined && search !== null && typeof search !== 'string') throw invalid('search must be a string');
     const useCaseFilter = useCase === undefined || useCase === null || useCase === '' ? undefined : assertOneOf(useCase, USE_CASES, 'useCase');
@@ -699,6 +713,10 @@ function createTemplatesService(overrides = {}) {
     if (archived === true || ['true', '1', 'include', 'all'].includes(archived)) mode = 'include';
     else if (archived === 'only') mode = 'only';
     let docs = await store.list(ws, { useCase: useCaseFilter, archived: mode });
+    if (linkedPromotionId !== undefined && linkedPromotionId !== null && linkedPromotionId !== '') {
+      const wanted = assertId(linkedPromotionId, 'linkedPromotionId').toLowerCase();
+      docs = docs.filter((d) => d.linkedPromotionId && String(d.linkedPromotionId).toLowerCase() === wanted);
+    }
     const tokens = normalizeForMatch(search || '').split(' ').filter(Boolean).slice(0, 10);
     if (search && search.trim() && !tokens.length) docs = []; // punctuation only (".*", "%"): nothing to match, and never a pattern
     else if (tokens.length) {
@@ -1007,6 +1025,7 @@ function createTemplatesService(overrides = {}) {
       if (b.role === 'opt_in') return `consent_yes_${ZERO_ID}`;
       if (b.role === 'decline') return `consent_no_${ZERO_ID}`;
       if (b.role === 'flow_button') return `msgnode_${nodeId}_${i}`;
+      if (b.role === 'shop_now') return `promo_${doc.linkedPromotionId ? String(doc.linkedPromotionId) : ZERO_ID}`;
       return undefined;
     });
   }

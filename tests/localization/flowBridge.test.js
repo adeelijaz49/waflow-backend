@@ -4,7 +4,8 @@
 // the Meta component builder is the REAL pure one, so what is asserted is what would go to Meta.
 const fs = require('fs');
 const path = require('path');
-const { resolveFlowMessage, sendLocalizedFlowMessage, arabicPointsPhrase } = require('../../shared/localization/flowBridge');
+const { resolveFlowMessage, sendLocalizedFlowMessage, arabicPointsPhrase, REASON_NO_OPT_OUT } = require('../../shared/localization/flowBridge');
+const catalogModule = require('../../shared/localization/catalog');
 const { extractWamid } = require('../../shared/localization/transport');
 const { buildSendComponents } = require('../../shared/localization/metaTemplates');
 
@@ -17,6 +18,7 @@ const CUSTOMER = id(7);
 const FLOW = id(1);
 const PROMOTION = id(10);
 const ENROLLMENT = id(50);
+const SERVICE_FALLBACK = catalogModule.t('ar', 'flows.fallbackService'); // the catalogue owns this wording
 const wrap = (text) => `${LRM}${text}${LRM}`;
 
 // Direction marks around Latin/number parameter values are an opt-in experiment (META-REALITY §4): the shared
@@ -106,8 +108,10 @@ function makeWorld(data = {}) {
     ProductTranslation: fakeModel(has('translations', [])),
     ops: {
       resolvePromoItems: jest.fn(async () => has('items', [{ _id: id(30), name: 'Blue T-Shirt', basePrice: 56.25 }])),
+      // The ENGLISH price formatter ("45.00 SAR"): the Arabic path must never use it (R5-6).
       buildPromoEntryNodeParams: jest.fn(async (c, p, items) => [c.firstname || 'Valued Customer', (items[0] && items[0].name) || 'our latest offer', '45.00 SAR', p.name]),
     },
+    getCurrency: jest.fn(async () => data.currency || 'SAR'),
     log: jest.fn(),
   };
   return deps;
@@ -126,11 +130,11 @@ describe('resolveFlowMessage: an Arabic customer, an approved + reviewed Arabic 
       templateName: 'wf_0000a1_summer_ar_v1',
       languageCode: 'ar',
       usedLanguage: 'ar',
-      bodyParams: [wrap('Sara'), wrap('Blue T-Shirt'), wrap('45.00 SAR'), wrap('Summer Sale')],
+      bodyParams: [wrap('Sara'), wrap('Blue T-Shirt'), '45.00 ر.س', wrap('Summer Sale')],
       buttonPayloads: [`msgnode_${NODE}_0`, `msgnode_${NODE}_1`, `optout_${NODE}`],
       templateId: id(500),
       components: [
-        { type: 'body', parameters: [wrap('Sara'), wrap('Blue T-Shirt'), wrap('45.00 SAR'), wrap('Summer Sale')].map((text) => ({ type: 'text', text })) },
+        { type: 'body', parameters: [wrap('Sara'), wrap('Blue T-Shirt'), '45.00 ر.س', wrap('Summer Sale')].map((text) => ({ type: 'text', text })) },
         { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: `msgnode_${NODE}_0` }] },
         { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: `msgnode_${NODE}_1` }] },
         { type: 'button', sub_type: 'quick_reply', index: '2', parameters: [{ type: 'payload', payload: `optout_${NODE}` }] },
@@ -165,7 +169,7 @@ describe('resolveFlowMessage: an Arabic customer, an approved + reviewed Arabic 
       promotions: [promotionDoc({ name: 'تخفيضات الصيف' })],
     });
     const recipe = await run(deps);
-    expect(recipe.bodyParams).toEqual(['سارة', 'قميص أزرق', wrap('45.00 SAR'), 'تخفيضات الصيف']);
+    expect(recipe.bodyParams).toEqual(['سارة', 'قميص أزرق', '45.00 ر.س', 'تخفيضات الصيف']);
   });
 
   test('the Arabic product translation is used only when REVIEWED, and is looked up inside the workspace', async () => {
@@ -184,11 +188,12 @@ describe('resolveFlowMessage: an Arabic customer, an approved + reviewed Arabic 
     expect((await run(deps)).bodyParams[1]).toBe('جلسة عناية');
   });
 
-  test('English path values: ops are asked for the same items and the cash price the English message uses', async () => {
+  test('English path values: ops are asked for the same items; the cash price is the English amount and currency in Arabic formatting', async () => {
     const deps = makeWorld();
     await run(deps);
     expect(deps.ops.resolvePromoItems).toHaveBeenCalledWith(expect.objectContaining({ _id: PROMOTION, name: 'Summer Sale' }));
-    expect(deps.ops.buildPromoEntryNodeParams).toHaveBeenCalledWith({ firstname: 'Sara' }, expect.objectContaining({ _id: PROMOTION }), [{ _id: id(30), name: 'Blue T-Shirt', basePrice: 56.25 }]);
+    expect(deps.ops.buildPromoEntryNodeParams).not.toHaveBeenCalled(); // the English formatter is never used for the price
+    expect(deps.getCurrency).toHaveBeenCalledTimes(1); // the same merchant currency the English price uses
     expect(deps.Promotion.findOne).toHaveBeenCalledWith({ _id: PROMOTION, workspaceId: WS });
   });
 });
@@ -205,7 +210,7 @@ describe('direction marks are off by default and on only with LOCALIZATION_WRAP_
 
   test('by default (variable unset) the exact send carries plain values: no mark in a parameter, a header or a points phrase', async () => {
     expect(process.env[WRAP_ENV]).toBeUndefined();
-    const plain = ['Sara', 'Blue T-Shirt', '45.00 SAR', 'Summer Sale'];
+    const plain = ['Sara', 'Blue T-Shirt', '45.00 ر.س', 'Summer Sale'];
     const cash = await run(makeWorld());
     expect(cash).toEqual({
       templateName: 'wf_0000a1_summer_ar_v1',
@@ -235,7 +240,7 @@ describe('direction marks are off by default and on only with LOCALIZATION_WRAP_
   );
 
   test('one gate, not two: whatever the variable says, the recipe is exactly what the shared builder produces', async () => {
-    const values = { name: 'Sara', item: 'Blue T-Shirt', price: '45.00 SAR', promo_name: 'Summer Sale' };
+    const values = { name: 'Sara', item: 'Blue T-Shirt', price: '45.00 ر.س', promo_name: 'Summer Sale' };
     const buttonPayloads = [`msgnode_${NODE}_0`, `msgnode_${NODE}_1`, `optout_${NODE}`];
     const countParameter = (n) => buildSendComponents({ variant: { language: 'ar', body: '{n}' }, values: { n: String(n) } })[0].parameters[0].text;
     for (const value of [undefined, '', '0', 'true', '1']) {
@@ -375,7 +380,51 @@ describe('resolveFlowMessage returns null (the English path) unless everything l
     await expectNull(withButtons([OPT_OUT, ...FLOW_BUTTONS])); // order
     await expectNull(withButtons([...FLOW_BUTTONS, { role: 'opt_in', text: 'نعم، أوافق' }])); // a consent button has no place here
     await expectNull(makeWorld({ nodes: [promotionNode({ buttons: [button(0, 'A'), button(1, 'B'), button(2, 'C')] })] })); // node got a third button after approval
-    expect(await run(withButtons([...FLOW_BUTTONS]))).toMatchObject({ buttonPayloads: [`msgnode_${NODE}_0`, `msgnode_${NODE}_1`] }); // opt-out is optional here
+    await expectNull(withButtons([...FLOW_BUTTONS])); // ... and the opt-out is NOT optional (below)
+  });
+
+  describe('every flow message is marketing: the Arabic variant must carry the opt-out button (R2-02)', () => {
+    const withButtons = (buttons, template = {}) => makeWorld({ templates: [templateDoc({ ...template, variants: [englishMirror(), arabicVariant({ buttons })] })] });
+    const why = async (deps) => { const explain = {}; const out = await run(deps, { explain }); return { out, reason: explain.reason }; };
+
+    test('with the opt_out button the variant resolves; no reason is reported', async () => {
+      const { out, reason } = await why(withButtons([...FLOW_BUTTONS, OPT_OUT]));
+      expect(out).toMatchObject({ usedLanguage: 'ar', buttonPayloads: [`msgnode_${NODE}_0`, `msgnode_${NODE}_1`, `optout_${NODE}`] });
+      expect(reason).toBeUndefined();
+    });
+
+    test('without it the result is null (the English path runs) and the reason code says why', async () => {
+      const deps = withButtons([...FLOW_BUTTONS]);
+      const { out, reason } = await why(deps);
+      expect(out).toBeNull();
+      expect(reason).toBe(REASON_NO_OPT_OUT);
+      expect(REASON_NO_OPT_OUT).toBe('marketing_requires_opt_out_button');
+      expect(deps.transport.sendTemplate).not.toHaveBeenCalled();
+    });
+
+    test('a url button is not an opt-out; neither is a button with a label that merely says so', async () => {
+      const url = { role: 'url', text: 'زيارة المتجر', url: 'https://example.com' };
+      expect((await why(withButtons([...FLOW_BUTTONS, url]))).reason).toBe(REASON_NO_OPT_OUT);
+      expect((await why(withButtons([...FLOW_BUTTONS, { role: 'url', text: 'إلغاء الاشتراك' }]))).reason).toBe(REASON_NO_OPT_OUT);
+    });
+
+    test('a UTILITY-floor use case linked to a flow node does not lift the rule', async () => {
+      for (const useCase of ['order_confirmation', 'payment_reminder', 'booking_confirmation', 'booking_reminder']) {
+        const without = await why(withButtons([...FLOW_BUTTONS], { useCase, category: 'UTILITY' }));
+        expect(without.out).toBeNull();
+        expect(without.reason).toBe(REASON_NO_OPT_OUT);
+        const withIt = await why(withButtons([...FLOW_BUTTONS, OPT_OUT], { useCase, category: 'UTILITY' }));
+        expect(withIt.out).toMatchObject({ usedLanguage: 'ar' });
+      }
+    });
+
+    test('sendLocalizedFlowMessage sends nothing for a variant without the opt-out (the engine falls through to English)', async () => {
+      const deps = makeWorld({ templates: [templateDoc({ variants: [englishMirror(), arabicVariant({ buttons: [...FLOW_BUTTONS] })] })], flows: [] });
+      const flow = { _id: FLOW, workspaceId: WS, promotionId: PROMOTION, triggerType: 'inactive_customer' };
+      const result = await sendLocalizedFlowMessage({ flow, enrollment: { _id: ENROLLMENT }, customer: { _id: CUSTOMER, phone: '966500000001' } }, deps);
+      expect(result).toBeNull();
+      expect(deps.transport.sendTemplate).not.toHaveBeenCalled();
+    });
   });
 
   test('a customer-controlled field that nobody can fill makes the whole message null, never a blank', async () => {
@@ -480,6 +529,18 @@ describe('resolveFlowMessage: merge-field values', () => {
       }
     });
 
+    test('a cash promotion prices in the Arabic currency format: the English amount (base less discount) and currency, never "45.00 SAR" (R5-6)', async () => {
+      const { formatMoney } = require('../../shared/localization/senderValues');
+      const sar = await run(withBody(body));
+      expect(sar.bodyParams[1]).toBe('45.00 ر.س');
+      expect(sar.bodyParams[1]).toBe(formatMoney(45, 'SAR', 'ar'));
+      const aed = await run(withBody(body, { currency: 'AED', promotions: [promotionDoc({ discountPercent: 50 })] }));
+      expect(aed.bodyParams[1]).toBe(formatMoney(28.13, 'AED', 'ar'));
+      expect(aed.bodyParams[1]).not.toMatch(/AED|SAR/);
+      const unknown = await run(withBody(body, { currency: 'AUD', promotions: [promotionDoc({ discountPercent: 0 })] }));
+      expect(unknown.bodyParams[1]).toBe(formatMoney(56.25, 'AUD', 'ar')); // an unknown code is written as the code
+    });
+
     test('a cash promotion with no items has no price: unresolved (null); the item falls back to the Arabic phrase', async () => {
       expect(await run(withBody(body, { items: [] }))).toBeNull();
       const itemOnly = await run(withBody('خذ {item} الآن', { items: [] }));
@@ -567,7 +628,7 @@ describe('resolveFlowMessage never throws and is workspace-scoped', () => {
     ['the flag check', (d) => { d.settings.isArabicEnabled.mockRejectedValue(new Error('x')); }],
     ['the settings read', (d) => { d.settings.getSettings.mockRejectedValue(new Error('x')); }],
     ['the consent check', (d) => { d.consent.canSendMarketing.mockImplementation(() => { throw new Error('x'); }); }],
-    ['the price helper', (d) => { d.ops.buildPromoEntryNodeParams.mockRejectedValue(new Error('x')); }],
+    ['the currency read', (d) => { d.getCurrency.mockRejectedValue(new Error('x')); }],
     ['the items helper', (d) => { d.ops.resolvePromoItems.mockRejectedValue(new Error('x')); }],
   ])('a failure in %s returns null', async (_label, sabotage) => {
     const deps = makeWorld();
@@ -759,5 +820,172 @@ describe('sendLocalizedFlowMessage', () => {
     expect(await go(deps, { enrollment: undefined })).toBeNull();
     expect(await go(deps, { customer: undefined })).toBeNull();
     expect(deps.transport.sendTemplate).not.toHaveBeenCalled();
+  });
+});
+
+// ── the applied hook: flag first, English parity, lazy {service} (D2 section 4.3) ─────────────────
+describe('sendLocalizedFlowMessage: the flag comes first', () => {
+  const flow = (over = {}) => ({ _id: FLOW, workspaceId: WS, name: 'Win-back', triggerType: 'inactive_customer', promotionId: PROMOTION, ...over });
+  const go = (deps, over = {}) => sendLocalizedFlowMessage({ flow: flow(), enrollment: { _id: ENROLLMENT }, customer: customerDoc(), ...over }, deps);
+
+  test('a flag-off workspace costs exactly one cached flag read: no Promotion, node, template, customer or language query', async () => {
+    const deps = makeWorld({ enabled: false });
+    expect(await go(deps)).toBeNull();
+    expect(deps.settings.isArabicEnabled).toHaveBeenCalledWith(WS);
+    for (const model of ['Promotion', 'MessageNode', 'LocalizedTemplate', 'Customer', 'CustomerLanguage', 'Settings', 'ProductTranslation']) {
+      expect(deps[model].find).not.toHaveBeenCalled();
+      expect(deps[model].findOne).not.toHaveBeenCalled();
+    }
+    expect(deps.transport.sendTemplate).not.toHaveBeenCalled();
+  });
+
+  test('the kill switch is read before anything else, and a legacy flow is not queried either', async () => {
+    const deps = makeWorld({ kill: true });
+    expect(await go(deps)).toBeNull();
+    expect(deps.settings.isArabicEnabled).not.toHaveBeenCalled();
+    expect(deps.Promotion.findOne).not.toHaveBeenCalled();
+    const legacy = makeWorld({ enabled: false });
+    expect(await go(legacy, { flow: flow({ promotionId: undefined, entryNodeId: NODE }) })).toBeNull();
+    expect(legacy.MessageNode.findOne).not.toHaveBeenCalled();
+  });
+
+  test('a throwing flag read is null (English), not an exception', async () => {
+    const deps = makeWorld();
+    deps.settings.isArabicEnabled = jest.fn(async () => { throw new Error('db'); });
+    expect(await go(deps)).toBeNull();
+    expect(deps.transport.sendTemplate).not.toHaveBeenCalled();
+  });
+});
+
+describe('English parity: only an APPROVED English entry node is localised', () => {
+  test.each(['pending', 'not_created', 'rejected', undefined])('English node templateStatus %s -> null (the English path would not send it either)', async (templateStatus) => {
+    expect(await run(makeWorld({ nodes: [promotionNode({ templateStatus })] }))).toBeNull();
+  });
+  test('approved -> the Arabic recipe', async () => {
+    expect(await run(makeWorld())).toMatchObject({ usedLanguage: 'ar' });
+  });
+  test('an edited English node (pending again) stops the Arabic send through the hook too', async () => {
+    const deps = makeWorld({ nodes: [promotionNode({ templateStatus: 'pending' })] });
+    const out = await sendLocalizedFlowMessage({ flow: { _id: FLOW, workspaceId: WS, triggerType: 'inactive_customer', promotionId: PROMOTION }, enrollment: { _id: ENROLLMENT }, customer: customerDoc() }, deps);
+    expect(out).toBeNull();
+    expect(deps.transport.sendTemplate).not.toHaveBeenCalled();
+  });
+});
+
+describe('{service} of a booking no-show flow (fieldValuesFor / serviceFieldValue)', () => {
+  const { serviceFieldValue, collectValues, usableName } = require('../../shared/localization/flowBridge');
+  const BOOKING = id(60);
+  const SERVICE = id(70);
+  const flow = (over = {}) => ({ _id: FLOW, workspaceId: WS, name: 'No-show', triggerType: 'booking_no_show', entryNodeId: NODE, ...over });
+  const noShowEnrollment = (over = {}) => ({ _id: ENROLLMENT, sourceModel: 'Booking', sourceRef: BOOKING, ...over });
+  const noShowWorld = (data = {}) => {
+    const deps = makeWorld({
+      nodes: [promotionNode({ ownerType: 'flow', ownerId: FLOW, bodyText: 'Hi {{1}}, we missed you for {{2}}', buttons: [button(0, 'Rebook')] })],
+      flows: [{ _id: FLOW, workspaceId: WS, triggerType: 'booking_no_show' }],
+      templates: [templateDoc({ variants: [englishMirror({ body: 'Hi {name}, we missed you for {service}', buttons: [{ role: 'flow_button', text: 'Rebook' }] }), arabicVariant({ body: 'أهلاً {name}، فاتنا موعدك لـ {service}', buttons: [{ role: 'flow_button', text: 'أعد الحجز' }, OPT_OUT] })] })],
+      translations: data.translations || [],
+    });
+    deps.Booking = fakeModel(data.bookings || [{ _id: BOOKING, workspaceId: WS, serviceId: SERVICE }]);
+    deps.Service = fakeModel(data.services || [{ _id: SERVICE, workspaceId: WS, name: 'Facial' }]);
+    return deps;
+  };
+  const go = (deps, over = {}) => sendLocalizedFlowMessage({ flow: flow(), enrollment: noShowEnrollment(), customer: customerDoc(), ...over }, deps);
+  const bodyTexts = (deps) => deps.transport.sendTemplate.mock.calls[0][1].components.find((c) => c.type === 'body').parameters.map((p) => p.text);
+
+  test('the Arabic message is sent with the booking\'s service name (workspace-scoped booking and service reads)', async () => {
+    const deps = noShowWorld();
+    const out = await go(deps);
+    expect(out.sent).toBe(true);
+    expect(bodyTexts(deps)).toEqual(['Sara', 'Facial']);
+    expect(deps.Booking.findOne).toHaveBeenCalledWith({ _id: BOOKING, workspaceId: WS });
+    expect(deps.Service.findOne).toHaveBeenCalledWith({ _id: SERVICE, workspaceId: WS });
+  });
+  test('a REVIEWED Arabic service translation wins; a draft does not', async () => {
+    const reviewed = noShowWorld({ translations: [{ workspaceId: WS, kind: 'service', refId: SERVICE, language: 'ar', status: 'reviewed', name: 'جلسة عناية' }] });
+    await go(reviewed);
+    expect(bodyTexts(reviewed)[1]).toBe('جلسة عناية');
+    expect(reviewed.Service.findOne).not.toHaveBeenCalled();
+    const draft = noShowWorld({ translations: [{ workspaceId: WS, kind: 'service', refId: SERVICE, language: 'ar', status: 'draft', name: 'مسودة' }] });
+    await go(draft);
+    expect(bodyTexts(draft)[1]).toBe('Facial');
+  });
+  test('a service without a name gets the Arabic fallback (the English path sends "your appointment")', async () => {
+    const deps = noShowWorld({ services: [{ _id: SERVICE, workspaceId: WS, name: '  ' }] });
+    await go(deps);
+    expect(bodyTexts(deps)[1]).toBe(SERVICE_FALLBACK);
+  });
+  test('no booking in this workspace (or a booking of another one) -> the field stays open -> null -> English, nothing sent', async () => {
+    for (const bookings of [[], [{ _id: BOOKING, workspaceId: OTHER_WS, serviceId: SERVICE }]]) {
+      const deps = noShowWorld({ bookings });
+      expect(await go(deps)).toBeNull();
+      expect(deps.transport.sendTemplate).not.toHaveBeenCalled();
+    }
+  });
+  test('the booking is looked up only for a booking_no_show legacy flow whose enrollment came from a Booking', async () => {
+    for (const [f, e] of [[{ triggerType: 'inactive_customer' }, {}], [{ promotionId: PROMOTION }, {}], [{}, { sourceModel: 'Order' }], [{}, { sourceModel: undefined }]]) {
+      const deps = noShowWorld();
+      await go(deps, { flow: flow(f), enrollment: noShowEnrollment(e) });
+      expect(deps.Booking.findOne).not.toHaveBeenCalled();
+    }
+  });
+  test('the booking is not read when the Arabic text does not use {service}', async () => {
+    const deps = noShowWorld();
+    deps.LocalizedTemplate.docs[0].variants[1].body = 'أهلاً {name}';
+    await go(deps);
+    expect(deps.Booking.findOne).not.toHaveBeenCalled();
+  });
+  test('a caller-supplied fieldValues service beats the lazy one', async () => {
+    const deps = noShowWorld();
+    const lazy = jest.fn(async () => ({ service: 'Lazy' }));
+    const recipe = await resolveFlowMessage({ workspaceId: WS, messageNodeId: NODE, customerId: CUSTOMER, fieldValues: { service: 'Given' }, fieldValuesFor: lazy }, deps);
+    expect(recipe.bodyParams).toEqual(['Sara', 'Given']);
+    expect(deps.Booking.findOne).not.toHaveBeenCalled();
+  });
+  test('serviceFieldValue direct: garbage ids and missing rows give {}, a good booking gives the service', async () => {
+    const deps = noShowWorld();
+    expect(await serviceFieldValue(deps, { workspaceId: WS, bookingId: 'x' })).toEqual({});
+    expect(await serviceFieldValue(deps, { workspaceId: { $ne: null }, bookingId: BOOKING })).toEqual({});
+    expect(await serviceFieldValue(deps, { workspaceId: WS, bookingId: { $ne: null } })).toEqual({});
+    expect(await serviceFieldValue(deps, undefined)).toEqual({});
+    expect(await serviceFieldValue(deps, { workspaceId: WS, bookingId: id(61) })).toEqual({});
+    expect(await serviceFieldValue(deps, { workspaceId: WS, bookingId: BOOKING })).toEqual({ service: 'Facial' });
+  });
+  test('a booking without a service id still resolves to the fallback', async () => {
+    const deps = noShowWorld({ bookings: [{ _id: BOOKING, workspaceId: WS }] });
+    expect(await serviceFieldValue(deps, { workspaceId: WS, bookingId: BOOKING })).toEqual({ service: SERVICE_FALLBACK });
+  });
+  test('a throwing lazy provider makes the whole resolution null, never a partial message', async () => {
+    const deps = noShowWorld();
+    const recipe = await resolveFlowMessage({ workspaceId: WS, messageNodeId: NODE, customerId: CUSTOMER, fieldValuesFor: async () => { throw new Error('x'); } }, deps);
+    expect(recipe).toBeNull();
+  });
+  test('collectValues and usableName are exported for the follow-up sender', () => {
+    expect(typeof collectValues).toBe('function');
+    expect(usableName('  Sara ')).toBe('Sara');
+    expect(usableName('+966 50 000 0001')).toBe('');
+    expect(usableName('٩٦٦٥٠٠٠٠٠٠٠١')).toBe('');
+    expect(usableName(undefined)).toBe('');
+  });
+});
+
+describe('the flow engine hook is in place (utils/flowScheduler.js)', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'utils', 'flowScheduler.js'), 'utf8');
+  test('exactly one bridge call, between the atomic claim and the English code, inside try/catch, writing the returned row', () => {
+    expect(source.split('flowBridge').length - 1).toBe(2); // the comment line and the require
+    const claim = source.indexOf('if (!claimed) return;');
+    const hook = source.indexOf("require('../shared/localization/flowBridge')");
+    const english = source.indexOf("let status = 'sent';");
+    expect(claim).toBeGreaterThan(0);
+    expect(hook).toBeGreaterThan(claim);
+    expect(english).toBeGreaterThan(hook);
+    expect(source.slice(source.lastIndexOf('\n', hook), hook)).toMatch(/try \{ localized = await /);
+    expect(source).toMatch(/\} catch \(_\) \{ localized = null; \}/);
+    expect(source).toMatch(/if \(localized && localized\.record\) \{\s*await CampaignMessage\.create\(localized\.record\)\.catch\(\(\) => \{\}\);\s*return;\s*\}/);
+  });
+  test('the English CampaignMessage write after it is untouched: still no workspaceId (IB-13 is report-only)', () => {
+    const tail = source.slice(source.indexOf("let status = 'sent';"));
+    const create = tail.slice(tail.indexOf('CampaignMessage.create('));
+    expect(create.slice(0, create.indexOf('.catch'))).not.toMatch(/workspaceId/);
+    expect(source.match(/workspaceId/g)).toBeNull();
   });
 });

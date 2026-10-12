@@ -1,0 +1,105 @@
+{
+  "bookingConfirmed": {
+    "en": "✅ *Booking Confirmed!*\n\n📋 {service}\n📅 {date} at {time}\n\nSee you then! 🎉",
+    "ar": "✅ *تم تأكيد حجزك!*\n\n📋 {service}\n📅 {date} الساعة {time}\n\nنراك في الموعد! 🎉",
+    "status": "draft",
+    "notes": "Session message sent when the merchant confirms a 'pay in person' booking (shared/operations.js confirmBooking). English is the existing text, kept as the source."
+  },
+  "bookingRescheduled": {
+    "en": "📅 Your booking for *{service}* has been rescheduled to *{date} at {time}*. See you then! 🎉",
+    "ar": "📅 تم تغيير موعد حجزك لخدمة *{service}* إلى *{date} الساعة {time}*. نراك في الموعد! 🎉",
+    "status": "draft",
+    "notes": "Session message sent after the merchant reschedules a booking (shared/operations.js rescheduleBooking)."
+  },
+  "bookingDeclined": {
+    "en": "We're sorry, we're unable to accommodate your request for *{service}* on *{date} at {time}*. Please pick another time — we'd love to see you!",
+    "ar": "نعتذر، لا يمكننا تلبية طلبك لخدمة *{service}* بتاريخ *{date} الساعة {time}*. نرجو اختيار وقت آخر، وسيسعدنا استقبالك!",
+    "status": "draft",
+    "notes": "Session message sent when the merchant declines a 'pay in person' booking request (shared/operations.js declineBooking)."
+  },
+  "bookingCancelled": {
+    "en": "Hi {name}! 😔\n\nUnfortunately your booking for *{service}* on *{slot}* has been cancelled.\n\nWe'd love to fit you in at another time — tap below to rebook at *no charge*!",
+    "ar": "أهلاً {name}! 😔\n\nنأسف، تم إلغاء حجزك لخدمة *{service}* في *{slot}*.\n\nيسعدنا استقبالك في وقت آخر. اضغط الزر أدناه لإعادة الحجز *مجاناً*!",
+    "status": "draft",
+    "notes": "Interactive message sent when a booking is cancelled (utils/whatsapp.js sendRebookMessage, called by shared/operations.js cancelBooking). {slot} is the slot's date and time (or the slot fallback below)."
+  },
+  "bookingCancelledButton": {
+    "en": "Rebook Free 🔄",
+    "ar": "أعد الحجز مجاناً 🔄",
+    "status": "draft",
+    "notes": "Rebook button of the cancelled-booking message. At most 20 characters (WhatsApp reply button)."
+  },
+  "slotFallback": {
+    "en": "your scheduled slot",
+    "ar": "موعدك المحجوز",
+    "status": "draft",
+    "notes": "Stands in for {slot} when the booking has no time slot (same fallback as the English message)."
+  },
+  "orderSummary": {
+    "en": "🛒 *Your Order Summary*\n\n{items}\n\nSubtotal: {subtotal}\nShipping: {shipping}\n*Total: {total}*\n\n📍 Delivering to:\n{address}\n\nPay securely:\n{link}",
+    "ar": "🛒 *ملخص طلبك*\n\n{items}\n\nالمجموع الفرعي: {subtotal}\nالشحن: {shipping}\n*الإجمالي: {total}*\n\n📍 التوصيل إلى:\n{address}\n\nادفع بأمان عبر الرابط:\n{link}",
+    "status": "draft",
+    "notes": "Order summary with the payment link (shared/operations.js createOrder). {items} is one line per item, amounts are written like 150.00 ر.س, the pay link carries ?lang=ar."
+  },
+  "referralShare": {
+    "en": "Hi {name}👋 Share this link with a friend. They'll get {friend_reward}, and you'll earn {referrer_reward} when they buy: {link}",
+    "ar": "مرحباً {name} 👋 شارك هذا الرابط مع صديق. سيحصل صديقك على {friend_reward}، وستحصل أنت على {referrer_reward} عند شرائه: {link}",
+    "status": "draft",
+    "notes": "Referral link text (shared/referrals.js sendReferralLinksToCustomers). The reward phrases below fill {friend_reward} and {referrer_reward}; a merchant-typed reward label is used as written."
+  },
+  "referralFriendPercent": {
+    "en": "{value}% off their first order",
+    "ar": "خصم {value}% على أول طلب",
+    "status": "draft",
+    "notes": "Friend reward of type percent_discount."
+  },
+  "referralFriendFixed": {
+    "en": "{value} off their first order",
+    "ar": "خصم {value} على أول طلب",
+    "status": "draft",
+    "notes": "Friend reward of type fixed_discount (the English text shows the bare number)."
+  },
+  "referralFriendPoints": {
+    "en": "{value} bonus points",
+    "ar": "{value} من نقاط الولاء الإضافية",
+    "status": "draft",
+    "notes": "Friend reward of type loyalty_points. Count-neutral wording: a counted noun after a number would be wrong for 1, 2 and 3-10 (GLOSSARY D10)."
+  },
+  "referralFriendOffer": {
+    "en": "a special offer",
+    "ar": "عرض خاص",
+    "status": "draft",
+    "notes": "Friend reward without a type or label."
+  },
+  "referralReferrerPoints": {
+    "en": "{value} points",
+    "ar": "{value} من نقاط الولاء",
+    "status": "draft",
+    "notes": "Referrer reward of type loyalty_points (count-neutral)."
+  },
+  "referralReferrerPercent": {
+    "en": "{value}% off",
+    "ar": "خصم {value}%",
+    "status": "draft",
+    "notes": "Referrer reward of type percent_discount."
+  },
+  "referralReferrerFixed": {
+    "en": "{value} off",
+    "ar": "خصم {value}",
+    "status": "draft",
+    "notes": "Referrer reward of type fixed_discount."
+  },
+  "referralReferrerOffer": {
+    "en": "a reward",
+    "ar": "مكافأة",
+    "status": "draft",
+    "notes": "Referrer reward without a type or label."
+  },
+  "optOutHint": {
+    "en": "Reply STOP to stop promotional messages.",
+    "ar": "لإيقاف الرسائل الترويجية أرسل «إلغاء الاشتراك» أو STOP",
+    "status": "draft",
+    "needsLegalApproval": true,
+    "notes": "Opt-out line appended to the Arabic referral link text. The English referral text has no such line; the Arabic one carries it so a marketing message always tells the customer how to stop it (compliance, spec 3.4). Owner's lawyer to approve."
+  }
+}

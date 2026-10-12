@@ -225,7 +225,7 @@ function campaignMessageKind(template, variant) {
 
 // Payload per button, in button order (null = nothing to carry, e.g. a URL button).
 // The prefixes are the ones the existing webhook already dispatches (server.js):
-// optout_<id>, consent_yes_<customerId>, consent_no_<customerId>, msgnode_<nodeId>_<position>.
+// optout_<id>, consent_yes_<customerId>, consent_no_<customerId>, msgnode_<nodeId>_<position>, promo_<promotionId> (shop_now).
 function buttonPayloadsFor({ variant, template, campaign, customer }) {
   let flowPosition = 0;
   return (variant.buttons || []).map((button) => {
@@ -233,6 +233,7 @@ function buttonPayloadsFor({ variant, template, campaign, customer }) {
       case 'opt_out': return `optout_${campaign._id}`;
       case 'opt_in': return `consent_yes_${customer._id}`;
       case 'decline': return `consent_no_${customer._id}`;
+      case 'shop_now': return template.linkedPromotionId ? `promo_${template.linkedPromotionId}` : null;
       case 'flow_button': {
         const position = flowPosition;
         flowPosition += 1;
@@ -906,7 +907,7 @@ async function sendSingle({ workspaceId, templateId, customerId, fieldValues, la
 
 module.exports = {
   SEND_THROTTLE_MS, SEND_TIMEOUT_MS, STALE_MS, MAX_RUN_ATTEMPTS, HEARTBEAT_EVERY, RATE_LIMIT_BACKOFF_MS,
-  TEMPLATE_ERROR_CODES, TEMPLATE_ERROR_STREAK, OPTED_OUT_REFRESH_MS,
+  TEMPLATE_ERROR_CODES, TEMPLATE_ERROR_STREAK, RATE_LIMIT_CODES, OPTED_OUT_REFRESH_MS,
   realDeps, startSend, runCampaign, resumeStuckCampaigns, sendSingle,
   aggregateRows, statsFromGroups, cancelQueuedRows, requestFromCampaign, describeSendError, cleanError, buttonPayloadsFor, campaignMessageKind,
   isDuplicateOnly, _activeRuns: activeRuns,

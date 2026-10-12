@@ -150,6 +150,7 @@ function waHeaders() {
 }
 
 async function waPost(body) {
+  try { const out = localization.localizeOutbound(body); if (out !== body) body = await out; } catch (_) { /* fail open: original payload */ } // Arabic localisation: same object back (no await) unless an Arabic version applies
   const res = await axios.post(WA_MESSAGES_URL, body, { headers: waHeaders() });
   return res.data;
 }
@@ -228,6 +229,7 @@ async function handleStatusCallbacks(statuses, workspaceId) {
       if (s.status === "delivered") update.deliveredAt = ts;
       if (s.status === "read")      update.readAt = ts;
       if (s.status === "failed")    update.statusReason = s.errors?.[0]?.title || s.errors?.[0]?.message;
+      if (s.status === "failed" && s.errors?.[0]?.code != null) update.errorCode = String(s.errors[0].code).slice(0, 20); // C3: Meta error code
 
       await CampaignMessage.findByIdAndUpdate(cm._id, update);
     } catch (err) {
@@ -310,7 +312,11 @@ async function handleMessageNodeTap({ from, wamid, nodeId, position, workspaceId
       let statusReason;
       let followUpWamid;
       try {
-        const result = await sendMessageNodeFollowUp(from, targetNode, [customer.firstname || "there"]);
+        // Arabic localisation: a reviewed Arabic version of THIS follow-up for an Arabic-speaking customer of a flagged workspace; null = the unchanged English send. Fail-open.
+        let localizedFollowUp = null;
+        try { localizedFollowUp = await require("./shared/localization/followUpSender").sendLocalizedFollowUp({ workspaceId, to: from, node: targetNode, customer, enrollmentId: claimed.flowEnrollment }); } catch (_) { localizedFollowUp = null; }
+        if (localizedFollowUp && localizedFollowUp.error) throw localizedFollowUp.error; // recorded as failed below; never re-sent in English
+        const result = localizedFollowUp ? localizedFollowUp.result : await sendMessageNodeFollowUp(from, targetNode, [customer.firstname || "there"]);
         followUpWamid = result?.messages?.[0]?.id;
       } catch (err) {
         sendStatus = "failed";
@@ -441,6 +447,7 @@ async function handleStripeWebhook(req, res) {
   }
 
   const workspaceId = await resolveWebhookWorkspaceId();
+  localization.enterContext(workspaceId); // Arabic localisation: same scoping for the payment confirmations sent from here (never throws)
 
   if (event.type === "payment_intent.payment_failed") {
     const pi = event.data.object;
@@ -956,6 +963,7 @@ app.post("/webhook", async (req, res) => {
 
   const message = value?.messages?.[0];
   if (!message) return;
+  localization.enterContext(workspaceId); // Arabic localisation: scopes the outbound-language lookup to this message's workspace (never throws)
 
   const from = message.from;
   console.log(`Incoming from ${from}:`, JSON.stringify(message, null, 2));
@@ -1061,6 +1069,7 @@ app.post("/webhook", async (req, res) => {
         await waPost({ messaging_product: "whatsapp", to: from, type: "text",
           text: { body: "You've been unsubscribed from promotional messages. Reply START to opt back in anytime." } }).catch(() => {});
       }
+      await localization.optOutSamePhone({ workspaceId, from, exceptCustomerId: customer && customer._id, method: 'whatsapp_optout_button', source: `Opt Out button on promotion ${payload.slice(7)}` }); // H1: every record of this number
     } else if (payload.startsWith("cart_")) {
       // "Add to Cart" tapped on a horizontal-carousel template card (see
       // shared/promotionCarousel.js) — a carousel is always a template
@@ -1262,6 +1271,7 @@ app.post("/webhook", async (req, res) => {
           await waPost({ messaging_product: "whatsapp", to: from, type: "text",
             text: { body: "You've been unsubscribed from promotional messages. Reply START to opt back in anytime." } }).catch(() => {});
         }
+        await localization.optOutSamePhone({ workspaceId, from, exceptCustomerId: customer && customer._id, method: 'whatsapp_optout_button', source: `Opt Out button on promotion ${buttonId.slice(7)}` }); // H1: every record of this number
       }
     }
     return;
@@ -1281,6 +1291,7 @@ app.post("/webhook", async (req, res) => {
       if (customer) await withdrawMarketingConsent({ customer, method: 'whatsapp_stop_command', source: 'WhatsApp STOP reply', workspaceId });
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: "You've been unsubscribed from promotional messages. Reply START to opt back in anytime." } }).catch(() => {});
+      await localization.optOutSamePhone({ workspaceId, from, exceptCustomerId: customer && customer._id, method: 'whatsapp_stop_command', source: 'WhatsApp STOP reply' }); // H1: every record of this number
       return;
     }
     if (upperText === "START" || upperText === "SUBSCRIBE") {

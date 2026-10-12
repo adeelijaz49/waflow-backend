@@ -66,9 +66,27 @@ until a native reader marks it `reviewed` (spec §8) — write good Arabic, but 
 | Save / Cancel / Delete-like "Archive" | حفظ / إلغاء / أرشفة | never "حذف" for archive |
 | WhatsApp | واتساب | |
 | Instagram | إنستغرام | caption = التعليق التوضيحي |
+| Shop now (button role `shop_now`) | تسوق الآن | the quick reply of a promotion-linked template; payload `promo_<id>` |
+| Cart / Checkout | السلة / إتمام الطلب | journey buttons: أضف إلى السلة، إتمام الطلب ✅ |
+| Rebook / Pay in person | إعادة الحجز / احجز وادفع بالموقع | booking-notice and slot buttons (each within 20 characters) |
+| Entry message (the first message of a flow or promotion) | رسالة الدخول | Meta-approved template |
+| Follow-up message (the reply after a button tap) | رسالة الرد التالية | free session reply: needs native review, no Meta approval |
+| Arabic hub (`/arabic`) | العربية واللغات / مركز العربية | page title / how other screens link to it |
+| Native reader / native review | متحدث أصلي للعربية / مراجعة متحدث أصلي | avoid the shortened "مراجعة أصلية" |
+| Out of date (an Arabic text whose English source changed) | قديمة | the Arabic follow-up is not sent until it is saved and reviewed again |
+| English instead of Arabic (fallback) | بالإنجليزية بدلاً من العربية | shown in plans and reports before sending |
+| Months (Gregorian, session texts) | يناير فبراير مارس أبريل مايو يونيو يوليو أغسطس سبتمبر أكتوبر نوفمبر ديسمبر | `senderValues.js`; written with a Western-digit day, e.g. `30 نوفمبر` |
 
 ## Native-review metadata
 Frontend catalogues: `src/app/i18n/catalogs/ar/<ns>.json` (flat `key: text`) with review state in `catalogs/meta/<ns>.json`
 (`{ "<key>": {"status":"reviewed","reviewer":"…","reviewedAt":"ISO"} }` — keys absent ⇒ draft; optional `"needsLegalApproval": true`).
 Backend catalogue: `shared/localization/catalog/<ns>.json` entries carry `status` inline (see `catalog.js`).
-Strings flagged `needsLegalApproval` (AI notice, consent/opt-out acknowledgements, privacy-adjacent copy) additionally need the owner's lawyer — never machine-translated legal text.
+Strings flagged `needsLegalApproval` (AI notice, consent/opt-out acknowledgements, privacy-adjacent copy) additionally need the owner's lawyer — never machine-translated legal text. State on 2026-10-12: the backend catalogue flags 17 strings (13 `consent.*`, the 3 Arabic `welcome_optin` library texts, `senders.optOutHint`); the Angular catalogues flag none yet, although the AI notice (`ai.notice`) and the AI Mode disclaimer (`aimode.disclaimer`) belong on the lawyer's list (backlog I10).
+
+## Session-message conventions (journey and senders catalogues, wiring phase)
+The 86 `journey.*` and 17 `senders.*` backend strings follow the rules above plus these:
+- Money in Arabic session texts is `150.00 ر.س` (AED `د.إ`), Western digits; a Latin product/service name or number inside an Arabic sentence is isolated with LRM by the renderer, never hand-typed into the catalogue.
+- Count-neutral phrasing instead of a counted noun after `{n}` (`عدد المنتجات في السلة: {n}`, `النقاط المطلوبة: {pts}`); "was" price = `كان {base}`, discount = `خصم {pct}%`.
+- Button titles stay within WhatsApp's 20 characters (the Arabic pay-in-person label is 18; the existing English one is 22); list rows within 24 and bodies within 1,024 characters.
+- Opt-out wording uses «إلغاء الاشتراك» exactly (the keyword the hook recognises); the referral hint line `senders.optOutHint` is legal-sensitive.
+- Merchant names of products/services appear only as the merchant's own text or a **reviewed** Arabic translation; the renderer never translates them.

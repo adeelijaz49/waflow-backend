@@ -374,6 +374,25 @@ const ENTRIES = deepFreeze([
       'يهنئك فريق {business} بمناسبة اليوم الوطني السعودي، ويتمنى لك ولأسرتك يوماً مليئاً بالفخر والفرح.',
     ),
   }),
+
+  // Last on purpose (the picker order above is unchanged). The one loyalty reminder every existing sender can fill without
+  // help: {name}, {points} and {amount} (the points' worth, points / 10 written like 12.50 ر.س) are all derived per
+  // customer by shared/localization/senderValues.js, unlike loyalty_reminder whose {date} nobody can supply
+  // (there is no points expiry). It mirrors the English loyalty template shared/operations.js#sendLoyaltyReminders sends.
+  define({
+    key: 'loyalty_reminder_balance',
+    useCase: 'loyalty_reminder',
+    category: 'MARKETING',
+    name: { en: 'Loyalty points balance reminder', ar: 'تذكير برصيد نقاط الولاء' },
+    en: paragraphs(
+      'Hi {name}, your loyalty points are waiting for you 💎',
+      'Your current points balance is {points}, worth {amount}. Pop in and use them on your next purchase, we would love to see you!',
+    ),
+    ar: paragraphs(
+      'أهلاً {name}، نقاط ولائك بانتظارك 💎',
+      'رصيدك الحالي من النقاط: {points}، وقيمته {amount}. زرنا واستخدمها في مشترياتك القادمة، يسعدنا استقبالك!',
+    ),
+  }),
 ]);
 
 const LIBRARY_KEYS = Object.freeze(ENTRIES.map((e) => e.key));

@@ -34,6 +34,7 @@ const EXPECTED = [
   ['greeting_ramadan', 'greeting', 'MARKETING'],
   ['greeting_eid', 'greeting', 'MARKETING'],
   ['greeting_national_day', 'greeting', 'MARKETING'],
+  ['loyalty_reminder_balance', 'loyalty_reminder', 'MARKETING'], // last: the one loyalty reminder every legacy sender can fill ({name} {points} {amount})
 ];
 
 const LANGUAGES = ['en', 'ar'];
@@ -166,7 +167,7 @@ describe('the hygiene checks catch what they claim to (negative controls)', () =
 });
 
 describe('library shape', () => {
-  test('exactly the 17 required entries, in picker order, with the model use cases and categories', () => {
+  test('exactly the 18 entries (the 17 required ones + loyalty_reminder_balance), in picker order, with the model use cases and categories', () => {
     expect(LIBRARY_KEYS).toEqual(EXPECTED.map(([key]) => key));
     expect(ENTRIES.map((e) => [e.key, e.useCase, e.category])).toEqual(EXPECTED);
   });
@@ -345,7 +346,7 @@ describe('Arabic copy', () => {
       if (body.includes('{points}')) expect(body).toContain('رصيدك الحالي من النقاط: {points}');
     }
     expect(ENTRIES.filter((e) => e.variants.ar.body.includes('{points}')).map((e) => e.key))
-      .toEqual(['loyalty_reminder', 'points_balance', 'points_expiring', 'referral_reward']);
+      .toEqual(['loyalty_reminder', 'points_balance', 'points_expiring', 'referral_reward', 'loyalty_reminder_balance']);
   });
 });
 
@@ -361,7 +362,7 @@ describe('emoji', () => {
 
 describe('consent (spec §3.4, compliance-critical)', () => {
   test('every MARKETING variant has exactly one opt-out button in ITS OWN language', () => {
-    expect(MARKETING.length).toBe(12);
+    expect(MARKETING.length).toBe(13);
     for (const entry of MARKETING) {
       expect(entry.variants.en.buttons).toEqual([{ role: 'opt_out', text: 'Opt Out' }]);
       expect(entry.variants.ar.buttons).toEqual([{ role: 'opt_out', text: 'إلغاء الاشتراك' }]);
@@ -521,7 +522,7 @@ describe('listLibrary / getLibraryEntry return deep copies', () => {
     first.length = 0;
 
     const second = listLibrary();
-    expect(second).toHaveLength(17);
+    expect(second).toHaveLength(18);
     expect(second[0].variants.ar.body).toContain('اشتقنا لك');
     expect(second[0].variants.ar.buttons).toEqual([{ role: 'opt_out', text: 'إلغاء الاشتراك' }]);
     expect(second[0].variants.en.buttons[0].text).toBe('Opt Out');
@@ -578,8 +579,8 @@ describe('listLibraryStrings (feeds the native-review export)', () => {
   test('covers every text the library holds, in both languages', () => {
     const covered = new Set(rows.flatMap((r) => [r.english, r.arabic]));
     for (const entry of ENTRIES) for (const text of allTexts(entry)) expect(covered.has(text)).toBe(true);
-    // 17 names + 17 bodies + 12 footers + 12 opt-out buttons + 2 consent buttons
-    expect(rows).toHaveLength(17 + 17 + 12 + 12 + 2);
+    // 18 names + 18 bodies + 13 footers + 13 opt-out buttons + 2 consent buttons
+    expect(rows).toHaveLength(18 + 18 + 13 + 13 + 2);
   });
 
   test('keys are unique and follow library.<entryKey>.ar.<name|header|body|footer|button<N>> (one row per Arabic string)', () => {

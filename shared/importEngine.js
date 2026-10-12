@@ -12,6 +12,10 @@ const { withWorkspace } = require('./operations');
 const { normalizePhoneForDedup } = require('../utils/phoneNormalize');
 const { parsePrice } = require('../utils/currency');
 const { grantMarketingConsent } = require('./consent');
+// Arabic localisation (IM-D): B2b upload decoding, B2c Arabic header aliases, and the extra wizard
+// fields / sidecar writes that exist ONLY for workspaces with Arabic switched on (arExtras === null otherwise).
+const arabicImport = require('./localization/importExtras');
+const { prepareUploadBuffer } = require('./localization/importDecode');
 
 const MAX_ROWS = 5000;
 
@@ -114,7 +118,7 @@ function autoDetectMapping(headers, entityType) {
   const cfg = getConfig(entityType);
   const mapping = {};
   for (const field of cfg.fields) {
-    const hit = headers.find(h => field.aliases.includes(String(h).trim().toLowerCase()));
+    const hit = headers.find(h => field.aliases.includes(String(h).trim().toLowerCase())) || arabicImport.arabicHeaderFor(entityType, field.key, headers);
     if (hit) mapping[field.key] = hit;
   }
   return mapping;
@@ -224,10 +228,12 @@ async function loadImportedBalanceTotals(workspaceId, customerIds) {
 async function classifyRows({ job, defaultCountryCode, index, importedBalanceTotals }) {
   const config = getConfig(job.entityType);
   const results = [];
+  const arExtras = await arabicImport.forWorkspace(job.entityType, job.workspaceId);
 
   for (let i = 0; i < job.rows.length; i++) {
     const row = job.rows[i];
     const { mapped, errors } = mapRow(row, job.columnMapping, config, defaultCountryCode);
+    if (arExtras) arExtras.readRow(row, job.columnMapping, mapped, errors);
 
     if (errors.length) {
       results.push({ rowIndex: i, mapped, status: 'error', errors, matchedId: null, discrepancy: null });
@@ -274,23 +280,24 @@ async function createImportJob({ file, entityType, workspaceId, userId, marketin
   if (!file) throw new Error('No file uploaded');
   getConfig(entityType); // throws on an unknown entityType
 
-  const { headers, rows } = parseFile(file.buffer);
+  const { headers, rows } = parseFile(prepareUploadBuffer(file.buffer));
   if (rows.length === 0) throw new Error('The file has no data rows');
   if (rows.length > MAX_ROWS) {
     throw new Error(`This file has ${rows.length} rows — the limit is ${MAX_ROWS}. Please split it into smaller files.`);
   }
 
+  const arExtras = await arabicImport.forWorkspace(entityType, workspaceId, userId); // null unless Arabic is on for this workspace
   const job = await ImportJob.create({
     workspaceId, entityType, originalFilename: file.originalname,
     headers, rows, totalRows: rows.length,
-    columnMapping: autoDetectMapping(headers, entityType),
+    columnMapping: arabicImport.withExtraMapping(arExtras, headers, autoDetectMapping(headers, entityType)),
     status: 'mapping', createdBy: userId,
     marketingConsentAttested: entityType === 'customer' && marketingConsentAttested === true,
   });
 
   return {
     id: job._id, entityType, headers, totalRows: rows.length,
-    columnMapping: job.columnMapping, fields: getConfig(entityType).fields,
+    columnMapping: job.columnMapping, fields: arabicImport.withExtraFields(arExtras, getConfig(entityType).fields),
   };
 }
 
@@ -368,11 +375,13 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
   }
 
   let importedCount = 0, skippedDuplicateCount = 0, failedCount = 0;
+  const arExtras = await arabicImport.forWorkspace(job.entityType, workspaceId, job.createdBy);
   const rowErrors = [];
 
   for (let i = 0; i < job.rows.length; i++) {
     const row = job.rows[i];
     const { mapped, errors } = mapRow(row, job.columnMapping, config, defaultCountryCode);
+    if (arExtras) arExtras.readRow(row, job.columnMapping, mapped, errors);
 
     if (errors.length) {
       failedCount++;
@@ -423,6 +432,7 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
               // 'skip' (or unresolved): points untouched, other fields still updated above.
             }
           }
+          if (arExtras) arExtras.afterRow('customer', existingId, mapped);
         } else {
           const { firstname, lastname } = splitName(mapped.name);
           const doc = await Customer.create({
@@ -444,6 +454,7 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
           }
           importedCount++;
           if (key) index.set(key, doc._id);
+          if (arExtras) arExtras.afterRow('customer', doc._id, mapped);
         }
       } else {
         // product / service — mostly identical shape, but products alone carry
@@ -483,6 +494,7 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
               await existingProduct.save();
             }
           }
+          if (arExtras) arExtras.afterRow(job.entityType, existingId, mapped);
         } else {
           const doc = await config.Model.create({
             workspaceId, name: mapped.name, basePrice: mapped.basePrice,
@@ -496,6 +508,7 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
           });
           importedCount++;
           if (key) index.set(key, doc._id);
+          if (arExtras) arExtras.afterRow(job.entityType, doc._id, mapped);
         }
       }
     } catch (err) {
@@ -504,6 +517,7 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
     }
   }
 
+  const arabicSummary = arExtras ? await arExtras.finish() : null;
   job.importedCount = importedCount;
   job.skippedDuplicateCount = skippedDuplicateCount;
   job.failedCount = failedCount;
@@ -511,7 +525,7 @@ async function runImport({ id, workspaceId, defaultCountryCode, discrepancyResol
   job.status = 'completed';
   await job.save();
 
-  return { id: job._id, status: job.status, importedCount, skippedDuplicateCount, failedCount, totalRows: job.totalRows };
+  return { id: job._id, status: job.status, importedCount, skippedDuplicateCount, failedCount, totalRows: job.totalRows, ...(arabicSummary ? { localization: arabicSummary } : {}) };
 }
 
 // ─── Templates & error export ───────────────────────────────────────────────────

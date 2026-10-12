@@ -10,6 +10,7 @@ const { sendOtpTemplate } = require('../utils/whatsapp');
 const { sendMagicLinkEmail } = require('../utils/email');
 const { FRONTEND_URL } = require('../utils/config');
 const { JWT_SECRET, ISSUER, AUDIENCE } = require('../middleware/requireAuth');
+const { toWesternDigits } = require('../shared/localization/arabicText');
 
 // Set only in local/CI env, NEVER in Azure App Service production settings —
 // echoes the real code/token back in the response so tests don't need a real
@@ -24,7 +25,7 @@ const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RATE_LIMIT_MAX = 3;
 
 function normalizePhone(phone) {
-  return String(phone || '').replace(/\D/g, '');
+  return toWesternDigits(String(phone || '')).replace(/\D/g, ''); // IM-D B2a: Arabic-Indic digits accepted
 }
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
@@ -155,7 +156,7 @@ router.post('/otp/request', async (req, res) => {
 router.post('/otp/verify', async (req, res) => {
   try {
     const phone = normalizePhone(req.body.phone);
-    const code = String(req.body.code || '');
+    const code = toWesternDigits(String(req.body.code || '')); // IM-D O4: Arabic-Indic digits accepted in the typed code
     if (!phone || !code) return res.status(400).json({ error: 'phone and code are required' });
 
     const challenge = await LoginChallenge.findOne({

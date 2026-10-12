@@ -101,6 +101,17 @@ describe.each([
     expect(/\p{Script=Arabic}/u.test(deps.calls.sent[0].body)).toBe(true);
   });
 
+  test.each([['consent_yes_', 'yes'], ['consent_no_', 'no'], ['optout_', 'out']])('%s with an English title, an Arabic stored language but the workspace SWITCHED OFF stays with the existing English code (ACC-BE); an Arabic title is still honoured', async (prefix, key) => {
+    const deps = makeDeps({ language: 'ar' });
+    deps.settings.isArabicEnabled = jest.fn(async () => false);
+    const id = prefix === 'optout_' ? `${prefix}promo1` : `${prefix}${CID}`;
+    await expect(tap(deps, build(id, EN[key]))).resolves.toBe(false);
+    expect(deps.calls.sent).toHaveLength(0);
+    expect(deps.calls.withdraw.length + deps.calls.grant.length + deps.calls.decline.length).toBe(0);
+    resetHandled();
+    await expect(tap(deps, build(id, AR[key]))).resolves.toBe(true); // the Arabic message was sent while the flag was on: its button is honoured
+  });
+
   test('a customer whose language is English stays with the existing code even when others are Arabic', async () => {
     const deps = makeDeps({ language: 'en' });
     await expect(tap(deps, build(`consent_yes_${CID}`, EN.yes))).resolves.toBe(false);

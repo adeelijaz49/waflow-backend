@@ -1,3 +1,8 @@
+// IM-D / B2a: Arabic-Indic / Persian digits are converted to Western digits first (toWesternDigits is
+// the identity for any string without such digits), so a number typed in Arabic digits is no longer
+// silently stripped to nothing / to a wrong number.
+const { toWesternDigits } = require('../shared/localization/arabicText');
+
 // CSV-import dedup phone matching ONLY. Deliberately separate from the
 // login-flow normalizePhone() in routes/auth.js / routes/workspaces.js —
 // those are invite/OTP-lookup critical, already working, and must not
@@ -13,7 +18,7 @@
 function normalizePhoneForDedup(rawPhone, defaultCountryCode) {
   if (!rawPhone) return null;
   const hasPlus = String(rawPhone).trim().startsWith('+');
-  const digits = String(rawPhone).replace(/\D/g, ''); // strips '+', spaces, dashes, parens
+  const digits = toWesternDigits(String(rawPhone)).replace(/\D/g, ''); // strips '+', spaces, dashes, parens
   if (!digits) return null;
 
   const cc = String(defaultCountryCode || '').replace(/\D/g, '');

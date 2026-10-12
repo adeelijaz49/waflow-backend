@@ -231,6 +231,104 @@ describe('GET /items', () => {
   });
 });
 
+// ── GET /:kind/:refId/translation (product / service form, IM-D) ────────────
+describe('GET /:kind/:refId/translation', () => {
+  const get = (w, kind, refId, ...rest) => call(w, 'get', `/${kind}/${refId}/translation`, ...rest);
+
+  test('{ translation: view } for an item that has Arabic text, read-only', async () => {
+    const w = world();
+    const res = await get(w, 'service', w.facial._id);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      translation: { name: 'عناية', description: '', status: 'reviewed', source: 'merchant', reviewedBy: 'Noura', reviewedAt: NOW.toISOString(), updatedAt: NOW.toISOString() },
+    });
+    expect(writesTo(w.ProductTranslation)).toEqual([]);
+  });
+
+  test('{ translation: null } for an item without Arabic text', async () => {
+    const w = world();
+    const res = await get(w, 'product', w.coffee._id);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ translation: null });
+  });
+
+  test('a stored row with a blank name counts as no translation', async () => {
+    const w = world();
+    w.ProductTranslation.docs.push({ ...translation('product', w.coffee._id, { name: '  ' }) });
+    expect((await get(w, 'product', w.coffee._id)).body).toEqual({ translation: null });
+  });
+
+  test("another tenant's item is a 404 ITEM_NOT_FOUND and its translation is never read", async () => {
+    const w = world();
+    expectError(await get(w, 'product', w.theirs._id), 404, 'ITEM_NOT_FOUND');
+    expect(w.ProductTranslation.calls.filter((c) => c.op === 'findOne')).toEqual([]);
+    expect((await get(w, 'product', w.theirs._id, WS_B)).status).toBe(200);
+  });
+
+  test('the item kind must match: a product id asked as a service is a 404', async () => {
+    const w = world();
+    expectError(await get(w, 'service', w.coffee._id), 404, 'ITEM_NOT_FOUND');
+  });
+
+  test('bad kind / bad id are 400s with codes; no workspace is a 403', async () => {
+    const w = world();
+    expectError(await get(w, 'widget', w.coffee._id), 400, 'INVALID_INPUT');
+    expectError(await get(w, 'product', 'not-an-id'), 400, 'INVALID_ID');
+    expectError(await request(w.app).get(`${BASE}/product/${w.coffee._id}/translation`), 403, 'FORBIDDEN');
+  });
+});
+
+describe('saveImportedDrafts (main import wizard Arabic columns, IM-D)', () => {
+  const run = (w, items, workspaceId = WS_A) => w.service.saveImportedDrafts({ workspaceId: String(workspaceId), userId: String(USER_A), items });
+
+  test('creates drafts with source csv; identical text is a no-op; changed text clears a review', async () => {
+    const w = world();
+    const first = await run(w, [{ kind: 'product', refId: String(w.coffee._id), name: 'قهوة عربية', description: 'بالهيل' }]);
+    expect(first).toEqual({ saved: 1, unchanged: 0, failed: 0 });
+    expect(w.ProductTranslation.docs.find((d) => same(d.refId, w.coffee._id))).toMatchObject({ name: 'قهوة عربية', description: 'بالهيل', status: 'draft', source: 'csv' });
+    expect(await run(w, [{ kind: 'product', refId: String(w.coffee._id), name: 'قهوة عربية', description: 'بالهيل' }])).toEqual({ saved: 0, unchanged: 1, failed: 0 });
+    // a reviewed translation keeps its review when the text is identical, and returns to draft when it changes
+    expect(await run(w, [{ kind: 'service', refId: String(w.facial._id), name: 'عناية' }])).toEqual({ saved: 0, unchanged: 1, failed: 0 });
+    expect(w.ProductTranslation.docs.find((d) => same(d.refId, w.facial._id)).status).toBe('reviewed');
+    expect(await run(w, [{ kind: 'service', refId: String(w.facial._id), name: 'عناية بالبشرة' }])).toEqual({ saved: 1, unchanged: 0, failed: 0 });
+    expect(w.ProductTranslation.docs.find((d) => same(d.refId, w.facial._id))).toMatchObject({ status: 'draft', name: 'عناية بالبشرة' });
+  });
+
+  test("a blank description keeps the stored one; another workspace's item and bad rows are counted as failed, never thrown", async () => {
+    const w = world();
+    await run(w, [{ kind: 'product', refId: String(w.coffee._id), name: 'قهوة', description: 'وصف' }]);
+    await run(w, [{ kind: 'product', refId: String(w.coffee._id), name: 'قهوة 2', description: '' }]);
+    expect(w.ProductTranslation.docs.find((d) => same(d.refId, w.coffee._id))).toMatchObject({ name: 'قهوة 2', description: 'وصف' });
+    const result = await run(w, [
+      { kind: 'product', refId: String(w.theirs._id), name: 'ليس لك' }, // another workspace's item
+      { kind: 'product', refId: 'bogus', name: 'x' },
+      { kind: 'widget', refId: String(w.coffee._id), name: 'x' },
+      { kind: 'product', refId: String(w.tea._id), name: '   ' },
+      null,
+    ]);
+    expect(result).toEqual({ saved: 0, unchanged: 0, failed: 4 });
+    expect(w.ProductTranslation.docs.some((d) => d.name === 'ليس لك')).toBe(false);
+  });
+
+  test('the first entry for an item wins; Latin text, emoji and Arabic-Indic digits are stored as typed', async () => {
+    const w = world();
+    const typed = 'قهوة \u{2615} Special \u{0661}\u{0662}\u{0663}';
+    const result = await run(w, [
+      { kind: 'product', refId: String(w.coffee._id), name: typed },
+      { kind: 'product', refId: String(w.coffee._id), name: 'second' },
+    ]);
+    expect(result.saved).toBe(1);
+    expect(w.ProductTranslation.docs.find((d) => same(d.refId, w.coffee._id)).name).toBe(typed);
+  });
+
+  test('no workspace is refused; empty input writes nothing', async () => {
+    const w = world();
+    await expect(w.service.saveImportedDrafts({ workspaceId: undefined, items: [] })).rejects.toMatchObject({ status: 403 });
+    expect(await run(w, [])).toEqual({ saved: 0, unchanged: 0, failed: 0 });
+    expect(writesTo(w.ProductTranslation)).toEqual([]);
+  });
+});
+
 // ── PUT /:kind/:refId/translation ──────────────────────────────────────────
 describe('PUT /:kind/:refId/translation', () => {
   const put = (w, kind, refId, body, ...rest) => call(w, 'put', `/${kind}/${refId}/translation`, ...rest).send(body);
@@ -603,7 +701,7 @@ describe('wiring', () => {
     expect(index).toMatch(/['"]\/catalog['"][^;\n]*requireArabicEnabled[^;\n]*require\(['"]\.\/catalog['"]\)/);
   });
 
-  test('the router declares exactly the five contract endpoints', () => {
+  test('the router declares exactly the five contract endpoints plus the single-item lookup (IM-D)', () => {
     const routes = createRouter(createCatalogService({})).stack
       .filter((layer) => layer.route)
       .map((layer) => `${Object.keys(layer.route.methods).join(',').toUpperCase()} ${layer.route.path}`);
@@ -611,6 +709,7 @@ describe('wiring', () => {
       'GET /items',
       'GET /export.csv',
       'POST /import',
+      'GET /:kind/:refId/translation',
       'PUT /:kind/:refId/translation',
       'POST /:kind/:refId/translation/review',
     ]);

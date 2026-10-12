@@ -21,9 +21,10 @@
 //                         variants of a node-linked template, exported for the
 //                         template service (upsertVariant) to apply on save;
 //   * slotFieldsFor / loadOwnedNode - shared with flowBridge.js.
-// The live flow engine still sends the English message: making it send the Arabic
-// variant needs one hook in utils/flowScheduler.js that is documented, tested and
-// NOT applied (see flowBridge.js).
+// The live flow engine sends the Arabic variant to Arabic-speaking customers of flagged
+// workspaces through the hook in utils/flowScheduler.js (see flowBridge.js); the Arabic versions
+// of branching follow-up messages live in LocalizedFlowNode (flowFollowUps.js, sent by
+// followUpSender.js) and the full message trees in flowTree.js.
 //
 // Slot -> merge field. These are the slots the English path fills, in the same
 // order (shared/operations.js): PROMOTION_MESSAGE_VARIABLES 1 customerName,

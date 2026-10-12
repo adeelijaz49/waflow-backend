@@ -40,5 +40,11 @@
     "ar": "رسالة مسار آلي",
     "status": "draft",
     "notes": "Default name of the language-versions template created for a flow message whose flow/promotion has no name (never expected in practice: both names are required fields)."
+  },
+  "fallbackService": {
+    "en": "your appointment",
+    "ar": "خدمتك",
+    "status": "draft",
+    "notes": "Fills the {service} merge field of a booking no-show flow message (and of an Arabic follow-up of it) when the booked service has no name. The English path sends the same fallback (utils/flowTriggers/bookingNoShow.js). Glossary: Booking = حجز."
   }
 }

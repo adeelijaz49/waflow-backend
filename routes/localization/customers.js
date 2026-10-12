@@ -34,6 +34,14 @@ router.get('/', handler(async (req, res) => {
   }));
 }));
 
+// One customer's language row for the profile panel on the existing Customers page (IM-D).
+router.get('/:id/language', handler(async (req, res) => {
+  res.json(await customers.getCustomerLanguage({
+    workspaceId: req.user.workspaceId,
+    customerId: req.params.id,
+  }));
+}));
+
 router.put('/:id/language', handler(async (req, res) => {
   res.json(await customers.setCustomerLanguage({
     workspaceId: req.user.workspaceId,

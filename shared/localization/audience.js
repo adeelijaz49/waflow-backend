@@ -111,6 +111,7 @@ function realDeps() {
     Customer: require('../../models/Customer'),
     CustomerLanguage: require('../../models/CustomerLanguage'),
     Order: require('../../models/Order'),
+    Settings: require('../../models/Settings'),
     consent: require('../consent'),
     now: () => Date.now(),
   };
@@ -235,7 +236,9 @@ async function findByIds(Model, filter, ids, projection) {
 // The same-phone opt-out rule (see the header): the normalised phones of EVERY opted-out
 // customer record of the workspace, in ONE query (a bulk read by `optedOut`, not a lookup per
 // recipient). Normalised in memory with the same function the recipients go through, so a
-// record stored as "+966 50 123 4567" matches one stored as "966501234567". Opted-out records
+// record stored as "+966 50 123 4567" matches one stored as "966501234567". Every spelling H1 understands (samePhone.phoneKeys:
+// 00..., local 05xxxxxxxx / bare national numbers via the workspace's default country code) is added, so a sibling stored as
+// "0501234567" blocks "966501234567" (review R2-03); without deps.Settings only the international spelling is used. Opted-out records
 // are a small slice of a workspace; beyond MAX_OPTED_OUT_RECORDS the check fails CLOSED
 // (a clear error, nothing is planned or sent) rather than silently skipping part of the list.
 async function loadOptedOutPhones(deps, workspaceId) {
@@ -245,9 +248,11 @@ async function loadOptedOutPhones(deps, workspaceId) {
       `This workspace has more than ${MAX_OPTED_OUT_RECORDS} opted-out customers, which is too many to check against.`, { max: MAX_OPTED_OUT_RECORDS });
   }
   const phones = new Set();
+  if (!rows.length) return phones;
+  const samePhone = require('./samePhone'); // lazy: samePhone requires this module
+  const cc = deps.Settings ? await samePhone.countryCodeOf(deps, workspaceId) : null;
   for (const row of rows) {
-    const digits = normalizeRecipientPhone(row.phone);
-    if (digits) phones.add(digits);
+    for (const key of samePhone.phoneKeys(row.phone, cc)) phones.add(key);
   }
   return phones;
 }
@@ -404,5 +409,5 @@ async function resolveAudience({ workspaceId, audience, category = 'MARKETING', 
 module.exports = {
   MAX_RECIPIENTS, MAX_CUSTOMER_IDS, CONSENT_ASK_COOLDOWN_MS, MAX_CANDIDATES, AUDIENCE_KINDS, SEGMENTS, SEGMENT_KEYS, SKIP_STATUS, CUSTOMER_PROJECTION: PROJECTION,
   httpError, asObjectId, chunk, isPlainObject,
-  normalizeAudienceSpec, normalizeRecipientPhone, classifyCustomer, loadOptedOutPhones, resolveAudience, realDeps,
+  normalizeAudienceSpec, normalizeRecipientPhone, classifyCustomer, loadOptedOutPhones, languageMap, resolveAudience, realDeps,
 };

@@ -60,6 +60,12 @@ function createRouter(service = defaultService) {
     res.json(await service.importCsv({ workspaceId, userId, buffer: req.file.buffer, dryRun }));
   }));
 
+  // One item's current Arabic text for the Product / Service form (IM-D): { translation: view | null }.
+  router.get('/:kind/:refId/translation', api(async (req, res) => {
+    const { workspaceId } = caller(req);
+    res.json(await service.getTranslation({ workspaceId, kind: req.params.kind, refId: req.params.refId }));
+  }));
+
   router.put('/:kind/:refId/translation', api(async (req, res) => {
     const { workspaceId, userId } = caller(req);
     const body = pick(req.body ?? {}, ['name', 'description', 'source']);

@@ -85,6 +85,9 @@ function realDeps() {
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log: (...a) => console.error('[localization]', ...a),
     debug: (...a) => { if (process.env.LOCALIZATION_DEBUG === '1') console.debug('[localization]', ...a); },
+    // H1 (same-number opt-out) and the outbound localiser's language hint. Optional: absent in unit-test fakes.
+    samePhoneOptOut: (args) => require('./samePhone').optOutSamePhone(args),
+    noteLanguage: (workspaceId, phone, language) => require('./outbound').noteLanguage(workspaceId, phone, language),
   };
 }
 
@@ -193,8 +196,17 @@ async function withdrawWithRetry(deps, args) {
 // redelivery of the same message must be allowed to try again).
 const FAILED = 'failed';
 
+// H1 (approved global change): a STOP also opts out every OTHER record of this workspace with the same normalised number.
+// Never throws; a no-op when the dependency is absent (unit-test fakes).
+async function sweepSamePhone(deps, { workspaceId, from, customer, source, method }) {
+  if (typeof deps.samePhoneOptOut !== 'function') return;
+  try { await deps.samePhoneOptOut({ workspaceId, from, exceptCustomerId: customer && customer._id, method, source }); }
+  catch (err) { deps.log('same-number opt-out failed (ignored):', err && err.message); }
+}
+
 async function optOut(deps, { workspaceId, from, lang, customer, source, method }) {
   if (customer && customer.optedOut === true) {
+    await sweepSamePhone(deps, { workspaceId, from, customer, source, method });
     await reply(deps, from, lang, 'consent.alreadyOptedOut');
     return true;
   }
@@ -203,6 +215,7 @@ async function optOut(deps, { workspaceId, from, lang, customer, source, method 
       () => withdrawWithRetry(deps, { customer, method, source, workspaceId }));
     if (!done.ok) return FAILED;
   }
+  await sweepSamePhone(deps, { workspaceId, from, customer, source, method });
   await reply(deps, from, lang, 'consent.optOutAck');
   return true;
 }
@@ -312,6 +325,11 @@ function isNameEcho(text, names) {
   return !!t && names.some((n) => n && normalizeForMatch(n) === t);
 }
 
+// Tells the outbound localiser (outbound.js) the language just stored, so this customer's very next reply uses it. Never throws.
+function noteLanguageHint(deps, workspaceId, customer, language) {
+  try { if (typeof deps.noteLanguage === 'function') deps.noteLanguage(workspaceId, customer.phone, language); } catch (_) { /* never throws */ }
+}
+
 // Detect and store the customer's language the first time we can tell.
 // Weak evidence is skipped (and retried on a later message) rather than locked in:
 //  * the English prefilled referral/Instagram text (Latin "Code: ..." token);
@@ -334,6 +352,7 @@ async function inferLanguage(deps, ctx, { workspaceId, text, contactName }) {
       { _id: existing._id, language: 'unknown', languageSource: { $nin: PROTECTED_LANGUAGE_SOURCES } },
       { $set: { language: detected.language, languageSource: 'inferred', inferredConfidence: detected.confidence }, $inc: { inferenceAttempts: 1 } },
     );
+    noteLanguageHint(deps, workspaceId, customer, detected.language);
     return true;
   }
   try {
@@ -343,6 +362,7 @@ async function inferLanguage(deps, ctx, { workspaceId, text, contactName }) {
   } catch (err) {
     if (!err || err.code !== 11000) throw err; // a concurrent message created it first — fine
   }
+  noteLanguageHint(deps, workspaceId, customer, detected.language);
   return true;
 }
 
@@ -451,7 +471,9 @@ async function handleButtonTap(deps, { workspaceId, from, message }) {
   }
   if (!customer) return false;
   if (kind.name !== 'optout' && onlyDigits(customer.phone) !== onlyDigits(from)) return false; // the payload names someone else: leave it to the existing code
-  if (!containsArabic(tap.title) && !(await customerIsArabic(deps, workspaceId, customer))) return false;
+  // A STORED Arabic language only counts while the workspace is switched on (ACC-BE): after a merchant is switched off, a tap on an English-titled
+  // button is the existing English code's business. An Arabic-titled tap is always honoured (the Arabic message was sent while it was on).
+  if (!containsArabic(tap.title) && !((await customerIsArabic(deps, workspaceId, customer)) && (await deps.settings.isArabicEnabled(workspaceId)))) return false;
 
   if (tap.via === 'template') {
     await correlateClick(deps, { from, wamid: message.context && message.context.id, promotionId: kind.name === 'optout' ? kind.arg : undefined, workspaceId });

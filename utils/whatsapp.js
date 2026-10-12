@@ -43,6 +43,7 @@ function getHeaders() {
 }
 
 async function waPost(body) {
+  try { const out = require('../shared/localization').localizeOutbound(body); if (out !== body) body = await out; } catch (_) { /* fail open: original payload */ }
   const res = await axios.post(WA_MSGS_URL, body, { headers: getHeaders() });
   return res.data;
 }

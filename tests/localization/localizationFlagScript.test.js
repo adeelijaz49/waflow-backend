@@ -1,6 +1,6 @@
 // Tests for the testable core of scripts/localization-flag.js (arg parsing + commands with injected
 // dependencies). The script's connect/disconnect wrapper only runs under `node scripts/...`, never here.
-const { parseArgs, run, describeFlag, UsageError } = require('../../scripts/localization-flag');
+const { parseArgs, run, describeFlag, webhookWarning, UsageError, WEBHOOK_MARK } = require('../../scripts/localization-flag');
 
 const WS = 'aaaaaaaaaaaaaaaaaaaaaaaa';
 
@@ -17,6 +17,9 @@ function makeDeps({ workspace = { name: 'Salon' }, flag = null, flags = [] } = {
     addLog: jest.fn(async () => ({})),
   };
 }
+
+const OLDEST = 'cccccccccccccccccccccccc';
+const OLDEST_WS = { workspaceId: OLDEST, name: 'First Salon', createdAt: new Date('2025-01-02T03:04:05Z') };
 
 describe('parseArgs', () => {
   test('parses commands, notes (both forms) and dry-run', () => {
@@ -107,6 +110,91 @@ describe('run', () => {
     expect(deps.setFlag).not.toHaveBeenCalled();
     await run({ command: 'enable', workspaceId: WS, notes: 'updated note' }, deps);
     expect(deps.setFlag).toHaveBeenCalledTimes(1);
+  });
+
+  describe('R5-2: the webhook workspace (the OLDEST one) is visible to the operator', () => {
+    test('list shows the oldest workspace marked even when it has no LocaleSettings row yet', async () => {
+      const deps = makeDeps({ flags: [{ workspaceId: WS, name: 'Salon', arabicEnabled: true }] });
+      deps.findWebhookWorkspace = jest.fn(async () => OLDEST_WS);
+      expect(await run({ command: 'list' }, deps)).toBe(0);
+      expect(deps.lines[0]).toBe(`${WS}  Salon  ENABLED`); // the row of another workspace is unchanged
+      const oldestLine = deps.lines.find((l) => l.startsWith(OLDEST));
+      expect(oldestLine).toContain('First Salon');
+      expect(oldestLine).toContain('no localisation record yet');
+      expect(oldestLine).toContain(WEBHOOK_MARK);
+      expect(deps.lines.join('\n')).toMatch(/OLDEST workspace/);
+      expect(deps.findWebhookWorkspace).toHaveBeenCalledTimes(1);
+    });
+
+    test('list marks the oldest workspace once when it already has a record, and prints no duplicate row', async () => {
+      const deps = makeDeps({ flags: [{ workspaceId: OLDEST, name: 'First Salon', arabicEnabled: false }] });
+      deps.findWebhookWorkspace = async () => OLDEST_WS;
+      await run({ command: 'list' }, deps);
+      expect(deps.lines.filter((l) => l.startsWith(OLDEST))).toHaveLength(1);
+      expect(deps.lines[0]).toContain(WEBHOOK_MARK);
+    });
+
+    test('list with no records at all still shows the webhook workspace instead of "No workspace"', async () => {
+      const deps = makeDeps();
+      deps.findWebhookWorkspace = async () => OLDEST_WS;
+      await run({ command: 'list' }, deps);
+      expect(deps.lines.join('\n')).not.toMatch(/No workspace has/);
+      expect(deps.lines[0]).toContain(WEBHOOK_MARK);
+    });
+
+    test('status and enable print a WARNING (not an error: exit 0, the write still happens) for a workspace that is not the oldest', async () => {
+      const status = makeDeps();
+      status.findWebhookWorkspace = async () => OLDEST_WS;
+      expect(await run({ command: 'status', workspaceId: WS }, status)).toBe(0);
+      const out = status.lines.join('\n');
+      expect(out).toContain('WARNING: Arabic in WhatsApp conversations only reaches the OLDEST workspace');
+      expect(out).toContain('First Salon');
+      expect(out).toContain(OLDEST);
+      expect(out).toContain('2025-01-02');
+
+      const enable = makeDeps();
+      enable.findWebhookWorkspace = async () => OLDEST_WS;
+      expect(await run({ command: 'enable', workspaceId: WS }, enable)).toBe(0);
+      expect(enable.lines.join('\n')).toContain('WARNING: Arabic in WhatsApp conversations only reaches the OLDEST workspace');
+      expect(enable.setFlag).toHaveBeenCalledTimes(1); // may still proceed
+    });
+
+    test('the oldest workspace itself gets no warning, only a statement that it is the webhook workspace', async () => {
+      const deps = makeDeps();
+      deps.findWebhookWorkspace = async () => OLDEST_WS;
+      await run({ command: 'status', workspaceId: OLDEST }, deps);
+      const out = deps.lines.join('\n');
+      expect(out).not.toContain('WARNING');
+      expect(out).toContain('This is the webhook workspace');
+    });
+
+    test('a failing or absent lookup never blocks a command and prints no warning', async () => {
+      const failing = makeDeps();
+      failing.findWebhookWorkspace = async () => { throw new Error('db down'); };
+      expect(await run({ command: 'enable', workspaceId: WS }, failing)).toBe(0);
+      expect(failing.lines.join('\n')).not.toContain('WARNING');
+      expect(failing.setFlag).toHaveBeenCalledTimes(1);
+      const none = makeDeps();
+      none.findWebhookWorkspace = async () => null;
+      await run({ command: 'status', workspaceId: WS }, none);
+      expect(none.lines.join('\n')).not.toContain('WARNING');
+    });
+
+    test('dry-run and log-before-mutate are unchanged with the warning present', async () => {
+      const deps = makeDeps();
+      deps.findWebhookWorkspace = async () => OLDEST_WS;
+      await run({ command: 'enable', workspaceId: WS, dryRun: true }, deps);
+      expect(deps.addLog).not.toHaveBeenCalled();
+      const real = makeDeps();
+      real.findWebhookWorkspace = async () => OLDEST_WS;
+      await run({ command: 'enable', workspaceId: WS }, real);
+      expect(real.addLog.mock.invocationCallOrder[0]).toBeLessThan(real.setFlag.mock.invocationCallOrder[0]);
+    });
+
+    test('webhookWarning tolerates a missing name or date', () => {
+      expect(webhookWarning({ workspaceId: OLDEST })).toContain('(unnamed workspace)');
+      expect(webhookWarning({ workspaceId: OLDEST, createdAt: 'garbage' })).not.toContain('created');
+    });
   });
 
   test('describeFlag never prints more than the flag fields', () => {

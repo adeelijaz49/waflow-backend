@@ -121,8 +121,8 @@ describe('validateTemplateName', () => {
 });
 
 describe('button roles', () => {
-  test('the role set is exactly opt_in | decline | opt_out | url | flow_button (no generic custom reply)', () => {
-    expect(BUTTON_ROLES).toEqual(['opt_in', 'decline', 'opt_out', 'url', 'flow_button']);
+  test('the role set is exactly opt_in | decline | opt_out | url | flow_button | shop_now (no generic custom reply)', () => {
+    expect(BUTTON_ROLES).toEqual(['opt_in', 'decline', 'opt_out', 'url', 'flow_button', 'shop_now']);
     expect(BUTTON_ROLES).not.toContain('custom');
   });
 
@@ -227,6 +227,29 @@ describe('flow buttons (payload msgnode_<nodeId>_<position>)', () => {
     expect(unlinked.errors).toContainEqual({ code: 'flow_button_without_message_node', field: 'buttons.0' });
     const linked = validateVariant(good({ buttons: flowButtons }), { linkedMessageNodeId: '65a1b2c3d4e5f60718293a4b' });
     expect(linked.errors).toEqual([]);
+  });
+});
+
+describe('shop_now buttons (payload promo_<promotionId>)', () => {
+  const shopButtons = [{ role: 'shop_now', text: 'تسوق الآن' }, OPT_OUT_AR];
+
+  test('only meaningful on a template linked to a promotion', () => {
+    const unlinked = validateVariant(good({ buttons: shopButtons }));
+    expect(unlinked.errors).toContainEqual({ code: 'shop_now_without_promotion', field: 'buttons.0' });
+    const flowLinked = validateVariant(good({ buttons: shopButtons }), { linkedMessageNodeId: '65a1b2c3d4e5f60718293a4b' });
+    expect(flowLinked.errors).toContainEqual({ code: 'shop_now_without_promotion', field: 'buttons.0' });
+    const linked = validateVariant(good({ buttons: shopButtons }), { linkedPromotionId: '65a1b2c3d4e5f60718293a4b' });
+    expect(linked.errors).toEqual([]);
+  });
+
+  test('a MARKETING version still needs its opt-out button; a shop_now button does not count as one', () => {
+    const r = validateVariant(good({ buttons: [shopButtons[0]] }), { linkedPromotionId: '65a1b2c3d4e5f60718293a4b' });
+    expect(r.errors).toContainEqual({ code: 'marketing_requires_opt_out_button', field: 'buttons' });
+  });
+
+  test('shop_now is a quick reply: it must come before URL buttons like every quick reply', () => {
+    const r = validateVariant(good({ buttons: [{ role: 'url', text: 'x', url: 'https://example.com' }, shopButtons[0], OPT_OUT_AR] }), { linkedPromotionId: '65a1b2c3d4e5f60718293a4b' });
+    expect(codes(r.errors)).toContain('buttons_wrong_order');
   });
 });
 

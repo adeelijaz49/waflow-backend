@@ -230,7 +230,7 @@ describe('toTemplateView', () => {
   test('has exactly the shape of the LocalizedTemplate / TemplateVariant TypeScript types', async () => {
     const { svc } = setup();
     const t = await seed(svc);
-    expect(Object.keys(t).sort()).toEqual(['archived', 'category', 'createdAt', 'id', 'key', 'linkedMessageNodeId', 'name', 'updatedAt', 'useCase', 'variants']);
+    expect(Object.keys(t).sort()).toEqual(['archived', 'category', 'createdAt', 'id', 'key', 'linkedMessageNodeId', 'linkedPromotionId', 'name', 'updatedAt', 'useCase', 'variants']);
     expect(Object.keys(t.variants[0]).sort()).toEqual([
       'body', 'bilingualOrder', 'buttons', 'footer', 'header', 'language', 'lastError', 'metaCategory', 'metaFlagged', 'metaLastCheckedAt', 'metaPreviousCategory', 'metaStatusRaw', 'metaRejectedReason', 'metaStatus', 'metaTemplateName',
       'notSendableReason', 'reviewStatus', 'reviewedAt', 'reviewedBy', 'sendable', 'source', 'submissionCount', 'submittedAt', 'updatedAt', 'validation',
@@ -2639,5 +2639,73 @@ describe('live-Meta behaviour', () => {
       const text = JSON.stringify(ctx.transport.sent[0].args.components);
       for (const mark of [0x200e, 0x200f, 0x061c]) expect(text.includes(String.fromCodePoint(mark))).toBe(false);
     });
+  });
+});
+
+// ── promotion-linked templates (D1): linkedPromotionId and the shop_now button role ──────────────
+describe('promotion-linked templates and the shop_now button', () => {
+  const PROMO = 'b5a1b2c3d4e5f60718293a4b';
+  const SHOP_AR = { role: 'shop_now', text: 'تسوق الآن' };
+  const ctxWith = () => setup({ findPromotion: jest.fn(async (ws, id) => (ws === WS && id === PROMO ? { _id: id } : null)) });
+  const create = (ctx, over = {}) => ctx.svc.createTemplate({
+    workspaceId: WS, userId: USER, name: 'Eid promotion', useCase: 'promotion', linkedPromotionId: PROMO,
+    variants: [{ language: 'ar', body: 'أهلاً {name}، عرضنا الجديد بانتظارك اليوم في متجرنا', buttons: [SHOP_AR, OPT_OUT_AR] }], ...over,
+  });
+
+  test('createTemplate links the promotion; the view and the stored document carry it; shop_now validates', async () => {
+    const ctx = ctxWith();
+    const t = await create(ctx);
+    expect(t.linkedPromotionId).toBe(PROMO);
+    expect(t.linkedMessageNodeId).toBeNull();
+    expect(ctx.store.docs[0].linkedPromotionId).toBe(PROMO);
+    expect(variantOf(t, 'ar').validation.ok).toBe(true);
+    expect(ctx.deps.findPromotion).toHaveBeenCalledWith(WS, PROMO);
+  });
+
+  test('a template that is NOT linked to a promotion cannot use shop_now (it would be a dead button)', async () => {
+    const ctx = ctxWith();
+    const t = await create(ctx, { linkedPromotionId: undefined });
+    expect(t.linkedPromotionId).toBeNull();
+    expect(codes(variantOf(t, 'ar').validation.errors)).toContain('shop_now_without_promotion');
+  });
+
+  test('the promotion must be this workspace\'s: unknown / foreign -> 404 PROMOTION_NOT_FOUND, malformed -> 400, both links -> 400', async () => {
+    const ctx = ctxWith();
+    await rejects(create(ctx, { linkedPromotionId: 'c5a1b2c3d4e5f60718293a4b' }), { status: 404, code: 'PROMOTION_NOT_FOUND' });
+    await rejects(create(ctx, { workspaceId: WS2 }), { status: 404, code: 'PROMOTION_NOT_FOUND' });
+    await rejects(create(ctx, { linkedPromotionId: 'not-an-id' }), { status: 400, code: 'INVALID_ID' });
+    await rejects(create(ctx, { linkedMessageNodeId: NODE }), { status: 400, code: 'INVALID_INPUT' });
+    expect(ctx.store.docs).toHaveLength(0);
+  });
+
+  test('R2-02: a promotion-linked template cannot have a transactional (UTILITY-floor) use case: 400 PROMOTION_TEMPLATE_USE_CASE, nothing is stored; marketing use cases still work', async () => {
+    const ctx = ctxWith();
+    for (const useCase of ['order_confirmation', 'booking_confirmation', 'booking_reminder', 'payment_reminder']) {
+      await rejects(create(ctx, { useCase, category: 'UTILITY' }), { status: 400, code: 'PROMOTION_TEMPLATE_USE_CASE' });
+    }
+    expect(ctx.store.docs).toHaveLength(0);
+    expect(ctx.deps.findPromotion).not.toHaveBeenCalled();
+    for (const useCase of ['promotion', 'custom', 'comeback']) { await create(ctx, { useCase, name: 'T ' + useCase }); }
+    expect(ctx.store.docs).toHaveLength(3);
+  });
+
+  test('listTemplates can filter by linkedPromotionId (and refuses a malformed one)', async () => {
+    const ctx = ctxWith();
+    await create(ctx);
+    await seed(ctx.svc, { name: 'Other' });
+    expect((await ctx.svc.listTemplates({ workspaceId: WS })).total).toBe(2);
+    const filtered = await ctx.svc.listTemplates({ workspaceId: WS, linkedPromotionId: PROMO });
+    expect(filtered.items.map((i) => i.name)).toEqual(['Eid promotion']);
+    expect((await ctx.svc.listTemplates({ workspaceId: WS, linkedPromotionId: PROMO.toUpperCase() })).total).toBe(1);
+    await expect(ctx.svc.listTemplates({ workspaceId: WS, linkedPromotionId: '{"$ne":null}' })).rejects.toMatchObject({ code: 'INVALID_ID' });
+  });
+
+  test('a test send of the approved variant carries promo_<promotionId> on the shop button and the inert opt-out payload', async () => {
+    const ctx = ctxWith();
+    const t = await create(ctx);
+    await approve(ctx, t.id, 'ar');
+    await ctx.svc.testSendVariant({ workspaceId: WS, id: t.id, language: 'ar', phone: '0501234567' });
+    const buttons = ctx.transport.sent[0].args.components.filter((c) => c.type === 'button').map((c) => c.parameters[0].payload);
+    expect(buttons).toEqual([`promo_${PROMO}`, 'l10ntest_optout']);
   });
 });

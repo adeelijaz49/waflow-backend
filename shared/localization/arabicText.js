@@ -53,6 +53,25 @@ function toWesternDigits(input) {
   });
 }
 
+// Digits / separators inside a NUMBER the merchant typed (a price, a points cell):
+// Arabic-Indic digits -> Western, the Arabic decimal (U+066B) and thousands (U+066C)
+// separators -> '.' and ',', and Arabic currency words / abbreviations (riyal, the SAR dotted abbreviation)
+// -> a space. IDENTITY (the same string, byte for byte) for any input that has no Arabic
+// letter and no Arabic numeral / separator, which is what makes it safe to put in front of
+// the existing English price parser (utils/currency.js parsePrice).
+// Only Arabic LETTERS (script Arabic AND category L) count, not Arabic-script symbols such as the
+// Arabic percent sign U+066A, so a string with no Arabic letter / numeral stays untouched.
+const ARABIC_NUMERAL_RE = /[[\p{Script=Arabic}&&\p{L}]\u{0660}-\u{0669}\u{06F0}-\u{06F9}\u{066B}\u{066C}]/v;
+const ARABIC_WORD_RE = /[\p{Script=Arabic}&&\p{L}]+(?:\.[\p{Script=Arabic}&&\p{L}]+)*\.?/gv;
+function toWesternNumerals(input) {
+  const s = str(input);
+  if (!ARABIC_NUMERAL_RE.test(s)) return s;
+  return toWesternDigits(s)
+    .replace(/\u{066B}/gv, '.')
+    .replace(/\u{066C}/gv, ',')
+    .replace(ARABIC_WORD_RE, ' ');
+}
+
 function stripDiacritics(input) { return str(input).replace(DIACRITICS_RE, ''); }
 function stripTatweel(input) { return str(input).replace(TATWEEL_RE, ''); }
 function stripInvisibles(input) { return str(input).replace(INVISIBLES_RE, ''); }
@@ -134,6 +153,7 @@ function needsLtrProtection(value) {
 module.exports = {
   LRM, RLM, LRI, RLI, FSI, PDI,
   toWesternDigits,
+  toWesternNumerals,
   stripDiacritics,
   stripTatweel,
   stripInvisibles,

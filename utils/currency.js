@@ -1,3 +1,7 @@
+// IM-D / B2c: Arabic-Indic digits, the Arabic decimal/thousands separators and Arabic currency words are
+// handled by toWesternNumerals, which is the identity for any string without Arabic script / numerals.
+const { toWesternNumerals } = require('../shared/localization/arabicText');
+
 // Formats an amount for WhatsApp message bodies. Angular's CurrencyPipe already
 // handles proper symbol/locale formatting on the frontend — this only needs to
 // cover the currencies this merchant base actually uses in outbound text.
@@ -26,7 +30,7 @@ function money(amount, code) {
 function parsePrice(raw) {
   if (raw === null || raw === undefined || raw === '') return null;
   if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
-  const cleaned = String(raw).replace(/[^\d.-]/g, ''); // strips symbols, currency codes, commas, spaces
+  const cleaned = toWesternNumerals(String(raw)).replace(/[^\d.-]/g, ''); // strips symbols, currency codes, commas, spaces
   if (!cleaned) return null;
   const n = parseFloat(cleaned);
   return Number.isFinite(n) ? n : null;

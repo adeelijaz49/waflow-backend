@@ -56,3 +56,19 @@ describe('Cosmos DB sort rules', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+describe('indexes on collections that already exist in production', () => {
+  test('LocalizedTemplate (created by the first build) gets no new index: linkedPromotionId is looked up through the workspaceId index', () => {
+    const indexes = require('../../models/LocalizedTemplate').schema.indexes().map(([keys]) => Object.keys(keys).join(','));
+    expect(indexes.some((k) => k.includes('linkedPromotionId'))).toBe(false);
+    expect(indexes).toEqual(expect.arrayContaining(['workspaceId', 'workspaceId,key', 'workspaceId,linkedMessageNodeId']));
+    expect(indexes).toHaveLength(3);
+  });
+  test('the promotion lookup of senderVariants is workspace-scoped (it needs no index of its own)', async () => {
+    const calls = [];
+    const LocalizedTemplate = { find: (filter) => { calls.push(filter); return { lean: async () => [] }; } };
+    await require('../../shared/localization/senderVariants').listCandidates({ LocalizedTemplate }, { workspaceId: oid(), sender: 'promotion', promotion: { _id: oid() }, node: null });
+    expect(calls).toHaveLength(1);
+    expect(Object.keys(calls[0]).sort()).toEqual(['archived', 'linkedPromotionId', 'workspaceId']);
+  });
+});

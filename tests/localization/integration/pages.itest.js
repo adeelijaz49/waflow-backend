@@ -24,7 +24,11 @@ const CustomerLanguage = require('../../../models/CustomerLanguage');
 
 jest.setTimeout(60000);
 
-beforeAll(async () => { await fx.connect(); });
+beforeAll(async () => {
+  await fx.connect();
+  // /payment-cancelled resolves its workspace like the webhook does: the OLDEST one. In a FRESH database make that one flagged (create only; an existing database is left as it is).
+  if (!(await require('../../../models/Workspace').findOne().lean())) await fx.makeWorkspace({ arabic: true });
+});
 afterAll(async () => { await fx.disconnect(); });
 
 const SENTINEL = 'EXISTING-ENGLISH-HANDLER';

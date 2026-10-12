@@ -1207,6 +1207,12 @@ describe('helpers', () => {
     expect(payloads).toEqual(['optout_C1', 'consent_yes_U1', 'consent_no_U1', null, 'msgnode_N1_0']);
   });
 
+  test('buttonPayloadsFor: shop_now carries promo_<promotionId> (never a dead button when the template is not promotion-linked)', () => {
+    const args = { variant: { buttons: [{ role: 'shop_now' }, { role: 'opt_out' }] }, campaign: { _id: 'C1' }, customer: { _id: 'U1' } };
+    expect(sender.buttonPayloadsFor({ ...args, template: { linkedPromotionId: 'P1' } })).toEqual(['promo_P1', 'optout_C1']);
+    expect(sender.buttonPayloadsFor({ ...args, template: {} })).toEqual([null, 'optout_C1']);
+  });
+
   test('campaignMessageKind follows the use case onto the existing enum', () => {
     expect(sender.campaignMessageKind({ useCase: 'promotion' }, { buttons: [] })).toBe('promotion');
     expect(sender.campaignMessageKind({ useCase: 'loyalty_reminder' }, { buttons: [] })).toBe('loyalty_reminder');

@@ -6,11 +6,12 @@ const Invite = require('../models/Invite');
 const { sendInviteTemplate } = require('../utils/whatsapp');
 const { sendInviteEmail } = require('../utils/email');
 const { FRONTEND_URL } = require('../utils/config');
+const { toWesternDigits } = require('../shared/localization/arabicText');
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function normalizePhone(phone) {
-  return String(phone || '').replace(/\D/g, '');
+  return toWesternDigits(String(phone || '')).replace(/\D/g, ''); // IM-D B2a: Arabic-Indic digits accepted
 }
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();

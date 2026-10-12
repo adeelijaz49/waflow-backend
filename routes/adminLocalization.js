@@ -20,10 +20,16 @@
 //  * The audit row is written BEFORE the flag changes (log-before-mutate, like
 //    shared/consent.js): if the row cannot be written the flag is not touched and the
 //    operator gets a friendly "nothing was changed" page.
+//  * The production WhatsApp webhook serves ONE workspace, the OLDEST (server.js
+//    resolveWebhookWorkspaceId). The page marks it and shows a warning (not a block) next to the
+//    Enable action of every other workspace. One read-only single-field-sort query, fail-soft.
 // Dependencies are injectable (createRouter) so the page is tested without a DB.
 const crypto = require('crypto');
 const express = require('express');
 const { isObjectIdLike } = require('../shared/localization/scope');
+const { toWesternDigits } = require('../shared/localization/arabicText');
+// Same warning wording as the staff CLI (single source of truth; the script only runs main() when executed directly).
+const { webhookWarning } = require('../scripts/localization-flag');
 
 const BASE = '/internal-admin-localization';
 const MAX_QUERY = 100;
@@ -53,6 +59,7 @@ function layout(title, body) {
   .field{margin-bottom:.75rem}
   label{display:block;font-size:.8rem;color:#9aa4af;margin-bottom:.25rem}
   .pill{display:inline-block;padding:.1rem .5rem;border-radius:100px;font-size:.75rem;background:#243044}
+  .warn{background:#3d3410;border:1px solid #a88a1f;padding:.6rem .9rem;border-radius:8px;margin:.5rem 0 .75rem;font-size:.85rem}
   .banner{background:#5a1f1f;border:1px solid #a33;padding:.75rem 1rem;border-radius:8px;margin-bottom:1rem;max-width:760px}
   table{border-collapse:collapse;width:100%}td,th{text-align:left;padding:.25rem .5rem;border-bottom:1px solid #2a333d;font-size:.85rem}
   code{background:#0b0f14;padding:.1rem .3rem;border-radius:4px}
@@ -115,6 +122,22 @@ function createRouter(overrides = {}) {
     }
   };
 
+  // The oldest workspace = the one the single-workspace webhook serves, as { workspaceId, name, createdAt } or null.
+  // Read-only and fail-soft: any problem simply means "no marker / no warning".
+  async function webhookWorkspace() {
+    try {
+      let w = null;
+      if (typeof deps.findWebhookWorkspace === 'function') w = await deps.findWebhookWorkspace();
+      else if (deps.Workspace && typeof deps.Workspace.findOne === 'function') {
+        w = await deps.Workspace.findOne().sort({ createdAt: 1 }).select('name createdAt').lean();
+      }
+      if (!w || !(w.workspaceId || w._id)) return null;
+      return { workspaceId: String(w.workspaceId || w._id), name: w.name, createdAt: w.createdAt };
+    } catch (err) {
+      return null;
+    }
+  }
+
   const notFound = (res) => res.status(404).send(layout('Not found', '<div class="card"><p>No workspace with that ID.</p></div>'));
 
   function killSwitchBanner() {
@@ -153,8 +176,10 @@ function createRouter(overrides = {}) {
   }
 
   router.get('/', page(async (req, res) => {
+    const webhook = await webhookWorkspace();
     res.send(layout('Arabic Localisation Admin', `
       ${killSwitchBanner()}
+      ${webhook ? `<div class="card"><p>Webhook workspace (the OLDEST workspace; the only one that Arabic in WhatsApp conversations reaches): <a href="${BASE}/${esc(webhook.workspaceId)}">${esc(webhook.name || webhook.workspaceId)}</a> <span class="muted">${esc(webhook.workspaceId)}</span></p></div>` : ''}
       <div class="card">
         <form method="GET" action="${BASE}/search">
           <div class="field"><label>Workspace name, ID, or a member's phone / name / email</label><input type="text" name="q" maxlength="${MAX_QUERY}" required autofocus></div>
@@ -170,7 +195,7 @@ function createRouter(overrides = {}) {
     const rx = new RegExp(escapeRegex(q), 'i');
     const ids = new Set();
     const byName = await deps.Workspace.find({ name: rx }).limit(50).lean();
-    const digits = q.replace(/\D/g, '');
+    const digits = toWesternDigits(q).replace(/\D/g, ''); // a phone typed in Arabic-Indic digits finds its member
     const userFilter = [{ name: rx }, { email: rx }];
     if (digits.length >= 3) userFilter.push({ phone: new RegExp(escapeRegex(digits)) });
     const users = await deps.User.find({ $or: userFilter }).select('_id').limit(50).lean();
@@ -199,7 +224,8 @@ function createRouter(overrides = {}) {
     const workspace = await deps.Workspace.findById(workspaceId).lean();
     if (!workspace) return notFound(res);
 
-    const [flag, summary, translations, log] = await Promise.all([
+    const [webhook, flag, summary, translations, log] = await Promise.all([
+      webhookWorkspace(),
       deps.LocaleSettings.findOne({ workspaceId: workspace._id }).lean(),
       deps.overview.overview(workspace._id),
       deps.overview.translationCounts(workspace._id),
@@ -209,6 +235,10 @@ function createRouter(overrides = {}) {
     const adminUser = getAdminUser(req);
     const token = csrfToken(adminUser, String(workspace._id));
     const t = summary.templates;
+    const isWebhook = !!webhook && webhook.workspaceId === String(workspace._id);
+    const webhookNote = !webhook ? ''
+      : isWebhook ? '<p><span class="pill">webhook workspace</span> <span class="muted">the OLDEST workspace: Arabic in WhatsApp conversations reaches it.</span></p>'
+        : `<div class="warn">${esc(webhookWarning(webhook))}</div>`;
     const logRows = log.map((l) => `<tr><td>${esc(new Date(l.createdAt).toISOString())}</td><td>${esc(l.action)}</td><td>${esc(l.adminUser)}</td><td>${esc(l.notes)}</td></tr>`).join('')
       || '<tr><td colspan="4" class="muted">No changes yet.</td></tr>';
 
@@ -216,6 +246,7 @@ function createRouter(overrides = {}) {
       ${killSwitchBanner()}
       <div class="card">
         <p>Arabic localisation: <span class="pill">${enabled ? 'enabled' : 'disabled'}</span></p>
+        ${webhookNote}
         <p class="muted">${enabled && flag.arabicEnabledAt ? `Enabled ${esc(new Date(flag.arabicEnabledAt).toISOString())} by ${esc(flag.arabicEnabledBy)}. ` : ''}Notes: ${esc(flag && flag.notes)}</p>
         ${token ? `<form method="POST" action="${BASE}/${esc(workspace._id)}/toggle">
           <input type="hidden" name="csrf" value="${esc(token)}">

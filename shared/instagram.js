@@ -31,6 +31,7 @@ const igAi  = require('./instagramAi');
 const tokenManager = require('../utils/tokenManager');
 const axios = require('axios');
 const { APP_URL } = require('../utils/config');
+const { oneWordLastname } = require('./localization/nameGuard');
 
 const WA_PHONE_ID = process.env.WA_PHONE_ID || '1032683093271618';
 const WA_BASE = 'https://graph.facebook.com/v25.0';
@@ -470,7 +471,7 @@ async function handleInboundTrackingCode({ workspaceId, from, message, contactNa
   let customer = existedBefore;
   if (!customer) {
     const [firstname, ...rest] = (contactName || from).trim().split(/\s+/);
-    customer = await Customer.create({ workspaceId, phone: from, firstname: firstname || from, lastname: rest.join(' ') });
+    customer = await Customer.create({ workspaceId, phone: from, firstname: firstname || from, lastname: rest.join(' ') || await oneWordLastname(workspaceId) }); // IM-D B4: flagged workspaces only
   }
 
   await TrackingEvent.create({

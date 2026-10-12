@@ -55,7 +55,12 @@ async function run(planFn, req, res, next, getDeps) {
     console.error('[localization:pages] falling back to the English page:', err && err.message);
     return next();
   }
-  if (!plan || plan.next) return next();
+  if (!plan || plan.next) {
+    // Remember why the English page answers: routes/pay.js shows an "Arabic" switch link
+    // for a flagged workspace (shared/localization/pages/switchLink.js). Nothing is sent here.
+    if (plan && plan.reason && res.locals) res.locals.arabicPageReason = plan.reason;
+    return next();
+  }
   try {
     return send(res, plan.commit ? await plan.commit() : plan);
   } catch (err) {

@@ -305,9 +305,18 @@ describe('the router surface', () => {
     expect(res.status).toBe(404);
   });
 
-  test('only the two documented routes exist', () => {
+  test('only the documented routes exist (no delete, nothing else)', () => {
     const routes = router.stack.filter((layer) => layer.route).map((layer) => `${Object.keys(layer.route.methods).join(',')} ${layer.route.path}`);
-    expect(routes.sort()).toEqual(['get /messages', 'post /messages/:messageNodeId/localize']);
+    expect(routes.sort()).toEqual([
+      'get /followups/:nodeId',
+      'get /messages',
+      'get /owners/:ownerType/:ownerId/tree',
+      'get /promotion-trees',
+      'get /tree',
+      'post /followups/:nodeId/variants/ar/review',
+      'post /messages/:messageNodeId/localize',
+      'put /followups/:nodeId/variants/ar',
+    ]);
   });
 
   test('loading the router touches no model', () => {

@@ -129,6 +129,14 @@ async function processEnrollment(flow, enrollment) {
     { new: true },
   );
   if (!claimed) return; // another tick/instance already claimed this enrollment
+  // Arabic localisation: an Arabic-speaking customer of a flagged workspace gets the reviewed Arabic version of
+  // this flow's message (see shared/localization/flowBridge.js). null / any error = the unchanged English code below.
+  let localized = null;
+  try { localized = await require('../shared/localization/flowBridge').sendLocalizedFlowMessage({ flow, enrollment: claimed, customer }); } catch (_) { localized = null; }
+  if (localized && localized.record) {
+    await CampaignMessage.create(localized.record).catch(() => {});
+    return;
+  }
 
   let status = 'sent';
   let statusReason;

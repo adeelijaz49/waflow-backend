@@ -339,6 +339,53 @@ async function saveTranslation(deps, args = {}) {
   return translation;
 }
 
+// One item's current Arabic text for the Product / Service form (IM-D / B3-forms).
+// -> { translation: view | null }; null while no usable Arabic name exists. 404 when the
+// item is not in the caller's workspace (the ownership check is the workspace-scoped item read).
+async function getTranslation(deps, args = {}) {
+  const workspaceId = scopeOf(args.workspaceId);
+  const kind = requiredChoice(args.kind, KINDS, 'kind');
+  const refId = validId(args.refId, 'refId');
+  if (!(await itemExists(deps, workspaceId, kind, refId))) throw httpError(404, 'ITEM_NOT_FOUND', 'Product or service not found');
+  const row = await deps.ProductTranslation.findOne({ workspaceId, kind, refId, language: 'ar' }).select(TRANSLATION_FIELDS).lean();
+  const usable = !!row && typeof row.name === 'string' && row.name.trim() !== '';
+  return { translation: usable ? toTranslationView(row) : null };
+}
+
+// The main import wizard's Arabic name / description columns (IM-D / B3-forms). items:
+// [{ kind, refId, name, description? }], first entry per item wins (callers already
+// collapse them). Same rules as the hub CSV import: ownership is re-checked per item,
+// text is cleaned exactly like a typed save, identical text is a no-op (a reviewed row
+// stays reviewed), changed text is saved as a DRAFT with source 'csv' and the reviewer is
+// cleared. A blank description keeps the stored one; nothing is ever deleted. Failures are
+// counted per item and never thrown. -> { saved, unchanged, failed }
+async function saveImportedDrafts(deps, args = {}) {
+  const workspaceId = scopeOf(args.workspaceId);
+  const result = { saved: 0, unchanged: 0, failed: 0 };
+  const seen = new Set();
+  const work = [];
+  for (const item of Array.isArray(args.items) ? args.items : []) {
+    const key = item ? `${item.kind}:${String(item.refId)}` : '';
+    if (!item || seen.has(key)) continue;
+    seen.add(key);
+    work.push(item);
+  }
+  await mapLimit(work, LIMITS.importConcurrency, async (item) => {
+    try {
+      const kind = requiredChoice(item.kind, KINDS, 'kind');
+      const refId = validId(String(item.refId), 'refId');
+      const name = readName(item.name);
+      const description = readDescription(item.description === '' ? undefined : item.description);
+      if (!(await itemExists(deps, workspaceId, kind, refId))) { result.failed += 1; return; }
+      const { changed } = await upsertDraft(deps, { workspaceId, kind, refId, name, description, source: 'csv', userId: args.userId });
+      if (changed) result.saved += 1; else result.unchanged += 1;
+    } catch (err) {
+      result.failed += 1;
+    }
+  });
+  return result;
+}
+
 async function reviewerLabel(deps, userId) {
   if (!isObjectIdLike(userId)) return 'Unknown user';
   const user = await deps.User.findById(userId).select('name email phone').lean();
@@ -680,6 +727,8 @@ function createCatalogService(deps = realDeps()) {
   return {
     listItems: (args) => listItems(deps, args),
     saveTranslation: (args) => saveTranslation(deps, args),
+    getTranslation: (args) => getTranslation(deps, args),
+    saveImportedDrafts: (args) => saveImportedDrafts(deps, args),
     reviewTranslation: (args) => reviewTranslation(deps, args),
     exportCsv: (args) => exportCsv(deps, args),
     importCsv: (args) => importCsv(deps, state, args),
@@ -699,6 +748,8 @@ module.exports = {
   createCatalogService,
   listItems: (args) => real().listItems(args),
   saveTranslation: (args) => real().saveTranslation(args),
+  getTranslation: (args) => real().getTranslation(args),
+  saveImportedDrafts: (args) => real().saveImportedDrafts(args),
   reviewTranslation: (args) => real().reviewTranslation(args),
   exportCsv: (args) => real().exportCsv(args),
   importCsv: (args) => real().importCsv(args),

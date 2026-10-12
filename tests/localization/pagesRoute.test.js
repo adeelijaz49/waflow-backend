@@ -145,6 +145,39 @@ describe('every English decision falls through untouched, on all six routes', ()
   });
 });
 
+describe('the reason an English page answers is remembered for the pay-page switch link (IM-D)', () => {
+  const reasonApp = (deps) => {
+    const app = express();
+    app.use(createRouter(() => deps));
+    app.use((req, res) => res.status(200).send(`reason=${res.locals.arabicPageReason === undefined ? 'none' : res.locals.arabicPageReason}`));
+    return app;
+  };
+
+  test.each([
+    ['?lang=en', (d) => d, '/pay/pi_3Abc123?lang=en', {}, 'explicit_en'],
+    ['kill switch', (d) => { d.settings.killSwitchOn.mockReturnValue(true); return d; }, '/pay/pi_3Abc123', {}, 'kill_switch'],
+    ['merchant without Arabic', (d) => { d.settings.isArabicEnabled.mockResolvedValue(false); return d; }, '/pay/pi_3Abc123', {}, 'flag_off'],
+    ['nobody has Arabic', (d) => { d.anyArabicEnabled.mockResolvedValue(false); return d; }, '/payment-result?payment_intent=pi_3Abc123', {}, 'not_rolled_out'],
+    ['English browser', (d) => d, '/pay/pi_3Abc123', { 'Accept-Language': 'en-US,en;q=0.9' }, 'browser'],
+    ['no signal', (d) => d, '/pay/pi_3Abc123', {}, 'default'],
+    ['database down', (d) => { d.dbReady = () => false; return d; }, '/pay/pi_3Abc123', {}, 'db_unavailable'],
+  ])('%s -> %s', async (label, arrange, url, headers, expected) => {
+    const res = await request(reasonApp(arrange(makeDeps()))).get(url).set(headers);
+    expect(res.text).toBe(`reason=${expected}`);
+  });
+
+  test('a lookup failure leaves no reason (so no switch link is shown)', async () => {
+    const deps = makeDeps({ anyArabicEnabled: jest.fn(async () => { throw new Error('boom'); }) });
+    const res = await request(reasonApp(deps)).get('/pay/pi_3Abc123');
+    expect(res.text).toBe('reason=none');
+  });
+
+  test('a request the router does not own never gets a reason', async () => {
+    const res = await request(reasonApp(makeDeps())).get('/payments');
+    expect(res.text).toBe('reason=none');
+  });
+});
+
 describe('English pays for as little as possible', () => {
   test('?lang=en and the kill switch cost no lookup at all; "nobody has Arabic" costs one cached boolean', async () => {
     const english = makeDeps();

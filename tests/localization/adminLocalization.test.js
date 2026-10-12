@@ -19,7 +19,7 @@ function chain(value, calls, name, filter) {
   return q;
 }
 
-function setup({ now = new Date('2026-10-12T10:00:00Z'), killSwitch = false, key = KEY, workspaces, library } = {}) {
+function setup({ now = new Date('2026-10-12T10:00:00Z'), killSwitch = false, key = KEY, workspaces, library, webhook } = {}) {
   const calls = [];
   const wsRows = workspaces || [{ _id: WS, name: 'Salon <img src=x onerror=alert(1)>' }];
   const deps = {
@@ -48,6 +48,7 @@ function setup({ now = new Date('2026-10-12T10:00:00Z'), killSwitch = false, key
       listEntries: () => [{ key: 'consent.a', ar: 'x', en: 'y', status: 'draft' }, { key: 'consent.b', ar: '', en: 'y', status: 'draft' }],
     },
     getLibrary: () => library || null,
+    ...(webhook !== undefined ? { findWebhookWorkspace: typeof webhook === 'function' ? webhook : async () => webhook } : {}),
     getCsrfKey: () => key,
     now: () => now,
   };
@@ -142,6 +143,72 @@ describe('admin localisation page', () => {
     const res = await request(setup({ library }).app).get('/internal-admin-localization/').set('Authorization', AUTH);
     expect(res.text).toContain('2 unreviewed of 2');
     expect(res.text).toContain('<strong>2</strong>'); // 1 catalogue + 1 library string need legal approval
+  });
+});
+
+describe('R5-2: the webhook workspace (the OLDEST one) is marked and other workspaces get a warning', () => {
+  const OLDEST = 'cccccccccccccccccccccccc';
+  const oldest = { workspaceId: OLDEST, name: 'First <b>Salon</b>', createdAt: new Date('2025-01-02T03:04:05Z') };
+
+  test('a workspace that is not the oldest shows the warning next to the Enable action, escaped; the form still works', async () => {
+    const { app } = setup({ webhook: oldest });
+    const res = await request(app).get(`/internal-admin-localization/${WS}`).set('Authorization', AUTH);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('WARNING: Arabic in WhatsApp conversations only reaches the OLDEST workspace');
+    expect(res.text).toContain('First &lt;b&gt;Salon&lt;/b&gt;');
+    expect(res.text).not.toContain('<b>Salon</b>');
+    expect(res.text).toContain('name="csrf"'); // warning, not a block
+    expect(res.text.indexOf('WARNING')).toBeLessThan(res.text.indexOf('name="csrf"'));
+    expect(res.text).not.toContain('class="pill">webhook workspace');
+  });
+
+  test('the oldest workspace is marked and carries no warning', async () => {
+    const { app } = setup({ webhook: oldest, workspaces: [{ _id: OLDEST, name: 'First Salon' }] });
+    const res = await request(app).get(`/internal-admin-localization/${OLDEST}`).set('Authorization', AUTH);
+    expect(res.text).toContain('webhook workspace');
+    expect(res.text).not.toContain('WARNING');
+  });
+
+  test('the index page names the webhook workspace and links to it', async () => {
+    const res = await request(setup({ webhook: oldest }).app).get('/internal-admin-localization/').set('Authorization', AUTH);
+    expect(res.text).toContain(`href="/internal-admin-localization/${OLDEST}"`);
+    expect(res.text).toContain('First &lt;b&gt;Salon&lt;/b&gt;');
+  });
+
+  test('no lookup (or a failing one) leaves the page without marker or warning', async () => {
+    for (const webhook of [undefined, null, async () => { throw new Error('db down'); }]) {
+      const res = await request(setup({ webhook }).app).get(`/internal-admin-localization/${WS}`).set('Authorization', AUTH);
+      expect(res.status).toBe(200);
+      expect(res.text).not.toContain('WARNING');
+      expect(res.text).not.toContain('webhook workspace');
+    }
+  });
+
+  test('the default lookup is the read-only single-field sort on createdAt through the injected Workspace model', async () => {
+    const seen = [];
+    const { deps } = setup();
+    deps.Workspace.findOne = () => {
+      const q = {};
+      q.sort = (s) => { seen.push(['sort', s]); return q; };
+      q.select = (s) => { seen.push(['select', s]); return q; };
+      q.lean = async () => ({ _id: OLDEST, name: 'First Salon', createdAt: new Date('2025-01-02T03:04:05Z') });
+      return q;
+    };
+    const app = express();
+    app.use((req, res, next) => { req.adminIp = '203.0.113.9'; next(); });
+    app.use('/internal-admin-localization', createRouter(deps));
+    const res = await request(app).get(`/internal-admin-localization/${WS}`).set('Authorization', AUTH);
+    expect(res.text).toContain('WARNING');
+    expect(seen).toEqual([['sort', { createdAt: 1 }], ['select', 'name createdAt']]);
+  });
+
+  test('toggle behaviour is unchanged: log before mutate, no extra writes', async () => {
+    const { app, deps } = setup({ webhook: oldest });
+    const csrf = token('staff', WS, '2026-10-12');
+    const res = await request(app).post(`/internal-admin-localization/${WS}/toggle`).set('Authorization', AUTH).type('form').send({ csrf, enabled: 'true' });
+    expect(res.status).toBe(303);
+    expect(deps.LocalizationAdminLog.create).toHaveBeenCalledTimes(1);
+    expect(deps.settings.setArabicEnabled).toHaveBeenCalledTimes(1);
   });
 });
 

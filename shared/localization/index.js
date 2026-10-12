@@ -21,4 +21,39 @@ async function handleInbound(args) {
   }
 }
 
-module.exports = { handleInbound };
+// ── Webhook journey (D3): three more never-throwing wrappers ─────────────────────────────────────────────
+//   localizeOutbound(body) - called from BOTH waPost functions (server.js, utils/whatsapp.js). Returns the SAME body object
+//     synchronously unless an Arabic version applies (then a Promise of the Arabic payload; it never rejects).
+//   enterContext(workspaceId) - the webhook / Stripe handlers scope the outbound-language lookup to their workspace.
+//   optOutSamePhone(args) - H1: opts out every same-workspace record of the sender's number (see samePhone.js).
+let outbound = null;
+let samePhone = null;
+
+function localizeOutbound(body) {
+  try {
+    if (!outbound) outbound = require('./outbound');
+    if (!outbound.mayApply(body)) return body;
+    return outbound.apply(body);
+  } catch (err) {
+    return body;
+  }
+}
+
+function enterContext(workspaceId) {
+  try {
+    if (!outbound) outbound = require('./outbound');
+    outbound.enterContext(workspaceId);
+  } catch (err) { /* never throws */ }
+}
+
+async function optOutSamePhone(args) {
+  try {
+    if (!samePhone) samePhone = require('./samePhone');
+    return await samePhone.optOutSamePhone(args);
+  } catch (err) {
+    console.error('[localization] optOutSamePhone failed (ignored):', err && err.message);
+    return { matched: 0, optedOut: 0, failed: 0 };
+  }
+}
+
+module.exports = { handleInbound, localizeOutbound, enterContext, optOutSamePhone };

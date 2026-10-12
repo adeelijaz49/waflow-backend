@@ -21,6 +21,7 @@ const schema = new mongoose.Schema({
   templateName: String,
   status:       { type: String, enum: ['queued', 'sent', 'delivered', 'read', 'failed'], default: 'queued' },
   statusReason: String,
+  errorCode:    String, // Meta error code from a failed delivery callback (e.g. "131049"); written only by server.js#handleStatusCallbacks
   sentAt:       Date,
   deliveredAt:  Date,
   readAt:       Date,

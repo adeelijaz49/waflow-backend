@@ -68,7 +68,17 @@ async function declineMarketingConsent({ customer, method, source, performedBy, 
 // (marketingConsentAskedAt), regardless of which of the 5 call sites fires
 // first. Used by shared/operations.js#createOrder/confirmBooking and
 // server.js's payment-success/points-redemption/cash-booking confirmations.
-async function sendUtilityMessageWithConsentAsk({ customer, workspaceId, body }) {
+async function sendUtilityMessageWithConsentAsk({ customer, workspaceId, body, localized }) {
+  // Arabic localisation (shared/localization/utilitySend.js): a customer of a flagged merchant whose language is Arabic gets the
+  // Arabic notice instead. Callers pass `localized` only when they have an Arabic version; English callers (and every customer
+  // who is not Arabic, or when the feature is off) fall through to the unchanged code below. A flagged error means an Arabic
+  // send was attempted and failed: it is rethrown, never retried in English.
+  if (localized) {
+    try {
+      const out = await require('./localization/utilitySend').sendNotice({ customer, workspaceId, localized, withConsentAsk: true, body });
+      if (out) return out.result;
+    } catch (err) { if (err && err.localizedSendFailed) throw err; }
+  }
   if (!customer.marketingConsent && !customer.marketingConsentAskedAt) {
     try {
       const result = await waPost({

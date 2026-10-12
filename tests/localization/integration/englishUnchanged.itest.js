@@ -86,7 +86,7 @@ async function rawSnapshot() {
   const out = {};
   const cols = (await db.listCollections().toArray()).map((c) => c.name).filter((n) => !NEW_COLLECTION_RE.test(n) && !n.startsWith('system.')).sort();
   for (const n of cols) out[n] = await db.collection(n).find({}).sort({ _id: 1 }).toArray();
-  return out;
+  return stripB4Raw(out);
 }
 
 function buildIdMap(snap) {
@@ -155,6 +155,82 @@ async function quiet() {
 }
 async function post(payload) { await request(app).post('/webhook').send(payload); await quiet(); }
 
+// INTENDED differences (wiring phase, design D3 section 10; approved): keyed by scenario name and applied ONLY in the mode named
+// by `when`. Every other scenario, and this one in every other mode (flag off, kill switch), stays strictly equal to the golden.
+// C3 (approved global change): a failed delivery callback now also stores Meta's error code as CampaignMessage.errorCode (a String).
+// The database snapshot of this suite is cumulative, so every scenario AFTER the one that posts the failed callback carries the key too.
+// Allowed: exactly that key, on a campaign message whose status is 'failed', holding the code the scenario sent (131026). Calls are strictly equal.
+const approveC3 = {
+  when: () => true,
+  compare(actual, golden) {
+    expect(actual.calls).toEqual(golden.calls);
+    const db = JSON.parse(JSON.stringify(actual.db));
+    let seen = 0;
+    for (const doc of db.campaignmessages || []) {
+      if (!('errorCode' in doc)) continue;
+      expect(doc.status).toBe('failed');
+      expect(doc.errorCode).toBe('131026');
+      delete doc.errorCode; seen += 1;
+    }
+    expect(seen).toBe(1);
+    expect(db).toEqual(golden.db);
+  },
+};
+
+// B4 (approved, FLAGGED workspaces only): scenario 'stop/unknown number' posts STOP from a contact with a ONE-WORD profile name ('Stopper').
+// Baseline: the Inbox cannot create the customer (Customer.lastname is required), so no customer, no consent event and no thread exist for that
+// number. In a flagged workspace the customer IS now created (single-space last name), so that number gets a customer row, its STOP consent event and
+// its inbox thread - and, because this suite's database snapshot is cumulative, every scenario after it carries those rows too. Allowed ONLY in
+// ENG_FLAG=on (kill switch off): documents that mention exactly this phone number are ignored. Calls stay strictly equal everywhere and flag off /
+// kill switch stay strictly equal to the golden.
+const B4_PHONE = '15550999010';
+// Applied to the RAW snapshot (before ids are labelled by position, so later documents keep the same labels as in the baseline): drops the
+// customer with that phone and every document that mentions that phone or that customer's _id (consent event, inbox thread rows).
+function stripB4Raw(out) {
+  if (!(FLAG_ON && !KILL)) return out;
+  const ids = new Set();
+  for (const d of out.customers || []) if (d.phone === B4_PHONE) ids.add(String(d._id));
+  const mentions = (d) => {
+    const j = JSON.stringify(d);
+    if (j.includes(B4_PHONE)) return true;
+    for (const id of ids) if (j.includes(id)) return true;
+    return false;
+  };
+  for (const k of Object.keys(out)) out[k] = out[k].filter((d) => !mentions(d));
+  return out;
+}
+
+const INTENDED = {
+  'status/failed with error and unknown wamid': approveC3,
+  'other/image, sticker, reaction, location, unsupported': approveC3,
+  'other/payload with no messages and no statuses': approveC3,
+  // The bystander's language is Arabic. The existing STOP / START replies are English literals in server.js; since the outbound
+  // localiser they reach an Arabic customer of a flagged workspace in Arabic BY DESIGN. Allowed: exactly those two reply texts
+  // (consent.optOutAck, consent.startAck) become their Arabic catalogue strings. The database, the number and order of calls
+  // and every other field of every call must stay identical.
+  'text/english from an Arabic-language customer (plain Latin STOP and chat)': {
+    when: () => FLAG_ON && !KILL,
+    compare(actual, golden) {
+      expect(actual.db).toEqual(golden.db);
+      expect(actual.calls.length).toBe(golden.calls.length);
+      const catalog = require('../../../shared/localization/catalog'); // modified tree only (this branch never runs on the baseline)
+      const keys = ['consent.optOutAck', 'consent.startAck', 'consent.startNoConsent'];
+      const blank = (call) => ({ ...call, body: { ...call.body, text: { body: '<text>' } } });
+      let changed = 0;
+      actual.calls.forEach((a, i) => {
+        const g = golden.calls[i];
+        if (JSON.stringify(a) === JSON.stringify(g)) return;
+        const key = keys.find((k) => g.body && g.body.text && g.body.text.body === catalog.t('en', k));
+        expect(key).toBeDefined();
+        expect(blank(a)).toEqual(blank(g));
+        expect(a.body.text.body).toBe(catalog.t('ar', key));
+        changed += 1;
+      });
+      expect(changed).toBe(2); // the STOP acknowledgement and the START acknowledgement
+    },
+  },
+};
+
 function scenario(name, fn) {
   test(name, async () => {
     const st = state();
@@ -171,8 +247,13 @@ function scenario(name, fn) {
     if (!RECORD) {
       const golden = JSON.parse(fs.readFileSync(GOLDEN_FILE, 'utf8'));
       expect(golden[name]).toBeDefined();
-      expect(results[name].calls).toEqual(golden[name].calls);
-      expect(results[name].db).toEqual(golden[name].db);
+      const actual = results[name]; // flag-on B4 rows are already removed from the raw snapshot (stripB4Raw)
+      if (INTENDED[name] && INTENDED[name].when()) {
+        INTENDED[name].compare(actual, golden[name]);
+      } else {
+        expect(actual.calls).toEqual(golden[name].calls);
+        expect(actual.db).toEqual(golden[name].db);
+      }
     }
   });
 }
