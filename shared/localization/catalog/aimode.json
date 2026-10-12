@@ -1,0 +1,503 @@
+{
+  "reply.notSure": {
+    "en": "I'm not sure how to answer that — could you rephrase?",
+    "ar": "لست متأكداً من كيفية الإجابة عن ذلك — هل يمكنك إعادة صياغة سؤالك؟",
+    "status": "draft",
+    "notes": "Same meaning as the existing English AI Mode fallback (ai/agent.js)."
+  },
+  "reply.declined": {
+    "en": "No problem, I won't do that.",
+    "ar": "لا مشكلة، لن أنفّذ ذلك.",
+    "status": "draft",
+    "notes": "Same meaning as the existing English AI Mode decline reply (ai/agent.js)."
+  },
+  "reply.couldNotFinish": {
+    "en": "I couldn't finish that — it needed too many steps. Please try a simpler or more specific question.",
+    "ar": "لم أتمكن من الإجابة عن هذا السؤال لأنه يحتاج إلى خطوات كثيرة. جرّب صياغة أبسط أو أكثر تحديداً.",
+    "status": "draft",
+    "notes": "Shown when the agent loop hits its iteration or time cap. D11: an AI prompt is a سؤال, never طلب."
+  },
+  "reply.tooLarge": {
+    "en": "That was too big for me to prepare in one go. Please narrow it down (for example, fewer customers) and try again.",
+    "ar": "هذا السؤال أكبر من أن أجهّزه دفعة واحدة. قلّص النطاق (مثلاً عدد أقل من العملاء) ثم حاول مرة أخرى.",
+    "status": "draft",
+    "notes": "Shown when the model's answer was cut off by the output limit while it was preparing an action."
+  },
+  "reply.truncated": {
+    "en": "(My reply was cut short — ask me to continue.)",
+    "ar": "(انقطع ردي قبل أن يكتمل — اطلب مني المتابعة.)",
+    "status": "draft"
+  },
+  "reply.partialWrite": {
+    "en": "I created {what} before something interrupted me. Please check your dashboard before asking again.",
+    "ar": "أنشأتُ {what} قبل أن تتعطل العملية. راجع لوحة التحكم قبل أن تطلب ذلك مرة أخرى.",
+    "status": "draft",
+    "notes": "Shown when a draft was created (create_promotion / create_flow) and the turn then failed."
+  },
+  "write.promotion": {
+    "en": "a draft promotion",
+    "ar": "عرضاً ترويجياً بصيغة مسودة",
+    "status": "draft"
+  },
+  "write.flow": {
+    "en": "an inactive automated flow",
+    "ar": "مساراً آلياً غير مفعّل",
+    "status": "draft"
+  },
+  "write.other": {
+    "en": "a change",
+    "ar": "تغييراً",
+    "status": "draft"
+  },
+  "caution.noIntent": {
+    "en": "I wasn't sure you asked me to do this — please read the details carefully before confirming.",
+    "ar": "لم أتأكد من أنك طلبت هذا الإجراء، لذا راجع التفاصيل جيداً قبل التأكيد.",
+    "status": "draft",
+    "notes": "Appended to a confirmation card when the merchant's message contains no recognisable request for that action."
+  },
+  "count.customer.zero": {
+    "en": "{n} customers",
+    "ar": "{n} عميل",
+    "status": "draft",
+    "notes": "CLDR plural forms (zero/one/two/few/many/other). 'two' is the nominative dual (standalone); 'twoOblique' is used after a preposition."
+  },
+  "count.customer.one": {
+    "en": "{n} customer",
+    "ar": "عميل واحد",
+    "status": "draft"
+  },
+  "count.customer.two": {
+    "en": "{n} customers",
+    "ar": "عميلان",
+    "status": "draft"
+  },
+  "count.customer.twoOblique": {
+    "en": "{n} customers",
+    "ar": "عميلين",
+    "status": "draft"
+  },
+  "count.customer.few": {
+    "en": "{n} customers",
+    "ar": "{n} عملاء",
+    "status": "draft"
+  },
+  "count.customer.many": {
+    "en": "{n} customers",
+    "ar": "{n} عميلاً",
+    "status": "draft"
+  },
+  "count.customer.other": {
+    "en": "{n} customers",
+    "ar": "{n} عميل",
+    "status": "draft"
+  },
+  "count.day.zero": {
+    "en": "{n} days",
+    "ar": "{n} يوم",
+    "status": "draft"
+  },
+  "count.day.one": {
+    "en": "{n} day",
+    "ar": "يوم واحد",
+    "status": "draft"
+  },
+  "count.day.two": {
+    "en": "{n} days",
+    "ar": "يومان",
+    "status": "draft"
+  },
+  "count.day.twoOblique": {
+    "en": "{n} days",
+    "ar": "يومين",
+    "status": "draft"
+  },
+  "count.day.few": {
+    "en": "{n} days",
+    "ar": "{n} أيام",
+    "status": "draft"
+  },
+  "count.day.many": {
+    "en": "{n} days",
+    "ar": "{n} يوماً",
+    "status": "draft"
+  },
+  "count.day.other": {
+    "en": "{n} days",
+    "ar": "{n} يوم",
+    "status": "draft"
+  },
+  "summary.consentNote": {
+    "en": "Only customers who agreed to receive marketing messages will get it.",
+    "ar": "لن تصل الرسالة إلا إلى العملاء الذين وافقوا على استلام الرسائل التسويقية.",
+    "status": "draft",
+    "notes": "Mirrors the consent gate in shared/operations.js (canSendMarketing). Consent = الموافقة (glossary D4)."
+  },
+  "summary.namesMore": {
+    "en": "{names} and others",
+    "ar": "{names} وغيرهم",
+    "status": "draft"
+  },
+  "summary.sendPromotion": {
+    "en": "Send the promotion “{promotion}” to {customers}.",
+    "ar": "إرسال العرض الترويجي «{promotion}» إلى {customers}.",
+    "status": "draft",
+    "notes": "Deterministic confirmation card text, built from the stored action arguments (never from model prose)."
+  },
+  "summary.sendPromotionNames": {
+    "en": "Send the promotion “{promotion}” to {customers} ({names}).",
+    "ar": "إرسال العرض الترويجي «{promotion}» إلى {customers} ({names}).",
+    "status": "draft"
+  },
+  "summary.sendTest": {
+    "en": "Send a test message for the promotion “{promotion}” to {phone}.",
+    "ar": "إرسال رسالة تجريبية للعرض الترويجي «{promotion}» إلى الرقم {phone}.",
+    "status": "draft"
+  },
+  "summary.sendLoyaltySome": {
+    "en": "Send a loyalty-points reminder to {customers}.",
+    "ar": "إرسال تذكير بنقاط الولاء إلى {customers}.",
+    "status": "draft"
+  },
+  "summary.sendLoyaltySomeNames": {
+    "en": "Send a loyalty-points reminder to {customers} ({names}).",
+    "ar": "إرسال تذكير بنقاط الولاء إلى {customers} ({names}).",
+    "status": "draft"
+  },
+  "summary.sendLoyaltyAll": {
+    "en": "Send a loyalty-points reminder to every customer who has a points balance.",
+    "ar": "إرسال تذكير بنقاط الولاء إلى كل عميل لديه رصيد نقاط.",
+    "status": "draft",
+    "notes": "Used when the action has no customer list: the existing sender then targets EVERY customer with points."
+  },
+  "summary.sendLoyaltyAllCount": {
+    "en": "Send a loyalty-points reminder to every customer who has a points balance (up to {customers}).",
+    "ar": "إرسال تذكير بنقاط الولاء إلى كل عميل لديه رصيد نقاط (حتى {customers}).",
+    "status": "draft"
+  },
+  "summary.activateFlow": {
+    "en": "Activate the automated flow “{flow}”. It will start messaging qualifying customers automatically.",
+    "ar": "تفعيل المسار الآلي «{flow}». سيبدأ بمراسلة العملاء المؤهلين تلقائياً.",
+    "status": "draft"
+  },
+  "summary.refundOrder": {
+    "en": "Refund order {order} through Stripe. This is a real refund and cannot be undone.",
+    "ar": "استرداد مبلغ الطلب {order} عبر Stripe. هذا الإجراء نهائي ولا يمكن التراجع عنه.",
+    "status": "draft",
+    "notes": "Refund = استرداد (glossary D3 keeps استبدال for redeem). Order = طلب (glossary D11)."
+  },
+  "summary.refundOrderAmount": {
+    "en": "Refund order {order} ({amount}) through Stripe. This is a real refund and cannot be undone.",
+    "ar": "استرداد مبلغ الطلب {order} ({amount}) عبر Stripe. هذا الإجراء نهائي ولا يمكن التراجع عنه.",
+    "status": "draft"
+  },
+  "summary.refundOrderCustomer": {
+    "en": "Refund order {order} placed by {customer} through Stripe. This is a real refund and cannot be undone.",
+    "ar": "استرداد مبلغ الطلب {order} الخاص بالعميل {customer} عبر Stripe. هذا الإجراء نهائي ولا يمكن التراجع عنه.",
+    "status": "draft"
+  },
+  "summary.refundOrderBoth": {
+    "en": "Refund order {order} ({amount}) placed by {customer} through Stripe. This is a real refund and cannot be undone.",
+    "ar": "استرداد مبلغ الطلب {order} ({amount}) الخاص بالعميل {customer} عبر Stripe. هذا الإجراء نهائي ولا يمكن التراجع عنه.",
+    "status": "draft"
+  },
+  "summary.generic": {
+    "en": "Run the action “{tool}” with these details: {details}.",
+    "ar": "تنفيذ الإجراء «{tool}» بالتفاصيل التالية: {details}.",
+    "status": "draft",
+    "notes": "Safety net for an action tool this module does not know yet; the allow-list test should make that impossible."
+  },
+  "result.sendPromotionDone": {
+    "en": "Done — the promotion was sent to {customers}.",
+    "ar": "تم إرسال العرض الترويجي إلى {customers}.",
+    "status": "draft"
+  },
+  "result.sendLoyaltyDone": {
+    "en": "Done — loyalty-points reminders were sent to {customers}.",
+    "ar": "تم إرسال تذكيرات نقاط الولاء إلى {customers}.",
+    "status": "draft"
+  },
+  "result.nothingSent": {
+    "en": "Nothing was sent.",
+    "ar": "لم تُرسل أي رسالة.",
+    "status": "draft"
+  },
+  "result.skipped": {
+    "en": "Skipped because they opted out or haven't agreed to receive marketing messages: {count}.",
+    "ar": "تم استثناء عملاء ألغوا الاشتراك أو لم يوافقوا على استلام الرسائل التسويقية (العدد: {count}).",
+    "status": "draft",
+    "notes": "Count-neutral wording (glossary D10): no noun is attached to the number."
+  },
+  "result.failedSends": {
+    "en": "Could not be sent: {count}.",
+    "ar": "تعذّر الإرسال إلى بعض العملاء (العدد: {count}).",
+    "status": "draft"
+  },
+  "result.testSent": {
+    "en": "Done — the test message was sent to {phone}.",
+    "ar": "تم إرسال الرسالة التجريبية إلى الرقم {phone}.",
+    "status": "draft"
+  },
+  "result.flowActivated": {
+    "en": "Done — the automated flow “{flow}” is now active.",
+    "ar": "تم تفعيل المسار الآلي «{flow}».",
+    "status": "draft"
+  },
+  "result.flowActivatedNoName": {
+    "en": "Done — the automated flow is now active.",
+    "ar": "تم تفعيل المسار الآلي.",
+    "status": "draft"
+  },
+  "result.refunded": {
+    "en": "Done — order {order} was refunded.",
+    "ar": "تم استرداد مبلغ الطلب {order}.",
+    "status": "draft"
+  },
+  "result.generic": {
+    "en": "Done.",
+    "ar": "تم التنفيذ.",
+    "status": "draft"
+  },
+  "result.demoAll": {
+    "en": "⚠️ That target is a demo/test record, so this was simulated — no real WhatsApp message was sent.",
+    "ar": "⚠️ هذا الهدف سجل تجريبي، لذلك تمت المحاكاة فقط — لم تُرسل أي رسالة واتساب فعلية.",
+    "status": "draft",
+    "notes": "SAFETY TEXT. The English is the existing disclosure from ai/agent.js, added after a real incident (a demo send reported as real). Keep the three facts: demo record, simulated, nothing really sent."
+  },
+  "result.demoPartial": {
+    "en": "⚠️ {demo} of {total} recipient(s) are demo/test records, so those were simulated — no real WhatsApp message was sent to them.",
+    "ar": "⚠️ بعض المستلمين سجلات تجريبية، لذلك تمت محاكاة الإرسال إليهم فقط (العدد: {demo} من أصل {total}) — لم تُرسل أي رسالة واتساب فعلية إليهم.",
+    "status": "draft",
+    "notes": "SAFETY TEXT, see result.demoAll."
+  },
+  "error.generic": {
+    "en": "That didn't work. Please check the details and try again.",
+    "ar": "لم تنجح العملية. تحقق من التفاصيل وحاول مرة أخرى.",
+    "status": "draft",
+    "notes": "Used for any failure that is not in the known list below: internal and Stripe messages are never shown to the merchant."
+  },
+  "error.withReason": {
+    "en": "That didn't work: {reason}",
+    "ar": "لم تنجح العملية: {reason}",
+    "status": "draft"
+  },
+  "error.promotionNotFound": {
+    "en": "That promotion could not be found.",
+    "ar": "تعذّر العثور على هذا العرض الترويجي.",
+    "status": "draft"
+  },
+  "error.flowNotFound": {
+    "en": "That automated flow could not be found.",
+    "ar": "تعذّر العثور على هذا المسار الآلي.",
+    "status": "draft"
+  },
+  "error.orderNotFound": {
+    "en": "That order could not be found.",
+    "ar": "تعذّر العثور على هذا الطلب.",
+    "status": "draft"
+  },
+  "error.refundNotPaid": {
+    "en": "Only paid orders can be refunded.",
+    "ar": "لا يمكن استرداد المبلغ إلا للطلبات المدفوعة.",
+    "status": "draft"
+  },
+  "error.refundNoPayment": {
+    "en": "This order has no Stripe payment to refund.",
+    "ar": "لا توجد دفعة عبر Stripe لهذا الطلب لاسترداد مبلغها.",
+    "status": "draft"
+  },
+  "error.flowNeedsApproval": {
+    "en": "This flow's message needs an approved WhatsApp template before the flow can be activated.",
+    "ar": "تحتاج رسالة هذا المسار إلى قالب واتساب معتمد قبل تفعيله.",
+    "status": "draft",
+    "notes": "Template = قالب (no website precedent, reviewer to confirm). Approved by Meta = معتمد (glossary D4)."
+  },
+  "error.noCustomers": {
+    "en": "No customers were selected.",
+    "ar": "لم يتم اختيار أي عميل.",
+    "status": "draft"
+  },
+  "insight.category.campaign_performance": {
+    "en": "Campaign Performance",
+    "ar": "أداء الحملات",
+    "status": "draft"
+  },
+  "insight.category.customer_retention": {
+    "en": "Customer Recovery",
+    "ar": "استعادة العملاء",
+    "status": "draft"
+  },
+  "insight.category.loyalty": {
+    "en": "Loyalty",
+    "ar": "الولاء",
+    "status": "draft"
+  },
+  "insight.category.revenue": {
+    "en": "Revenue",
+    "ar": "الإيرادات",
+    "status": "draft"
+  },
+  "insight.category.payment": {
+    "en": "Payment",
+    "ar": "المدفوعات",
+    "status": "draft"
+  },
+  "insight.metric.revenueGenerated": {
+    "en": "Revenue generated",
+    "ar": "الإيرادات المحققة",
+    "status": "draft"
+  },
+  "insight.metric.conversionRate": {
+    "en": "Conversion rate",
+    "ar": "معدل التحويل",
+    "status": "draft"
+  },
+  "insight.metric.estimatedOpportunity": {
+    "en": "Estimated opportunity",
+    "ar": "الفرصة المقدّرة",
+    "status": "draft"
+  },
+  "insight.metric.unredeemedPoints": {
+    "en": "Unredeemed points",
+    "ar": "النقاط غير المستبدلة",
+    "status": "draft",
+    "notes": "Redeem = استبدال (glossary D3, spec term)."
+  },
+  "insight.metric.unpaidOrders": {
+    "en": "Unpaid orders",
+    "ar": "الطلبات غير المدفوعة",
+    "status": "draft"
+  },
+  "insight.metric.unitsSold": {
+    "en": "Units sold",
+    "ar": "الوحدات المباعة",
+    "status": "draft"
+  },
+  "insight.metric.repeatCustomers": {
+    "en": "Repeat customers",
+    "ar": "العملاء المتكررون",
+    "status": "draft"
+  },
+  "insight.cta.runAgain": {
+    "en": "Run Again",
+    "ar": "تشغيل الحملة مجدداً",
+    "status": "draft"
+  },
+  "insight.cta.viewCampaign": {
+    "en": "View Campaign",
+    "ar": "عرض الحملة",
+    "status": "draft"
+  },
+  "insight.cta.createSimilarCampaign": {
+    "en": "Create Similar Campaign",
+    "ar": "إنشاء حملة مشابهة",
+    "status": "draft"
+  },
+  "insight.cta.createComebackCampaign": {
+    "en": "Create Comeback Campaign",
+    "ar": "إنشاء حملة لاستعادة العملاء",
+    "status": "draft"
+  },
+  "insight.cta.viewCustomers": {
+    "en": "View Customers",
+    "ar": "عرض العملاء",
+    "status": "draft"
+  },
+  "insight.cta.sendPointsReminder": {
+    "en": "Send Points Reminder",
+    "ar": "إرسال تذكير بالنقاط",
+    "status": "draft"
+  },
+  "insight.cta.viewUnpaidOrders": {
+    "en": "View Unpaid Orders",
+    "ar": "عرض الطلبات غير المدفوعة",
+    "status": "draft"
+  },
+  "insight.cta.createProductCampaign": {
+    "en": "Create Product Campaign",
+    "ar": "إنشاء حملة للمنتج",
+    "status": "draft"
+  },
+  "insight.cta.viewProductSales": {
+    "en": "View Product Sales",
+    "ar": "عرض مبيعات المنتج",
+    "status": "draft"
+  },
+  "insight.cta.sendLoyaltyReward": {
+    "en": "Send Loyalty Reward",
+    "ar": "إرسال مكافأة ولاء",
+    "status": "draft"
+  },
+  "insight.bestCampaign.title": {
+    "en": "{name} was your top campaign this week",
+    "ar": "أفضل حملة هذا الأسبوع: «{name}»",
+    "status": "draft",
+    "notes": "Arabic starts with an Arabic word on purpose: a Latin campaign name at the start would make dir=auto lay the whole line out left-to-right."
+  },
+  "insight.bestCampaign.message": {
+    "en": "It generated {money} from {orders} orders. Run it again?",
+    "ar": "حققت {money}، وعدد الطلبات: {orders}. هل تريد تشغيلها مجدداً؟",
+    "status": "draft",
+    "notes": "Count-neutral wording for the order count (glossary D10)."
+  },
+  "insight.worstCampaign.title": {
+    "en": "{name} had a low conversion rate",
+    "ar": "حملة منخفضة التحويل: «{name}»",
+    "status": "draft"
+  },
+  "insight.worstCampaign.message": {
+    "en": "Only {rate}% of customers who got it ordered. Try a different offer?",
+    "ar": "نسبة العملاء الذين طلبوا بعد استلامها {rate}% فقط. هل تريد تجربة عرض مختلف؟",
+    "status": "draft"
+  },
+  "insight.inactive.title": {
+    "en": "{n} customers haven't returned",
+    "ar": "عملاء انقطعوا عنك: {n}",
+    "status": "draft",
+    "notes": "Count-neutral wording: the verb would otherwise have to agree with the number (one/two/few/many)."
+  },
+  "insight.inactive.message": {
+    "en": "{n} customers have not ordered in {days}.",
+    "ar": "عدد العملاء الذين لم يطلبوا خلال آخر {days}: {n}.",
+    "status": "draft"
+  },
+  "insight.unusedPoints.title": {
+    "en": "Most loyalty points issued this month are unused",
+    "ar": "معظم نقاط الولاء الصادرة هذا الشهر لم تُستبدل بعد",
+    "status": "draft"
+  },
+  "insight.unusedPoints.message": {
+    "en": "You issued {issued} loyalty points this month, but only {redeemed} have been redeemed.",
+    "ar": "نقاط الولاء الصادرة هذا الشهر: {issued}، والمُستبدَل منها: {redeemed} فقط.",
+    "status": "draft"
+  },
+  "insight.abandoned.title": {
+    "en": "{n} customers didn't complete payment",
+    "ar": "عملاء لم يُكملوا الدفع: {n}",
+    "status": "draft"
+  },
+  "insight.abandoned.message": {
+    "en": "{n} customers opened a payment link but did not complete payment.",
+    "ar": "عدد العملاء الذين فتحوا رابط الدفع ولم يُكملوا الدفع: {n}.",
+    "status": "draft"
+  },
+  "insight.bestProduct.title": {
+    "en": "{product} was your best-selling product this week",
+    "ar": "المنتج الأكثر مبيعاً هذا الأسبوع: «{product}»",
+    "status": "draft"
+  },
+  "insight.bestProduct.message": {
+    "en": "{product} was your best-selling product this week. Create a promotion to drive repeat orders?",
+    "ar": "المنتج «{product}» هو الأكثر مبيعاً لديك هذا الأسبوع. هل تريد إنشاء عرض ترويجي لزيادة الطلبات المتكررة؟",
+    "status": "draft"
+  },
+  "insight.loyal.title": {
+    "en": "{n} loyal customers this week",
+    "ar": "عملاء الولاء هذا الأسبوع: {n}",
+    "status": "draft"
+  },
+  "insight.loyal.message": {
+    "en": "{n} customers ordered more than once this week. Send them a loyalty reward?",
+    "ar": "عدد العملاء الذين طلبوا أكثر من مرة هذا الأسبوع: {n}. هل تريد إرسال مكافأة ولاء لهم؟",
+    "status": "draft"
+  }
+}

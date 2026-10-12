@@ -1,0 +1,8 @@
+{
+  "paymentLink": {
+    "en": "💳 Here's your payment link for {amount}:\n{link}",
+    "ar": "💳 رابط الدفع لمبلغ {amount}:\n{link}",
+    "status": "draft",
+    "notes": "Body of the WhatsApp text the Inbox 'Send payment link' action sends. The English text is byte-for-byte the message shared/inbox.js#sendPaymentLink already sends. {amount} is the server-formatted amount (e.g. 150.00 SAR, Latin, wrapped in LRM inside Arabic); {link} is the /pay page URL (Arabic customers get ?lang=ar). Reviewer: confirm the tone; consider adding a courtesy opener such as «تفضل»."
+  }
+}

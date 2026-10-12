@@ -1,0 +1,44 @@
+{
+  "fallbackName": {
+    "en": "Valued Customer",
+    "ar": "عميلنا العزيز",
+    "status": "draft",
+    "notes": "Fills the {name} merge field of an automated flow message when the customer has no usable first name. The English flow path sends the same fallback (utils/flowScheduler.js, utils/flowTriggers/*)."
+  },
+  "fallbackItem": {
+    "en": "our latest offer",
+    "ar": "عرضنا الجديد",
+    "status": "draft",
+    "notes": "Fills the {item} merge field when a promotion has no product or service. Same fallback the English path sends (shared/operations.js buildPromoEntryNodeParams)."
+  },
+  "pointsOne": {
+    "en": "1 point",
+    "ar": "نقطة واحدة",
+    "status": "draft",
+    "notes": "Points price of a promotion, exactly one point. Arabic number agreement (CLDR): 1 = نقطة واحدة, 2 = نقطتان, 3-10 = نقاط, 11+ = نقطة."
+  },
+  "pointsTwo": {
+    "en": "2 points",
+    "ar": "نقطتان",
+    "status": "draft",
+    "notes": "Points price of a promotion, exactly two points."
+  },
+  "pointsFew": {
+    "en": "{n} points",
+    "ar": "{n} نقاط",
+    "status": "draft",
+    "notes": "Points price whose last two digits are 3 to 10 (3, 4 ... 10, 103 ...)."
+  },
+  "pointsMany": {
+    "en": "{n} points",
+    "ar": "{n} نقطة",
+    "status": "draft",
+    "notes": "Points price for every other count (0, 11 to 99, 100, 101, 102, 111 ...)."
+  },
+  "templateNameFallback": {
+    "en": "Automated flow message",
+    "ar": "رسالة مسار آلي",
+    "status": "draft",
+    "notes": "Default name of the language-versions template created for a flow message whose flow/promotion has no name (never expected in practice: both names are required fields)."
+  }
+}

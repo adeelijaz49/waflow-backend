@@ -23,6 +23,7 @@ const { withWorkspace, scopedFilter } = require("./shared/operations");
 const inbox            = require("./shared/inbox"); // WhatsApp Inbox — see shared/inbox.js
 const referrals         = require("./shared/referrals"); // Referral Promotions — see shared/referrals.js
 const instagram         = require("./shared/instagram"); // Instagram Promotion Scheduler — see shared/instagram.js
+const localization      = require("./shared/localization"); // Arabic localisation — see shared/localization/index.js
 
 // The WhatsApp webhook and Stripe webhook serve real customers directly, with
 // no logged-in session to read a workspaceId from. Only one platform WABA
@@ -92,9 +93,19 @@ app.use("/api/referrals",  requireAuth, require("./routes/referrals"));
 app.use("/api/instagram-posts", requireAuth, require("./routes/instagramPosts"));
 app.use("/api/instagram-media", requireAuth, require("./routes/instagramMedia"));
 app.use("/api/social-accounts",  requireAuth, require("./routes/socialAccounts"));
+// Arabic localisation (all new files). Every route except /settings is also gated
+// by the per-merchant arabic_enabled flag — see routes/localization/index.js. A
+// failure to load this feature must never stop the existing app from starting.
+try { app.use("/api/localization", requireAuth, require("./routes/localization")); }
+catch (err) { console.error("[localization] API routes not mounted:", err.message); }
 // Uploaded images must stay public — WhatsApp's own servers fetch them by URL
 // with no Authorization header when rendering a message to a real customer.
 app.use("/uploads", express.static(require("./utils/config").UPLOAD_DIR));
+// Arabic customer pages (payment / referral / Instagram link) — fall through with
+// next() to the existing English handlers below unless the merchant has Arabic
+// enabled AND the visitor's language is Arabic (see routes/localization/pages.js).
+try { app.use(require("./routes/localization/pages")); }
+catch (err) { console.error("[localization] customer pages not mounted:", err.message); }
 app.use(require("./routes/pay"));
 // Public referral-link redirects (/r/:code, /c/:code) — a friend's browser
 // hits these directly, with no logged-in session.
@@ -119,6 +130,9 @@ app.use("/internal-admin", require("./middleware/requireInternalAdmin"), require
 app.use("/internal-admin-billing", require("./middleware/requireInternalAdmin"), require("./routes/adminEntitlements"));
 // Instagram Promotion Scheduler add-on toggle — same pattern.
 app.use("/internal-admin-instagram", require("./middleware/requireInternalAdmin"), require("./routes/adminInstagram"));
+// Arabic localisation rollout flag + string-review counts — same pattern.
+try { app.use("/internal-admin-localization", require("./middleware/requireInternalAdmin"), require("./routes/adminLocalization")); }
+catch (err) { console.error("[localization] admin page not mounted:", err.message); }
 
 // ─── Stripe ──────────────────────────────────────────────────────────────────
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
@@ -978,6 +992,12 @@ app.post("/webhook", async (req, res) => {
   await inbox.logInboundMessage({ workspaceId, from, message, contactName })
     .catch(err => console.error("inbox logInboundMessage error:", err.message));
 
+  // Arabic localisation — honours typed Arabic opt-out/opt-in keywords and Arabic
+  // consent buttons immediately, and records a customer's language from their
+  // first message (see shared/localization/inboundHook.js). Never throws; returns
+  // true ONLY when it fully handled the message, otherwise the existing flow runs.
+  if (await localization.handleInbound({ workspaceId, from, message, contactName })) return;
+
   // ── Template quick-reply (user tapped button on a template message) ──────────
   if (message.type === "button") {
     const payload = message.button?.payload || "";
@@ -1478,6 +1498,8 @@ if (require.main === module) {
     require("./utils/flowScheduler").startFlowScheduler();
     referrals.startReferralScheduler();
     instagram.startInstagramScheduler();
+    try { require("./shared/localization/scheduler").startLocalizationScheduler(); }
+    catch (err) { console.error("[localization] scheduler not started:", err.message); }
   });
 }
 

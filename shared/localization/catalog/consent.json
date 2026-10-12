@@ -1,0 +1,88 @@
+{
+  "optOutAck": {
+    "en": "You've been unsubscribed from promotional messages. Reply START to opt back in anytime.",
+    "ar": "تم إلغاء اشتراكك في الرسائل الترويجية. أرسل «اشترك» في أي وقت للعودة.",
+    "status": "draft",
+    "needsLegalApproval": true,
+    "notes": "Mirrors the existing English STOP acknowledgement in server.js."
+  },
+  "optInAck": {
+    "en": "🎉 You're subscribed! We'll send occasional offers and updates. Reply STOP anytime to opt out.",
+    "ar": "🎉 تم تسجيل اشتراكك! سنرسل لك عروضاً وتحديثات بين وقت وآخر. أرسل «إلغاء الاشتراك» في أي وقت لإيقاف الرسائل.",
+    "status": "draft",
+    "needsLegalApproval": true
+  },
+  "declineAck": {
+    "en": "No problem! You can always opt in later.",
+    "ar": "لا مشكلة! يمكنك الاشتراك لاحقاً في أي وقت.",
+    "status": "draft",
+    "needsLegalApproval": true
+  },
+  "startAck": {
+    "en": "You're subscribed to promotional messages again. Welcome back! 🎉",
+    "ar": "تم تجديد اشتراكك في الرسائل الترويجية. أهلاً بعودتك! 🎉",
+    "status": "draft",
+    "needsLegalApproval": true
+  },
+  "startNoConsent": {
+    "en": "Got it — you won't receive promotional messages unless you opt in.",
+    "ar": "تمام — لن تصلك رسائل ترويجية ما لم توافق على ذلك.",
+    "status": "draft",
+    "needsLegalApproval": true
+  },
+  "alreadyOptedOut": {
+    "en": "You're already unsubscribed from promotional messages. Reply START to opt back in anytime.",
+    "ar": "اشتراكك في الرسائل الترويجية ملغى بالفعل. أرسل «اشترك» في أي وقت للعودة.",
+    "status": "draft",
+    "needsLegalApproval": true,
+    "notes": "Sent instead of optOutAck when the customer is already opted out (no duplicate consent event is written)."
+  },
+  "alreadySubscribed": {
+    "en": "You're already subscribed to our offers and updates. Reply STOP anytime to opt out.",
+    "ar": "أنت مشترك بالفعل في عروضنا وتحديثاتنا. أرسل «إلغاء الاشتراك» في أي وقت لإيقاف الرسائل.",
+    "status": "draft",
+    "needsLegalApproval": true,
+    "notes": "Sent when a customer who is already subscribed types the subscribe keyword."
+  },
+  "tryAgain": {
+    "en": "Sorry, something went wrong and we couldn't update your preferences. Please send your message again in a moment.",
+    "ar": "عذراً، حدث خطأ ولم نتمكن من تحديث تفضيلاتك. يرجى إعادة إرسال رسالتك بعد قليل.",
+    "status": "draft",
+    "needsLegalApproval": true,
+    "notes": "Neutral retry message sent when a consent change (especially an opt-out) could not be saved. Deliberately does NOT claim success."
+  },
+  "askSuffix": {
+    "en": "Would you like occasional offers & updates from us on WhatsApp?",
+    "ar": "هل تود أن تصلك عروضنا وتحديثاتنا عبر واتساب بين وقت وآخر؟",
+    "status": "draft",
+    "needsLegalApproval": true
+  },
+  "buttonOptIn": {
+    "en": "Yes, sign me up",
+    "ar": "نعم، أوافق",
+    "status": "draft",
+    "needsLegalApproval": true,
+    "notes": "Button label, max 20 characters (spec §3.4). Arabic label suggested by the spec."
+  },
+  "buttonDecline": {
+    "en": "No thanks",
+    "ar": "لا، شكراً",
+    "status": "draft",
+    "needsLegalApproval": true,
+    "notes": "Button label, max 20 characters. Arabic label suggested by the spec."
+  },
+  "buttonOptOut": {
+    "en": "Opt Out",
+    "ar": "إلغاء الاشتراك",
+    "status": "draft",
+    "needsLegalApproval": true,
+    "notes": "Button label, max 20 characters. Arabic label suggested by the spec."
+  },
+  "footerOptOutHint": {
+    "en": "Reply STOP to unsubscribe",
+    "ar": "لإلغاء الاشتراك أرسل: إلغاء الاشتراك",
+    "status": "draft",
+    "needsLegalApproval": true,
+    "notes": "Template footer, max 60 characters."
+  }
+}

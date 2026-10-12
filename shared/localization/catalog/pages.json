@@ -1,0 +1,298 @@
+{
+  "common.languageLabel": {
+    "en": "Language",
+    "ar": "اللغة",
+    "status": "draft",
+    "notes": "Accessible label of the language switch on every Arabic customer page."
+  },
+  "common.switchToEnglish": {
+    "en": "English",
+    "ar": "English",
+    "status": "draft",
+    "notes": "Language switch link label: the language's own name, kept in Latin script on purpose."
+  },
+  "common.switchToEnglishTitle": {
+    "en": "Switch to English",
+    "ar": "التبديل إلى الإنجليزية",
+    "status": "draft"
+  },
+  "common.currencySAR": {
+    "en": "SAR",
+    "ar": "ر.س",
+    "status": "draft",
+    "notes": "Currency symbol shown after the number, e.g. 150.00 ر.س (glossary D8, same as the website)."
+  },
+  "common.offer": {
+    "en": "Offer: {offer}",
+    "ar": "العرض: {offer}",
+    "status": "draft",
+    "notes": "{offer} is the merchant-written promotion name."
+  },
+  "common.continueToWhatsApp": {
+    "en": "Continue on WhatsApp",
+    "ar": "المتابعة على واتساب",
+    "status": "draft",
+    "notes": "The one big button on the referral and Instagram landing pages."
+  },
+  "common.notFound.title": {
+    "en": "Link not found",
+    "ar": "الرابط غير موجود",
+    "status": "draft"
+  },
+  "common.error.title": {
+    "en": "Something went wrong",
+    "ar": "حدث خطأ ما",
+    "status": "draft"
+  },
+  "common.error.body": {
+    "en": "Please try again in a moment.",
+    "ar": "يرجى المحاولة مرة أخرى بعد قليل.",
+    "status": "draft"
+  },
+  "common.unavailable.title": {
+    "en": "WhatsApp is unavailable",
+    "ar": "واتساب غير متاح حالياً",
+    "status": "draft",
+    "notes": "Arabic pages only: shown when the business WhatsApp number cannot be resolved (the English page shows its generic not-found text)."
+  },
+  "common.unavailable.body": {
+    "en": "We couldn't open WhatsApp right now. Please try again shortly.",
+    "ar": "تعذّر فتح واتساب حالياً. يرجى المحاولة بعد قليل.",
+    "status": "draft"
+  },
+  "pay.notFound.title": {
+    "en": "Not found",
+    "ar": "غير موجود",
+    "status": "draft"
+  },
+  "pay.notFound.heading": {
+    "en": "Payment link not found",
+    "ar": "رابط الدفع غير موجود",
+    "status": "draft"
+  },
+  "pay.notFound.body": {
+    "en": "This link may have expired.",
+    "ar": "ربما انتهت صلاحية هذا الرابط.",
+    "status": "draft"
+  },
+  "pay.paid.heading": {
+    "en": "Already paid",
+    "ar": "تم الدفع مسبقاً",
+    "status": "draft",
+    "notes": "Used for both the page title and the heading, like the English page."
+  },
+  "pay.paid.body": {
+    "en": "This order has already been paid. You can return to WhatsApp.",
+    "ar": "تم دفع هذا الطلب مسبقاً. يمكنك العودة إلى واتساب.",
+    "status": "draft"
+  },
+  "pay.checkout.heading": {
+    "en": "Complete Your Payment",
+    "ar": "إتمام الدفع",
+    "status": "draft",
+    "notes": "Used for both the page title and the heading, like the English page."
+  },
+  "pay.checkout.subtitle": {
+    "en": "{currency} · Order total below",
+    "ar": "{currency} · إجمالي الطلب أدناه",
+    "status": "draft",
+    "notes": "{currency} is the Arabic currency name for SAR (pay.currencyName.SAR) and the 3-letter code for any other currency."
+  },
+  "pay.currencyName.SAR": {
+    "en": "Saudi riyal",
+    "ar": "الريال السعودي",
+    "status": "draft"
+  },
+  "pay.subtotal": {
+    "en": "Subtotal",
+    "ar": "المجموع الفرعي",
+    "status": "draft"
+  },
+  "pay.shipping": {
+    "en": "Shipping",
+    "ar": "الشحن",
+    "status": "draft"
+  },
+  "pay.total": {
+    "en": "Total",
+    "ar": "الإجمالي",
+    "status": "draft"
+  },
+  "pay.service": {
+    "en": "Service",
+    "ar": "الخدمة",
+    "status": "draft",
+    "notes": "Arabic page only: service bookings also show what is being paid for."
+  },
+  "pay.appointment": {
+    "en": "Appointment",
+    "ar": "الموعد",
+    "status": "draft"
+  },
+  "pay.slot": {
+    "en": "{date} at {time}",
+    "ar": "{date} الساعة {time}",
+    "status": "draft",
+    "notes": "{date} is YYYY-MM-DD and {time} is HH:mm, both Western digits."
+  },
+  "pay.deliveringTo": {
+    "en": "📍 Delivering to: {address}",
+    "ar": "📍 التوصيل إلى: {address}",
+    "status": "draft",
+    "notes": "{address} is the customer-typed delivery address."
+  },
+  "pay.payButton": {
+    "en": "Pay {amount}",
+    "ar": "ادفع {amount}",
+    "status": "draft",
+    "notes": "{amount} is the formatted total, e.g. 150.00 ر.س."
+  },
+  "pay.cancelLink": {
+    "en": "Cancel and return to WhatsApp",
+    "ar": "إلغاء الدفع والعودة إلى واتساب",
+    "status": "draft"
+  },
+  "pay.failedFallback": {
+    "en": "Payment failed. Please try again.",
+    "ar": "تعذّر إتمام الدفع. يرجى المحاولة مرة أخرى.",
+    "status": "draft",
+    "notes": "Shown when Stripe returns no error text of its own."
+  },
+  "pay.successMessage": {
+    "en": "✅ Payment successful! You can return to WhatsApp now.",
+    "ar": "✅ تم الدفع بنجاح! يمكنك العودة إلى واتساب الآن.",
+    "status": "draft"
+  },
+  "pay.unknown.title": {
+    "en": "Payment",
+    "ar": "الدفع",
+    "status": "draft"
+  },
+  "pay.unknown.heading": {
+    "en": "Payment status unknown",
+    "ar": "حالة الدفع غير معروفة",
+    "status": "draft"
+  },
+  "pay.success.title": {
+    "en": "Payment successful",
+    "ar": "تم الدفع بنجاح",
+    "status": "draft"
+  },
+  "pay.success.heading": {
+    "en": "Payment successful!",
+    "ar": "تم الدفع بنجاح!",
+    "status": "draft"
+  },
+  "pay.success.body": {
+    "en": "You can return to WhatsApp now.",
+    "ar": "يمكنك العودة إلى واتساب الآن.",
+    "status": "draft"
+  },
+  "pay.failed.title": {
+    "en": "Payment failed",
+    "ar": "تعذّر الدفع",
+    "status": "draft"
+  },
+  "pay.failed.heading": {
+    "en": "Payment not completed",
+    "ar": "لم تكتمل عملية الدفع",
+    "status": "draft"
+  },
+  "pay.failed.body": {
+    "en": "Your payment wasn't completed. You can try again or cancel.",
+    "ar": "لم تكتمل عملية الدفع. يمكنك المحاولة مرة أخرى أو الإلغاء.",
+    "status": "draft"
+  },
+  "pay.tryAgain": {
+    "en": "Try Again",
+    "ar": "حاول مرة أخرى",
+    "status": "draft"
+  },
+  "pay.cancelled.title": {
+    "en": "Cancelled",
+    "ar": "تم الإلغاء",
+    "status": "draft"
+  },
+  "pay.cancelled.heading": {
+    "en": "Payment cancelled",
+    "ar": "تم إلغاء الدفع",
+    "status": "draft"
+  },
+  "pay.cancelled.body": {
+    "en": "Return to WhatsApp to keep shopping.",
+    "ar": "ارجع إلى واتساب لمواصلة التسوق.",
+    "status": "draft"
+  },
+  "pay.cancelledWhatsApp": {
+    "en": "No worries! Your cart has been cleared. Feel free to browse again anytime. 🛍️",
+    "ar": "لا بأس! تم تفريغ سلتك. يمكنك التصفح من جديد في أي وقت. 🛍️",
+    "status": "draft",
+    "notes": "Reference copy only. The English cancelled page also sends this as a WhatsApp text and clears the cart; the Arabic cancelled page deliberately does neither, so nothing renders this string yet."
+  },
+  "referral.title": {
+    "en": "A special offer for you",
+    "ar": "عرض خاص لك",
+    "status": "draft"
+  },
+  "referral.invitedBusiness": {
+    "en": "You've been invited to claim this offer from {business}.",
+    "ar": "تمت دعوتك للاستفادة من هذا العرض من {business}.",
+    "status": "draft",
+    "notes": "{business} is the merchant's business name. The page deliberately never shows anything about the customer who shared the link (no name, no phone): the link is public."
+  },
+  "referral.invitedGeneric": {
+    "en": "You've been invited to claim this offer.",
+    "ar": "تمت دعوتك للاستفادة من هذا العرض.",
+    "status": "draft",
+    "notes": "Used when the merchant's business name is not available. Never mentions who shared the link."
+  },
+  "referral.reward": {
+    "en": "Your reward: {reward}",
+    "ar": "مكافأتك: {reward}",
+    "status": "draft",
+    "notes": "{reward} is the merchant-written reward text of the promotion (e.g. \"Free dessert\"); the line is omitted when there is none."
+  },
+  "referral.explain": {
+    "en": "Tap the button below to open WhatsApp with a ready-made message and claim your offer.",
+    "ar": "اضغط الزر أدناه لفتح واتساب برسالة جاهزة والاستفادة من عرضك.",
+    "status": "draft"
+  },
+  "referral.prefill": {
+    "en": "Hi, I'd like to claim my referral offer.",
+    "ar": "مرحباً، أرغب في الاستفادة من عرض الإحالة الخاص بي.",
+    "status": "draft",
+    "notes": "Prefilled WhatsApp text. The code appends a new line with the Latin token `Code: <CODE>` after it; that token must stay Latin because the inbound referral-code detection matches it."
+  },
+  "referral.notFound.body": {
+    "en": "This referral link is invalid, expired, or no longer active.",
+    "ar": "رابط الإحالة هذا غير صالح أو منتهي الصلاحية أو لم يعد نشطاً.",
+    "status": "draft"
+  },
+  "instagram.title": {
+    "en": "Special offer",
+    "ar": "عرض خاص",
+    "status": "draft"
+  },
+  "instagram.explain": {
+    "en": "Tap the button below to open WhatsApp with a ready-made message and claim this offer.",
+    "ar": "اضغط الزر أدناه لفتح واتساب برسالة جاهزة والاستفادة من هذا العرض.",
+    "status": "draft"
+  },
+  "instagram.prefill": {
+    "en": "Hi, I'd like to claim the {name} offer.",
+    "ar": "مرحباً، أرغب في الاستفادة من عرض «{name}».",
+    "status": "draft",
+    "notes": "Prefilled WhatsApp text; {name} is the promotion name. The code appends a new line with the Latin token `Code: IG-XXXXXXXX` after it; that token must stay Latin because the inbound tracking-code detection matches it."
+  },
+  "instagram.prefillGeneric": {
+    "en": "Hi, I'd like to claim this offer.",
+    "ar": "مرحباً، أرغب في الاستفادة من هذا العرض.",
+    "status": "draft",
+    "notes": "Used when the promotion has no usable name."
+  },
+  "instagram.notFound.body": {
+    "en": "This link is invalid or no longer active.",
+    "ar": "هذا الرابط غير صالح أو لم يعد نشطاً.",
+    "status": "draft"
+  }
+}

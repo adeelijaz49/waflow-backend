@@ -1,0 +1,8 @@
+{
+  "defaultMarketingFooter": {
+    "en": "Reply STOP to unsubscribe",
+    "ar": "لإلغاء الاشتراك أرسل: إلغاء الاشتراك",
+    "status": "draft",
+    "notes": "Template footer (max 60 characters) the server adds when a variant that has an opt-out button leaves its footer empty, so a typed opt-out keyword is always advertised. The Arabic keyword matches the opt-out keyword list in keywords.js."
+  }
+}

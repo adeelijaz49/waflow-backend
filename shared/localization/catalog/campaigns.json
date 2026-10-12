@@ -1,0 +1,8 @@
+{
+  "nameFallback": {
+    "en": "Valued Customer",
+    "ar": "عميلنا العزيز",
+    "status": "draft",
+    "notes": "Stands in for {name} and {full_name} when a customer has no usable first name (for example a WhatsApp contact saved only as a phone number). English matches the existing 'Valued Customer' fallback."
+  }
+}
