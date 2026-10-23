@@ -234,6 +234,7 @@ async function runSweep() {
   const activeFlows = await Flow.find({ status: 'active' });
   for (const flow of activeFlows) {
     try {
+      try { if (await require('../shared/onboarding/sendGate').flowBlocked(flow)) continue; } catch (_) { /* fail open: sweep as before */ }
       await sweepFlow(flow);
     } catch (err) {
       console.error(`Flow scheduler error (flow ${flow._id}, ${flow.triggerType}):`, err.message);

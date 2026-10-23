@@ -43,6 +43,7 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/waflow
 
 // Stripe webhook needs raw body — before express.json()
 app.post("/stripe-webhook", express.raw({ type: "application/json" }), handleStripeWebhook);
+try { require("./shared/onboarding/earlyMounts").mount(app, express); } catch (err) { console.error("[onboarding] early mounts not installed:", err.message); }
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true })); // OAuth token/authorize endpoints use form-encoded bodies
@@ -67,6 +68,7 @@ if (!/^mongodb:\/\/(localhost|127\.0\.0\.1)/.test(MONGODB_URI) && !/[?&](tls|ssl
   console.warn("[startup] MONGODB_URI does not appear to enforce TLS (no tls=true/ssl=true) and isn't localhost — double-check the connection string.");
 }
 
+try { require("./shared/onboarding/mount").mount(app, { requireAuth, requireInternalAdmin: require("./middleware/requireInternalAdmin") }); } catch (err) { console.error("[onboarding] routes not mounted:", err.message); }
 // ─── Auth (passwordless login) — must stay public ───────────────────────────
 app.use("/api/auth", require("./routes/auth"));
 
@@ -952,6 +954,7 @@ async function handleRebookRequest(from, serviceId, oldBookingId, flowEnrollment
 // ─── WhatsApp incoming messages ──────────────────────────────────────────────
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
+  try { const ob = require("./shared/onboarding/webhookEvents"); if (ob.enabled() && await ob.intercept(req)) return; } catch (_) { /* fail open: existing flow */ } // WhatsApp onboarding: merchant-WABA events only
   const value = req.body?.entry?.[0]?.changes?.[0]?.value;
   const workspaceId = await resolveWebhookWorkspaceId();
 
@@ -1511,6 +1514,8 @@ if (require.main === module) {
     instagram.startInstagramScheduler();
     try { require("./shared/localization/scheduler").startLocalizationScheduler(); }
     catch (err) { console.error("[localization] scheduler not started:", err.message); }
+    try { require("./shared/onboarding/scheduler").startOnboardingScheduler(); }
+    catch (err) { console.error("[onboarding] scheduler not started:", err.message); }
   });
 }
 
