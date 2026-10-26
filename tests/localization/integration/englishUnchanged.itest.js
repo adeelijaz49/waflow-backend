@@ -1,4 +1,7 @@
 'use strict';
+// This suite characterises the sending behaviour as it was BEFORE the 24-hour-window delivery fix (docs/promo-delivery-fix.md), so it
+// runs with the fix's kill switch off. The fix itself is covered by promoWindowRouting.itest.js.
+process.env.PROMO_DELIVERY_FIX = 'off';
 // CHARACTERISATION TEST: English (and non-text) WhatsApp webhook behaviour must be identical
 // with and without the Arabic-localisation hooks in server.js.
 //

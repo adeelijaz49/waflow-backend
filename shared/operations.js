@@ -35,6 +35,9 @@ const settingsCache = require('../utils/settingsCache');
 const { getCurrency } = settingsCache;
 const { canSendMarketing, grantMarketingConsent, sendUtilityMessageWithConsentAsk } = require('./consent');
 const { oneWordLastname } = require('./localization/nameGuard');
+// 24-hour-window routing for promotion sends + Meta's real error text (kill switch: PROMO_DELIVERY_FIX=off).
+const promoWindow = require('./promoWindow');
+const { metaErrorInfo } = require('./promoDelivery');
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const SHIPPING_COST = 0.5; // flat rate, matches server.js's WhatsApp checkout flow
@@ -1041,14 +1044,26 @@ async function sendTestMessage({ promotionId, phone, workspaceId }) {
   // Same graceful fallback as sendPromotion below — test-send should show
   // exactly what a real send would use.
   const entryNode = await resolveApprovedEntryNode(promotion);
-  if (entryNode) {
-    const params = await buildPromoEntryNodeParams(testCustomer, promotion, items);
-    const buttonPayloads = entryNode.buttons.map(b => `msgnode_${entryNode._id}_${b.position}`);
-    await sendCustomFlowTemplate(phone, entryNode.templateName, params, buttonPayloads);
-  } else if (promotion.customerType === 'points') {
-    await sendPointsPromoMessage(phone, testCustomer, promotion, items);
-  } else {
-    await sendPromoAnnouncement(phone, testCustomer, promotion, items);
+  try {
+    if (entryNode) {
+      const params = await buildPromoEntryNodeParams(testCustomer, promotion, items);
+      const buttonPayloads = entryNode.buttons.map(b => `msgnode_${entryNode._id}_${b.position}`);
+      await sendCustomFlowTemplate(phone, entryNode.templateName, params, buttonPayloads);
+    } else if (promotion.customerType === 'points') {
+      await sendPointsPromoMessage(phone, testCustomer, promotion, items);
+    } else {
+      // Same 24-hour-window routing as sendPromotion (shared/promoWindow.js): a phone that has not written to the business
+      // recently gets the approved template, because the chat-style message would be accepted and then refused by WhatsApp.
+      const win = items.length ? await promoWindow.insideWindow({ phones: [phone], workspaceId: promotion.workspaceId }) : null;
+      if (win && !win.has(promoWindow.phoneKey(phone))) await sendPromoTemplate(phone, testCustomer, items[0], promotion);
+      else await sendPromoAnnouncement(phone, testCustomer, promotion, items);
+    }
+  } catch (err) {
+    // Meta's own reason instead of "Request failed with status code 400". Any other error, and every error when the kill
+    // switch is off, is rethrown untouched.
+    const info = metaErrorInfo(err);
+    if (info.meta) throw new Error(info.message, { cause: err });
+    throw err;
   }
   return { success: true };
 }
@@ -1078,6 +1093,12 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
   // DEFECT-02: optional merchant-authored custom entry message + branching.
   const entryNode = await resolveApprovedEntryNode(promotion);
   const loc = await localizedRun({ sender: 'promotion', workspaceId: workspaceId || promotion.workspaceId, customers, promotion, items, allowRealDemoSend });
+  // Who has written to the business within the last 24 hours (shared/promoWindow.js). Only a cash promotion with something
+  // to show can fall back to the approved template, so only then is the lookup needed. null = no answer (kill switch
+  // PROMO_DELIVERY_FIX=off, or the lookup failed): every customer takes the unchanged path below.
+  const windowSet = (!entryNode && promotion.customerType !== 'points' && items.length)
+    ? await promoWindow.insideWindow({ phones: customers.map(c => c.phone), workspaceId: promotion.workspaceId })
+    : null;
 
   let sentCount = 0;
   let demoCount = 0;
@@ -1090,6 +1111,7 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
     let messageType = 'interactive';
     let templateName;
     let failReason;
+    let failCode;
     let simOutcome = null;
     // Arabic customer of a switched-on merchant: null = the existing path below, unchanged.
     const arabic = (!demo && loc) ? await loc.trySend(customer) : null;
@@ -1119,26 +1141,47 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
         result = await sendCustomFlowTemplate(customer.phone, entryNode.templateName, params, buttonPayloads);
         sent = true; sentCount++;
       } catch (err) {
-        failReason = err.message;
-        errors.push({ customer: customer._id, error: err.message });
+        const info = metaErrorInfo(err); // Meta's own reason (plain err.message when PROMO_DELIVERY_FIX=off)
+        failReason = info.message; failCode = info.code;
+        errors.push({ customer: customer._id, error: info.message });
+      }
+    } else if (windowSet && !windowSet.has(promoWindow.phoneKey(customer.phone))) {
+      // Outside the 24-hour window (this customer has not written to the business recently): a chat-style message would be
+      // accepted by WhatsApp and then refused (131047) without ever reaching the fallback below. Send the approved template
+      // directly. If the template is refused, say so with Meta's own reason (paused, not approved, ...) - falling back to the
+      // chat-style message would only be accepted and refused again, and hide that reason behind "24-hour window closed".
+      messageType = 'template'; templateName = PROMO_TEMPLATE;
+      try {
+        result = await sendPromoTemplate(customer.phone, customer, items[0], promotion);
+        sentCount++; sent = true;
+      } catch (err) {
+        const info = metaErrorInfo(err);
+        failReason = info.message; failCode = info.code;
+        errors.push({ customer: customer._id, error: info.message });
       }
     } else {
+      let interactiveErr = null;
       try {
         if (promotion.customerType === 'points') result = await sendPointsPromoMessage(customer.phone, customer, promotion, items);
         else result = await sendPromoAnnouncement(customer.phone, customer, promotion, items);
         sent = true; sentCount++;
-      } catch (_) { /* fall through to template fallback */ }
+      } catch (e) { interactiveErr = e; /* fall through to template fallback */ }
 
       if (!sent && promotion.customerType !== 'points' && items.length) {
         try {
           result = await sendPromoTemplate(customer.phone, customer, items[0], promotion);
           sentCount++; sent = true; messageType = 'template'; templateName = PROMO_TEMPLATE;
         } catch (err) {
-          failReason = err.message;
-          errors.push({ customer: customer._id, error: err.message });
+          const info = metaErrorInfo(err);
+          failReason = info.message; failCode = info.code;
+          errors.push({ customer: customer._id, error: info.message });
         }
       } else if (!sent) {
         failReason = 'Send failed';
+        if (interactiveErr) { // no template to fall back to: when Meta itself refused the chat-style message, say why
+          const info = metaErrorInfo(interactiveErr); // (no Meta body, or kill switch off: the previous 'Send failed')
+          if (info.meta) { failReason = info.message; failCode = info.code; }
+        }
         errors.push({ customer: customer._id, error: failReason });
       }
     }
@@ -1157,6 +1200,7 @@ async function sendPromotion({ promotionId, customerIds, allowRealDemoSend = fal
       revenue: simOutcome?.revenue || 0,
       pointsIssued: simOutcome?.pointsIssued || 0,
       statusReason: sent ? undefined : failReason,
+      errorCode: sent ? undefined : failCode, // Meta's code when the API call itself was refused (undefined = unchanged row)
     }).catch(() => {}); // best-effort — a tracking-write failure shouldn't break the send loop
     if (loc) await loc.record(customer, { sent, result, failReason }); // sidecar language row, never throws
 

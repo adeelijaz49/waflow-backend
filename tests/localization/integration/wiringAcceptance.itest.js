@@ -1,4 +1,7 @@
 'use strict';
+// This suite characterises the sending behaviour as it was BEFORE the 24-hour-window delivery fix (docs/promo-delivery-fix.md), so it
+// runs with the fix's kill switch off. The fix itself is covered by promoWindowRouting.itest.js.
+process.env.PROMO_DELIVERY_FIX = 'off';
 // WIRING ACCEPTANCE (ACC-BE): the combined end-to-end test of the Arabic wiring phase. The REAL server.js (webhook, Stripe webhook,
 // dashboard routes, hub routes, customer pages) and the REAL shared/operations.js senders run against the THROWAWAY mongod with
 // the axios adapter stubbed - nothing leaves the machine, no real WhatsApp / Meta / Stripe / Anthropic call is possible

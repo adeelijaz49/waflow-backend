@@ -1,4 +1,7 @@
 'use strict';
+// This suite characterises the sending behaviour as it was BEFORE the 24-hour-window delivery fix (docs/promo-delivery-fix.md), so it
+// runs with the fix's kill switch off. The fix itself is covered by promoWindowRouting.itest.js.
+process.env.PROMO_DELIVERY_FIX = 'off';
 // CHARACTERISATION TEST #2: the EXISTING WhatsApp-sending / customer code paths that the Arabic wiring phase will touch
 // must behave identically for English / unflagged merchants (flag off), under the kill switch, and for a flagged
 // merchant whose audience is entirely English. Companion of englishUnchanged.itest.js (which covers the webhook

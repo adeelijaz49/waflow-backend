@@ -6,6 +6,8 @@ const Promotion = require('../models/Promotion');
 // its existing ops.* call exactly as before; carousel promotions are
 // dispatched to this module instead, before any existing logic runs.
 const carouselOps = require('../shared/promotionCarousel');
+// What WhatsApp did with a send (accepted vs delivered vs refused, and why) — see shared/promoDelivery.js.
+const promoDelivery = require('../shared/promoDelivery');
 
 // ─── CRUD ────────────────────────────────────────────────────────────────────
 
@@ -75,6 +77,26 @@ router.get('/:id/report', async (req, res) => {
     res.json(await ops.getCampaignReport({ promotionId: req.params.id, workspaceId: req.user.workspaceId }));
   } catch (err) {
     if (err.message === 'Promotion not found') return res.status(404).json({ error: 'Not found' });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Delivery check (accepted vs delivered vs refused, with the reasons) ─────
+// ?sinceSeconds=N limits it to the rows created in the last N seconds (the dashboard passes the time elapsed since the
+// merchant pressed Send, so the browser's clock never matters); ?since=<ISO date> does the same with a date; neither = the
+// whole promotion.
+
+router.get('/:id/delivery', async (req, res) => {
+  // A token without a workspace (the short-lived pre-login one) must never read across tenants.
+  if (!req.user || !req.user.workspaceId) return res.status(403).json({ error: 'Workspace required' });
+  try {
+    let since = null;
+    const secs = Number(req.query.sinceSeconds);
+    if (Number.isFinite(secs) && secs > 0) since = new Date(Date.now() - Math.min(secs, 7 * 24 * 3600) * 1000);
+    else if (req.query.since) { const d = new Date(String(req.query.since)); if (!isNaN(d)) since = d; }
+    res.json(await promoDelivery.getPromotionDelivery({ promotionId: req.params.id, workspaceId: req.user.workspaceId, since }));
+  } catch (err) {
+    if (err.message === 'Promotion not found' || err.name === 'CastError') return res.status(404).json({ error: 'Not found' });
     res.status(500).json({ error: err.message });
   }
 });
