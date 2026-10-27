@@ -87,6 +87,48 @@ describe('MessageNode CRUD + validation', () => {
   });
 });
 
+// The first message of a promotion is a WhatsApp template (button text up to 25 characters); every follow-up is an interactive
+// message (20). Opt in / Opt out / Interested exist on the first message of a PROMOTION only. (No rows are created here:
+// rejected creates write nothing, accepted ones are checked through the validator.)
+describe('button limits and consent actions', () => {
+  const { Types } = require('mongoose');
+  const btn = (label, type = 'end_flow', extra = {}) => ({ position: 0, label, nextAction: { type, ...extra } });
+  const L20 = 'A'.repeat(20); const L21 = 'A'.repeat(21); const L25 = 'B'.repeat(25); const L26 = 'B'.repeat(26);
+
+  test('a follow-up message allows 20 characters and refuses 21', () => {
+    expect(() => ops.validateButtons([btn(L20)])).not.toThrow();
+    expect(() => ops.validateButtons([btn(L21)])).toThrow('exceeds 20 characters');
+  });
+
+  test('an entry message allows 25 characters and refuses 26', () => {
+    expect(() => ops.validateButtons([btn(L25)], { isEntryNode: true })).not.toThrow();
+    expect(() => ops.validateButtons([btn(L26)], { isEntryNode: true })).toThrow('exceeds 25 characters');
+  });
+
+  test('createMessageNode applies the right limit for an entry message and a follow-up', async () => {
+    const ownerId = new Types.ObjectId();
+    await expect(ops.createMessageNode({ ownerType: 'promotion', ownerId, isEntryNode: true, bodyText: 'Hi', buttons: [btn(L26)] }))
+      .rejects.toThrow('exceeds 25 characters');
+    await expect(ops.createMessageNode({ ownerType: 'promotion', ownerId, isEntryNode: false, depth: 1, bodyText: 'Hi', buttons: [btn(L21)] }))
+      .rejects.toThrow('exceeds 20 characters');
+  });
+
+  test('the consent actions are refused on a follow-up and on a flow message, allowed on a promotion entry message', async () => {
+    for (const type of ['opt_in', 'opt_out', 'interested']) {
+      expect(() => ops.validateButtons([btn('Yes', type)], { isEntryNode: false, ownerType: 'promotion' })).toThrow('first message of a promotion');
+      expect(() => ops.validateButtons([btn('Yes', type)], { isEntryNode: true, ownerType: 'flow' })).toThrow('first message of a promotion');
+      expect(() => ops.validateButtons([btn('Yes', type)], { isEntryNode: true, ownerType: 'promotion' })).not.toThrow();
+    }
+    await expect(ops.createMessageNode({ ownerType: 'promotion', ownerId: new Types.ObjectId(), isEntryNode: false, depth: 1, bodyText: 'Hi', buttons: [btn('Yes', 'opt_in')] }))
+      .rejects.toThrow('first message of a promotion');
+  });
+
+  test('a reply text over 1000 characters is refused', () => {
+    expect(() => ops.validateButtons([btn('Yes', 'opt_in', { replyText: 'x'.repeat(1001) })], { isEntryNode: true, ownerType: 'promotion' })).toThrow('at most 1000');
+    expect(() => ops.validateButtons([btn('Yes', 'opt_in', { replyText: 'x'.repeat(1000) })], { isEntryNode: true, ownerType: 'promotion' })).not.toThrow();
+  });
+});
+
 describe('getFlowMessageVariables', () => {
   test('returns the right variables per triggerType, customerName always slot 1', async () => {
     const winback = await ops.getFlowMessageVariables({ triggerType: 'inactive_customer' });

@@ -168,7 +168,7 @@ function parseLikeLegacy(raw) {
  */
 function createMiddleware(deps = {}) {
   const getMode = deps.mode || (() => config.webhookSignatureMode());
-  const getSecret = deps.secret || (() => (process.env.WA_APP_SECRET ? String(process.env.WA_APP_SECRET) : null));
+  const getSecret = deps.secret || (() => (process.env.WA_APP_SECRET ? String(process.env.WA_APP_SECRET).trim() || null : null));
   const isMerchant = deps.isMerchant || ((body) => require('./webhookEvents').matchesMerchant(body));
   const lookupTimeoutMs = deps.lookupTimeoutMs || LOOKUP_TIMEOUT_MS;
   const now = deps.now || (() => Date.now());

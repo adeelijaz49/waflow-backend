@@ -167,16 +167,23 @@ const approveC3 = {
   when: () => true,
   compare(actual, golden) {
     expect(actual.calls).toEqual(golden.calls);
-    const db = JSON.parse(JSON.stringify(actual.db));
-    let seen = 0;
-    for (const doc of db.campaignmessages || []) {
-      if (!('errorCode' in doc)) continue;
-      expect(doc.status).toBe('failed');
-      expect(doc.errorCode).toBe('131026');
-      delete doc.errorCode; seen += 1;
-    }
-    expect(seen).toBe(1);
-    expect(db).toEqual(golden.db);
+    const withoutErrorCode = (snapshot) => {
+      const db = JSON.parse(JSON.stringify(snapshot));
+      let seen = 0;
+      for (const doc of db.campaignmessages || []) {
+        if (!('errorCode' in doc)) continue;
+        expect(doc.status).toBe('failed');
+        expect(doc.errorCode).toBe('131026');
+        delete doc.errorCode; seen += 1;
+      }
+      return { db, seen };
+    };
+    const now = withoutErrorCode(actual.db);
+    expect(now.seen).toBe(1);
+    // a golden recorded on a tree that already has this change (a re-recorded one) carries the key as well; the baseline's does not
+    const recorded = withoutErrorCode(golden.db);
+    expect(recorded.seen).toBeLessThanOrEqual(1);
+    expect(now.db).toEqual(recorded.db);
   },
 };
 

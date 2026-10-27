@@ -257,7 +257,7 @@ describe('POST /conversations/:customerId/payment-link', () => {
     expect(mockCreateIntent).toHaveBeenCalledTimes(1);
     expect(mockCreateIntent).toHaveBeenCalledWith({
       amount: 15000, currency: 'sar', automatic_payment_methods: { enabled: true },
-      metadata: { buyerPhone: '966501234567', source: 'inbox_manual_payment_link' },
+      metadata: { buyerPhone: '966501234567', source: 'inbox_manual_payment_link', workspaceId: WS }, // + the customer (tenant) the Stripe webhook credits
     });
     expect(inbox.sendManualMessage).toHaveBeenCalledWith({
       customerId: CUST, workspaceId: WS, performedBy: USER, messageType: 'payment',
@@ -284,7 +284,7 @@ describe('POST /conversations/:customerId/payment-link', () => {
     });
     expect(inbox.sendManualMessage.mock.calls[0][0].body).not.toContain('pwned');
     expect(mockCreateIntent.mock.calls[0][0].currency).toBe('sar');
-    expect(mockCreateIntent.mock.calls[0][0].metadata).toEqual({ buyerPhone: '966501234567', source: 'inbox_manual_payment_link' });
+    expect(mockCreateIntent.mock.calls[0][0].metadata).toEqual({ buyerPhone: '966501234567', source: 'inbox_manual_payment_link', workspaceId: WS });
     expect(mockCustomer.findOne.mock.calls[0][0]).toMatchObject({ _id: CUST, workspaceId: WS });
   });
 

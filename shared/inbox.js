@@ -19,10 +19,11 @@ const Booking          = require('../models/Booking');
 const CampaignMessage  = require('../models/CampaignMessage');
 const WhatsAppMessage  = require('../models/WhatsAppMessage');
 const { waPost }       = require('../utils/whatsapp');
+const escapeRegex      = require('../utils/escapeRegex');
 const { APP_URL }      = require('../utils/config');
 const { money }        = require('../utils/currency');
 const { getCurrency }  = require('../utils/settingsCache');
-const { withWorkspace, scopedFilter, workspaceMatch } = require('./operations');
+const { withWorkspace, scopedFilter, workspaceMatch, stripeWorkspaceMeta } = require('./operations');
 const { oneWordLastname } = require('./localization/nameGuard');
 
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
@@ -146,10 +147,11 @@ async function updateMessageStatus(status, workspaceId) {
 async function listConversations({ workspaceId, filter, search } = {}) {
   const custFilter = withWorkspace({ deletedAt: { $exists: false }, isDemo: { $ne: true } }, workspaceId);
   if (search) {
+    const term = escapeRegex(search); // text to find, never a pattern
     custFilter.$or = [
-      { firstname: { $regex: search, $options: 'i' } },
-      { lastname: { $regex: search, $options: 'i' } },
-      { phone: { $regex: search, $options: 'i' } },
+      { firstname: { $regex: term, $options: 'i' } },
+      { lastname: { $regex: term, $options: 'i' } },
+      { phone: { $regex: term, $options: 'i' } },
     ];
   }
 
@@ -405,7 +407,7 @@ async function sendPaymentLink({ customerId, workspaceId, amount, performedBy })
   const pi = await stripe.paymentIntents.create({
     amount: Math.round(amt * 100), currency: currency.toLowerCase(),
     automatic_payment_methods: { enabled: true },
-    metadata: { buyerPhone: customer.phone, source: 'inbox_manual_payment_link' },
+    metadata: { buyerPhone: customer.phone, source: 'inbox_manual_payment_link', ...stripeWorkspaceMeta(workspaceId || customer.workspaceId) },
   });
 
   const body = `💳 Here's your payment link for ${money(amt, currency)}:\n${APP_URL}/pay/${pi.id}`;

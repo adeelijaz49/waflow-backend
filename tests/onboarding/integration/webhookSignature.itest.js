@@ -19,6 +19,7 @@ process.env.WA_PHONE_ID = PLATFORM_PHONE;
 process.env.WA_TOKEN_ENCRYPTION_KEY = '23'.repeat(32);
 delete process.env.ONBOARDING_WEBHOOK_SIGNATURE;
 delete process.env.ONBOARDING_DROP_UNKNOWN_WABA;
+process.env.WEBHOOK_LOG_BODIES = 'on'; // the legacy handler's whole-message log line is how these tests see that it ran (it is off by default: see the last test)
 
 const request = require('supertest');
 const mongoose = require('mongoose');
@@ -66,7 +67,7 @@ const platformMessage = (phone, text = 'مرحبا TSIG6 👋 hello') => entry(P
 const payload = (...entries) => ({ object: 'whatsapp_business_account', entry: entries });
 
 /** POST the raw JSON; returns the response and the line the LEGACY handler logged for that message (if it ran). */
-async function post(target, body, { signature = 'valid', phone, secret = SECRET } = {}) {
+async function post(target, body, { signature = 'valid', phone, secret = SECRET, id } = {}) {
   const raw = typeof body === 'string' ? body : JSON.stringify(body);
   const lines = [];
   const spy = jest.spyOn(console, 'log').mockImplementation((...a) => { lines.push(a); });
@@ -77,8 +78,10 @@ async function post(target, body, { signature = 'valid', phone, secret = SECRET 
     else if (signature === 'wrong') req.set('X-Hub-Signature-256', sig.computeSignature(raw, 'wrong-secret'));
     const res = await Promise.race([req.send(raw), wait(5000).then(() => { throw new Error('request hung'); })]);
     let logged = null;
-    if (phone) { for (let i = 0; i < 40 && !logged; i += 1) { logged = lines.find((l) => String(l[0]) === `Incoming from ${phone}:`) || null; if (!logged) await wait(25); } }
-    return { res, logged: logged && logged[1], parses: parse.mock.calls.filter((c) => c[0] === raw).length };
+    // the legacy handler's line: the whole message (WEBHOOK_LOG_BODIES=on) or, by default, "Incoming <type> from <masked> (<id>)"
+    const incoming = (l) => String(l[0]) === `Incoming from ${phone}:` || (/^Incoming \w+ from /.test(String(l[0])) && String(l[0]).endsWith(`(${id || `wamid.${phone}`})`));
+    if (phone) { for (let i = 0; i < 40 && !logged; i += 1) { logged = lines.find(incoming) || null; if (!logged) await wait(25); } }
+    return { res, lines, logged: logged && logged[1], parses: parse.mock.calls.filter((c) => c[0] === raw).length };
   } finally { spy.mockRestore(); parse.mockRestore(); }
 }
 
@@ -301,6 +304,31 @@ describe('ruling 1: only a POSITIVE merchant match with a bad signature is rejec
     const { res, logged } = await post(app, body, { signature: 'none', phone });
     expect(res.status).toBe(200);
     expect(logged).toBe(JSON.stringify(body.entry[0].changes[0].value.messages[0], null, 2));
+  });
+
+  test('by default the log carries no phone number or message text (kind, last four digits, message id); WEBHOOK_LOG_BODIES=on logs the whole message', async () => {
+    const phone = '966500030099';
+    const words = 'my address is 12 Palm Street and my card ends 4242';
+    const body = payload(platformMessage(phone, words));
+    const id = 'wamid.HBgLOTY2NTAwMDMwMDk5FQIAEhgg'; // a real WhatsApp id does not contain the number (the fixture's default one does)
+    body.entry[0].changes[0].value.messages[0].id = id;
+    const saved = process.env.WEBHOOK_LOG_BODIES;
+    try {
+      delete process.env.WEBHOOK_LOG_BODIES;
+      const quiet = await post(app, body, { signature: 'none', phone, id });
+      expect(quiet.res.status).toBe(200);
+      const everything = JSON.stringify(quiet.lines);
+      expect(everything).toContain(`Incoming text from ********0099 (${id})`);
+      expect(everything).not.toContain(phone);
+      expect(everything).not.toContain('Palm Street');
+      expect(everything).not.toContain('4242');
+      expect(quiet.logged).toBeUndefined(); // no second argument: no message body
+
+      process.env.WEBHOOK_LOG_BODIES = 'on';
+      const loud = await post(app, body, { signature: 'none', phone, id });
+      expect(loud.logged).toBe(JSON.stringify(body.entry[0].changes[0].value.messages[0], null, 2));
+      expect(loud.logged).toContain('Palm Street');
+    } finally { if (saved === undefined) delete process.env.WEBHOOK_LOG_BODIES; else process.env.WEBHOOK_LOG_BODIES = saved; }
   });
 
   test('log mode never rejects a merchant payload (no signature), enforce rejects it: same payload, both modes', async () => {

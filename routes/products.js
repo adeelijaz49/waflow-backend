@@ -1,11 +1,12 @@
 const router = require('express').Router();
 const Product = require('../models/Product');
+const escapeRegex = require('../utils/escapeRegex');
 
 router.get('/', async (req, res) => {
   try {
     const { search, category, page = 1, limit = 50 } = req.query;
     const filter = { active: true, workspaceId: req.user.workspaceId };
-    if (search) filter.name = { $regex: search, $options: 'i' };
+    if (search) filter.name = { $regex: escapeRegex(search), $options: 'i' };
     if (category) filter.category = category;
     const skip = (page - 1) * limit;
     const [products, total] = await Promise.all([

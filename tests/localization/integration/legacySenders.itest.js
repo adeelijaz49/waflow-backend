@@ -5,6 +5,9 @@ assertThrowawayDb();
 // This suite characterises the sending behaviour as it was BEFORE the 24-hour-window delivery fix (docs/promo-delivery-fix.md), so it
 // runs with the fix's kill switch off. The fix itself is covered by promoWindowRouting.itest.js.
 process.env.PROMO_DELIVERY_FIX = 'off';
+// An unapproved custom message used to fall back to the default message silently; it is now refused (and submitted to Meta)
+// unless this kill switch is on. This suite pins the old behaviour, so it keeps the switch on.
+process.env.PROMO_ENTRY_FALLBACK = 'on';
 
 // DB-backed integration tests for the Arabic delivery of the EXISTING senders (D1): the real shared/operations.js
 // sendPromotion / sendLoyaltyReminders / sendConsentRequests / booking notices and the referral link text run against the

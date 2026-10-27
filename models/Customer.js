@@ -19,6 +19,8 @@ const schema = new mongoose.Schema({
   // is logged to ConsentEvent — never set these directly through ops.updateCustomer.
   marketingConsent:        { type: Boolean, default: false },
   marketingConsentAt:      { type: Date },
+  // Deliberately still ONLY these two values: the precise method (typed START, a button...) lives on the ConsentEvent. A value the
+  // previous release's schema does not know would make every later save of this customer fail there (a STOP included) after a rollback.
   marketingConsentMethod:  { type: String, enum: ['whatsapp_button', 'manual_staff_entry'] },
   marketingConsentAskedAt: { type: Date }, // WhatsApp consent button offered once — prevents re-asking on every order/booking
   deletedAt:      { type: Date }, // set by the internal admin tool's erasure action — PII anonymized, record retained for referential integrity
@@ -34,5 +36,10 @@ const schema = new mongoose.Schema({
   conversationStatus:  { type: String, enum: ['open', 'resolved'], default: 'open' },
   assignedTo:          { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
+
+// Every inbound message and every typed STOP / START looks the sender up by phone across ALL customers (the shared number serves
+// many): a single-field index keeps that lookup from scanning the whole collection as customers grow. (Single-field on purpose:
+// Cosmos DB for MongoDB builds those on an existing collection; compound / unique ones need an empty one.)
+schema.index({ phone: 1 });
 
 module.exports = mongoose.model('Customer', schema);

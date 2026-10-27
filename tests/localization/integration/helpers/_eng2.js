@@ -159,7 +159,8 @@ function normString(s, M) {
   let out = s.replace(ISO_RE, (m) => normDate(m));
   for (const [from, to] of M.subs) if (out.includes(from)) out = out.split(from).join(to);
   out = out.replace(/(?<![0-9a-fA-F])[0-9a-fA-F]{24}(?![0-9a-fA-F])/g, (m) => M.idMap.get(m.toLowerCase()) || '<oid>');
-  out = out.replace(/\bdemo_(?=[0-9a-z]*\d)[0-9a-z]{14,18}\b/g, '<demo-wamid>').replace(/\bdemocarousel_\d{10,14}_[0-9a-z]+/g, '<demo-wamid>');
+  // (a fake demo wamid is demo_<base36 time><random>: it can by chance be all letters, so no digit is required of it)
+  out = out.replace(/\bdemo_[0-9a-z]{14,18}\b/g, '<demo-wamid>').replace(/\bdemocarousel_\d{10,14}_[0-9a-z]+/g, '<demo-wamid>');
   out = out.replace(/\bint_[0-9a-z]{9,16}\b/g, 'int_<id>');
   out = out.replace(/waflow_flow_([0-9a-f]{10})/g, (m, h) => `waflow_flow_<${M.last10.get(h) || 'node'}>`);
   return out;

@@ -3,6 +3,7 @@ const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
 const { sendWinbackTemplate, sendCustomFlowTemplate } = require('../whatsapp');
 const { MARKETING_ELIGIBLE_QUERY } = require('../../shared/consent');
+const { dataScope, ledgerScope } = require('./scope');
 
 const DEFAULT_INACTIVITY_DAYS = 60;
 
@@ -20,7 +21,7 @@ async function findEligible(flow) {
   const cutoff = cutoffFor(flow);
 
   const stale = await Order.aggregate([
-    { $match: { status: { $ne: 'cancelled' } } },
+    { $match: { status: { $ne: 'cancelled' }, ...dataScope(flow) } }, // this flow's workspace only
     { $group: { _id: '$customer', lastOrderAt: { $max: '$createdAt' } } },
     { $match: { lastOrderAt: { $lt: cutoff } } },
   ]);
@@ -32,18 +33,20 @@ async function findEligible(flow) {
   // correctness guarantee (that's FlowEnrollment's partial unique index +
   // the scheduler catching E11000 on a losing concurrent insert).
   const alreadyEnrolled = await FlowEnrollment.find({
-    flow: flow._id, customer: { $in: customerIds }, state: { $in: ['enrolled', 'messaged'] },
+    flow: flow._id, customer: { $in: customerIds }, state: { $in: ['enrolled', 'messaged'] }, ...ledgerScope(flow),
   }).distinct('customer');
   const enrolledSet = new Set(alreadyEnrolled.map(id => id.toString()));
   const remaining = customerIds.filter(id => !enrolledSet.has(id.toString()));
   if (!remaining.length) return [];
 
-  const eligible = await Customer.find({ _id: { $in: remaining }, ...MARKETING_ELIGIBLE_QUERY, isDemo: { $ne: true } }, '_id');
+  const eligible = await Customer.find({ _id: { $in: remaining }, ...MARKETING_ELIGIBLE_QUERY, isDemo: { $ne: true }, ...dataScope(flow) }, '_id');
   return eligible.map(c => ({ customerId: c._id }));
 }
 
 async function revalidate(flow, enrollment) {
-  const customer = await Customer.findById(enrollment.customer);
+  // Scoped to the flow's workspace: an enrollment that points at another workspace's customer (written by the old,
+  // unscoped engine) is closed out instead of messaged.
+  const customer = await Customer.findOne({ _id: enrollment.customer, ...dataScope(flow) });
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   // Demo customers must never receive a real WhatsApp send from an unattended
@@ -54,7 +57,7 @@ async function revalidate(flow, enrollment) {
   if (!customer.marketingConsent) return { outcome: 'exit', reason: 'no_marketing_consent' };
 
   const cutoff = cutoffFor(flow);
-  const mostRecent = await Order.findOne({ customer: customer._id, status: { $ne: 'cancelled' } }).sort({ createdAt: -1 });
+  const mostRecent = await Order.findOne({ customer: customer._id, status: { $ne: 'cancelled' }, ...dataScope(flow) }).sort({ createdAt: -1 });
   // Matches findEligible's own policy (which requires order history to enroll
   // at all) — if their only qualifying orders got cancelled/removed since
   // enrollment, there's no longer a stale relationship to win back.

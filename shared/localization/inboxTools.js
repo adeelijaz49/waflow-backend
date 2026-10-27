@@ -327,14 +327,15 @@ function stripeFailure(deps, err) {
   return stripeUnavailable();
 }
 
-// Same call, same metadata keys as shared/inbox.js#sendPaymentLink.
-async function createPaymentIntent(deps, stripe, { cents, currency, phone }) {
+// Same call, same metadata keys as shared/inbox.js#sendPaymentLink (including the workspaceId the Stripe webhook attributes the
+// payment to).
+async function createPaymentIntent(deps, stripe, { cents, currency, phone, workspaceId }) {
   try {
     const intent = await stripe.paymentIntents.create({
       amount: cents,
       currency: currency.toLowerCase(),
       automatic_payment_methods: { enabled: true },
-      metadata: { buyerPhone: phone, source: 'inbox_manual_payment_link' },
+      metadata: { buyerPhone: phone, source: 'inbox_manual_payment_link', ...(workspaceId ? { workspaceId: String(workspaceId) } : {}) },
     });
     if (!intent || typeof intent.id !== 'string' || !intent.id) throw new Error('no payment intent id returned');
     return intent.id;
@@ -390,7 +391,7 @@ async function sendPaymentLink({ workspaceId, customerId, amount, performedBy } 
 
   return withLock(deps, `payment:${ws}:${id}`, async () => {
     const [{ effectiveLanguage }, currency] = await Promise.all([languageOf(deps, ws, id), resolveCurrency(deps, ws)]);
-    const paymentIntentId = dryRun ? DRY_RUN_PAYMENT_INTENT : await createPaymentIntent(deps, stripe, { cents, currency, phone: customer.phone });
+    const paymentIntentId = dryRun ? DRY_RUN_PAYMENT_INTENT : await createPaymentIntent(deps, stripe, { cents, currency, phone: customer.phone, workspaceId: ws });
     const body = paymentLinkBody(deps, { language: effectiveLanguage, cents, currency, paymentIntentId });
     return deliverPaymentLink(deps, { dryRun, workspaceId: ws, customerId: id, customer, body, performedBy });
   });

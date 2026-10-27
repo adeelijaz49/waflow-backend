@@ -20,9 +20,28 @@ const schema = new mongoose.Schema({
   performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // null when the customer self-served via WhatsApp
   campaignMessageId: { type: mongoose.Schema.Types.ObjectId, ref: 'CampaignMessage' },
   importJobId: { type: mongoose.Schema.Types.ObjectId, ref: 'ImportJob' },
+  // ── Evidence of a customer's own tap (all optional; written only by shared/promoConsentTap.js and the START/STOP
+  // handlers). The point is to be able to show, later, exactly what the customer was asked and what they pressed. ──
+  promotionId:     { type: mongoose.Schema.Types.ObjectId, ref: 'Promotion' },
+  promotionName:   String,
+  messageText:     String, // the message text exactly as the customer saw it
+  buttonLabel:     String, // the label of the button they pressed, as WhatsApp reported it
+  buttonPosition:  Number,
+  buttonAction:    String, // opt_in / opt_out / interested / end_flow
+  templateName:    String,
+  templateVersion: Number,
+  sourceWamid:     String, // the message that was tapped (our outbound wamid)
+  // The customer's own message id. UNIQUE (sparse): a Meta redelivery of the same tap hits E11000 instead of writing a
+  // second event. Never store null here - a sparse index still indexes an explicit null - leave the field out.
+  inboundWamid:    String,
+  tappedAt:        Date,   // WhatsApp's own timestamp of the tap (UTC)
+  receivedAt:      Date,   // when this server processed it
+  signature:       { type: String, enum: ['valid', 'invalid', 'missing', 'unconfigured', null] }, // X-Hub-Signature-256 verdict of the webhook request
 }, { timestamps: { createdAt: true, updatedAt: false } });
 
 schema.index({ customerId: 1, createdAt: -1 });
 schema.index({ workspaceId: 1, type: 1, createdAt: -1 });
+schema.index({ workspaceId: 1, promotionId: 1, type: 1, createdAt: -1 });
+schema.index({ inboundWamid: 1 }, { unique: true, sparse: true });
 
-module.exports = mongoose.model('ConsentEvent', schema);
+module.exports = require('../utils/indexWatch')(mongoose.model('ConsentEvent', schema)); // a failed index build is logged, not silent

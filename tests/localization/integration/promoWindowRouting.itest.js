@@ -565,12 +565,15 @@ describe('GET /api/promotions/:id/delivery', () => {
     expect(both.body.total).toBe(1); // sinceSeconds wins over since
   });
 
-  test('a token without a workspace (the short-lived pre-login one) is refused with 403 and never reads across tenants', async () => {
+  // The short-lived pre-login token is now turned away by requireAuth itself (401, before any route runs); it used to reach the
+  // route, which answered 403. Either way it never reads across tenants (the route keeps its own 403 as a second guard).
+  test('a token without a workspace (the short-lived pre-login one) is refused with 401 and never reads across tenants', async () => {
     const { ws, product } = await world();
     const p = await promo(ws, product);
     const { JWT_SECRET, ISSUER, AUDIENCE } = require('../../../middleware/requireAuth');
     const pre = jwt.sign({ sub: String(ws.user._id), preAuth: true }, JWT_SECRET, { expiresIn: '10m', issuer: ISSUER, audience: AUDIENCE });
     const res = await get(`/api/promotions/${p._id}/delivery`, { Authorization: `Bearer ${pre}` });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(401);
+    expect(res.body.total).toBeUndefined();
   });
 });

@@ -1,13 +1,15 @@
 const axios       = require('axios');
 const FormData    = require('form-data');
 const mime        = require('mime-types');
-const tokenManager = require('./tokenManager');
+const waTenant     = require('./waTenant');
 const { money }    = require('./currency');
 const { getCurrency } = require('./settingsCache');
 
-const WA_PHONE_ID = process.env.WA_PHONE_ID || '1032683093271618';
-const WA_BASE     = 'https://graph.facebook.com/v25.0';
-const WA_MSGS_URL = `${WA_BASE}/${WA_PHONE_ID}/messages`;
+// Which number a call goes out from is NOT decided here any more: every Graph call below resolves its sender (phone id,
+// WABA, access token) ONCE at entry through waTenant.resolveCurrent() - the logged-in customer's own number when it has one,
+// the platform number otherwise (utils/waTenant.js, utils/senderContext.js). For the platform sender every request is exactly
+// what it was before (same method, URL, params, body, headers).
+const WA_BASE = waTenant.GRAPH_BASE; // https://graph.facebook.com/v25.0
 
 // Template names — override via env vars
 // v2 — added the Opt Out quick-reply button. Meta doesn't let an already-
@@ -25,8 +27,6 @@ const OTP_TEMPLATE = process.env.WA_OTP_TEMPLATE || 'waflow_login_otp';
 const INVITE_TEMPLATE = process.env.WA_INVITE_TEMPLATE || 'waflow_team_invite';
 const CONSENT_REQUEST_TEMPLATE = process.env.WA_CONSENT_REQUEST_TEMPLATE || 'waflow_consent_request';
 
-let cachedWabaId = process.env.WA_WABA_ID || null;
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // WhatsApp Cloud API rejects WebP for message images/headers (error 131053).
@@ -35,71 +35,59 @@ function isSupportedImageLink(url) {
   return !!url && !/\.webp(?:$|\?)/i.test(url);
 }
 
-function getHeaders() {
+function headersFor(sender) {
   return {
-    Authorization:  `Bearer ${tokenManager.getToken()}`,
+    Authorization:  `Bearer ${sender.token}`,
     'Content-Type': 'application/json',
   };
 }
 
+// The sender for the work in progress. Throws WhatsAppNumberUnavailable (409) when the customer HAS its own number that
+// cannot be used - never silently the platform number. waba:false: the send path never needs the WABA id (no Graph lookup).
+const currentSender = () => waTenant.resolveCurrent({ waba: false });
+
+// Sender + WABA id for template management, resolved once.
+async function templateTarget() {
+  const sender = await currentSender();
+  const wabaId = await waTenant.wabaIdOf(sender);
+  return { sender, wabaId };
+}
+
 async function waPost(body) {
+  const sender = await currentSender();
   try { const out = require('../shared/localization').localizeOutbound(body); if (out !== body) body = await out; } catch (_) { /* fail open: original payload */ }
-  const res = await axios.post(WA_MSGS_URL, body, { headers: getHeaders() });
+  const res = await axios.post(`${WA_BASE}/${sender.phoneId}/messages`, body, { headers: headersFor(sender) });
   return res.data;
 }
 
+// The WABA id of the number the current work sends from (the platform WABA unless the customer has its own).
 async function getWabaId() {
-  if (cachedWabaId) return cachedWabaId;
-
-  // Approach 1: explicit env var (most reliable — user sets it once)
-  if (process.env.WA_WABA_ID) {
-    cachedWabaId = process.env.WA_WABA_ID;
-    return cachedWabaId;
-  }
-
-  // Approach 2: list WABAs accessible to this token (works with messaging scope)
-  try {
-    const res = await axios.get(`${WA_BASE}/me/whatsapp_business_accounts`, {
-      params: { access_token: tokenManager.getToken() },
-    });
-    const id = res.data?.data?.[0]?.id;
-    if (id) { cachedWabaId = id; return cachedWabaId; }
-  } catch (_) {}
-
-  // Approach 3: query phone number ID for its WABA (requires business_management scope)
-  try {
-    const res = await axios.get(`${WA_BASE}/${WA_PHONE_ID}`, {
-      params: { fields: 'whatsapp_business_account', access_token: tokenManager.getToken() },
-    });
-    const id = res.data?.whatsapp_business_account?.id;
-    if (id) { cachedWabaId = id; return cachedWabaId; }
-  } catch (_) {}
-
-  throw new Error(
-    'Cannot detect WABA ID automatically. ' +
-    'Add WA_WABA_ID to your environment variables. ' +
-    'Find it in: Meta Developer Portal → Your App → WhatsApp → API Setup → WhatsApp Business Account ID.'
-  );
+  return waTenant.wabaIdOf(await currentSender());
 }
 
-async function uploadFileBuffer(buffer, filename, contentType) {
+async function uploadBuffer(sender, buffer, filename, contentType) {
   const form = new FormData();
   form.append('messaging_product', 'whatsapp');
   form.append('file', buffer, { filename, contentType });
   const res = await axios.post(
-    `${WA_BASE}/${WA_PHONE_ID}/media`,
+    `${WA_BASE}/${sender.phoneId}/media`,
     form,
-    { headers: { Authorization: getHeaders().Authorization, ...form.getHeaders() } },
+    { headers: { Authorization: headersFor(sender).Authorization, ...form.getHeaders() } },
   );
   return res.data.id;
 }
 
+async function uploadFileBuffer(buffer, filename, contentType) {
+  return uploadBuffer(await currentSender(), buffer, filename, contentType);
+}
+
 async function uploadMediaFromUrl(imageUrl) {
+  const sender = await currentSender();
   const res = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 10000 });
   const buffer      = Buffer.from(res.data);
   const contentType = res.headers['content-type'] || 'image/jpeg';
   const ext         = mime.extension(contentType) || 'jpg';
-  return uploadFileBuffer(buffer, `product.${ext}`, contentType);
+  return uploadBuffer(sender, buffer, `product.${ext}`, contentType);
 }
 
 // ── Category browsing ───────────────────────────────────────────────────────────
@@ -129,17 +117,44 @@ async function sendCategories(to, categories, promotion) {
 
 // ── Template management ───────────────────────────────────────────────────────
 
-async function listTemplates() {
-  const wabaId = await getWabaId();
-  const res = await axios.get(`${WA_BASE}/${wabaId}/message_templates`, {
-    headers: getHeaders(),
-    params:  { limit: 100, fields: 'name,status,category,language,components,rejected_reason,quality_score' },
-  });
-  return res.data.data || [];
+const TEMPLATE_FIELDS = 'name,status,category,language,components,rejected_reason,quality_score';
+const MAX_TEMPLATE_PAGES = 30; // 30 x 100 templates: far above any WABA's ceiling, but a loop can never run away
+
+// Graph's paging.next is a full URL: only ever followed when it points at Graph itself (the token travels with it).
+function nextTemplatePage(data) {
+  const next = data && data.paging && data.paging.next;
+  if (typeof next !== 'string') return null;
+  try { return new URL(next).hostname === 'graph.facebook.com' ? next : null; } catch (_) { return null; }
 }
 
+// Pages through a WABA's templates. The first request is exactly the old single request (limit 100, same fields); further
+// pages are fetched ONLY when Graph reports paging.next, and only while `stop(page)` says we still need more.
+async function fetchTemplates(sender, wabaId, { name, stop } = {}) {
+  const params = { limit: 100, fields: TEMPLATE_FIELDS };
+  if (name) params.name = name;
+  let res = await axios.get(`${WA_BASE}/${wabaId}/message_templates`, { headers: headersFor(sender), params });
+  const all = [...(res.data.data || [])];
+  for (let page = 1; page < MAX_TEMPLATE_PAGES; page++) {
+    if (stop && stop(all)) break;
+    const next = nextTemplatePage(res.data);
+    if (!next) break;
+    res = await axios.get(next, { headers: headersFor(sender) });
+    all.push(...(res.data.data || []));
+  }
+  return all;
+}
+
+// opts.name narrows the list to templates whose name matches (Graph's `name` filter); no opts = the full list, as before.
+async function listTemplates(opts = {}) {
+  const { sender, wabaId } = await templateTarget();
+  return fetchTemplates(sender, wabaId, { name: opts && opts.name });
+}
+
+// Looked up by name across ALL pages (stops at the first hit), so it keeps working past a WABA's first 100 templates.
 async function getTemplate(name) {
-  const templates = await listTemplates();
+  const { sender, wabaId } = await templateTarget();
+  const found = (list) => list.some(t => t.name === name);
+  const templates = await fetchTemplates(sender, wabaId, { stop: found });
   return templates.find(t => t.name === name) || null;
 }
 
@@ -152,16 +167,27 @@ async function getTemplate(name) {
 // blindly could hammer Meta's API in a loop if the body content is the actual
 // problem; that edge case is out of scope here (visible via Settings' read-only
 // status view, just not auto-fixed).
+//
+// The cache is keyed `${wabaId}|${name}`: a template found/created in one WABA says nothing about another customer's WABA.
 const knownTemplates = new Set();
 
 async function ensureTemplateExists(name, creatorFn) {
-  if (knownTemplates.has(name)) return;
+  let key;
   try {
-    if (await getTemplate(name)) { knownTemplates.add(name); return; }
+    const { wabaId } = await templateTarget();
+    key = `${wabaId}|${name}`;
+  } catch (_) {
+    // No usable sender / WABA (e.g. a customer's own number is broken): nothing can be looked up or created here. Never throws
+    // (same contract as before); the send right after surfaces the real error.
+    return;
+  }
+  if (knownTemplates.has(key)) return;
+  try {
+    if (await getTemplate(name)) { knownTemplates.add(key); return; }
   } catch (_) { /* listTemplates failed — fall through and attempt creation anyway */ }
   try {
     await creatorFn();
-    knownTemplates.add(name);
+    knownTemplates.add(key);
   } catch (_) {
     // Might already exist (race with a concurrent send) or creation genuinely
     // failed — don't cache a failure; the send attempt right after this call
@@ -195,39 +221,45 @@ function bodyComponentWithExample(text) {
 // field — just `add_security_recommendation`), and the OTP code is delivered
 // via a dedicated OTP button rather than a plain quick-reply. Kept separate
 // from createTemplate() rather than bent to fit its marketing-template shape.
-async function createOtpTemplate() {
-  const wabaId = await getWabaId();
-  const res = await axios.post(
-    `${WA_BASE}/${wabaId}/message_templates`,
-    {
-      name: OTP_TEMPLATE,
-      language: 'en',
-      category: 'AUTHENTICATION',
-      components: [
-        { type: 'BODY', add_security_recommendation: true },
-        { type: 'FOOTER', code_expiration_minutes: 5 },
-        { type: 'BUTTONS', buttons: [{ type: 'OTP', otp_type: 'COPY_CODE' }] },
-      ],
-    },
-    { headers: getHeaders() },
-  );
+// Creates a template in the WABA of the sender in force (one resolution per call).
+async function postTemplate(payload) {
+  const { sender, wabaId } = await templateTarget();
+  const res = await axios.post(`${WA_BASE}/${wabaId}/message_templates`, payload, { headers: headersFor(sender) });
   return res.data;
 }
 
+async function createOtpTemplate() {
+  return postTemplate({
+    name: OTP_TEMPLATE,
+    language: 'en',
+    category: 'AUTHENTICATION',
+    components: [
+      { type: 'BODY', add_security_recommendation: true },
+      { type: 'FOOTER', code_expiration_minutes: 5 },
+      { type: 'BUTTONS', buttons: [{ type: 'OTP', otp_type: 'COPY_CODE' }] },
+    ],
+  });
+}
+
+// OTP login codes and team invites are WaFlow's OWN messages (the person has no workspace yet / the invitee is not a customer
+// of the inviter): they always go out from the PLATFORM number and use the platform WABA's templates, even when the request
+// happens to run inside a customer's context.
 async function sendOtpTemplate(to, code) {
-  await ensureTemplateExists(OTP_TEMPLATE, createOtpTemplate);
-  return waPost({
-    messaging_product: 'whatsapp',
-    to,
-    type: 'template',
-    template: {
-      name: OTP_TEMPLATE,
-      language: { code: 'en' },
-      components: [
-        { type: 'body', parameters: [{ type: 'text', text: String(code) }] },
-        { type: 'button', sub_type: 'copy_code', index: '0', parameters: [{ type: 'coupon_code', coupon_code: String(code) }] },
-      ],
-    },
+  return waTenant.runPlatform(async () => {
+    await ensureTemplateExists(OTP_TEMPLATE, createOtpTemplate);
+    return waPost({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: OTP_TEMPLATE,
+        language: { code: 'en' },
+        components: [
+          { type: 'body', parameters: [{ type: 'text', text: String(code) }] },
+          { type: 'button', sub_type: 'copy_code', index: '0', parameters: [{ type: 'coupon_code', coupon_code: String(code) }] },
+        ],
+      },
+    });
   });
 }
 
@@ -239,16 +271,18 @@ async function createInviteTemplate() {
 }
 
 async function sendInviteTemplate(to, workspaceName) {
-  await ensureTemplateExists(INVITE_TEMPLATE, createInviteTemplate);
-  return waPost({
-    messaging_product: 'whatsapp',
-    to,
-    type: 'template',
-    template: {
-      name: INVITE_TEMPLATE,
-      language: { code: 'en' },
-      components: [{ type: 'body', parameters: [{ type: 'text', text: workspaceName }] }],
-    },
+  return waTenant.runPlatform(async () => {
+    await ensureTemplateExists(INVITE_TEMPLATE, createInviteTemplate);
+    return waPost({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: INVITE_TEMPLATE,
+        language: { code: 'en' },
+        components: [{ type: 'body', parameters: [{ type: 'text', text: workspaceName }] }],
+      },
+    });
   });
 }
 
@@ -290,51 +324,41 @@ async function sendConsentRequestTemplate(to, customerName, customerId) {
   });
 }
 
-async function createTemplate(name, bodyText, category = 'MARKETING', buttonLabels = []) {
-  const wabaId = await getWabaId();
-  const components = [
-    bodyComponentWithExample(bodyText),
-    { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
-  ];
+// opts.footer   footer line (default 'Reply STOP to unsubscribe'; null/'' = no footer)
+// opts.language template language code (default 'en')
+async function createTemplate(name, bodyText, category = 'MARKETING', buttonLabels = [], opts = {}) {
+  const footer   = opts && opts.footer !== undefined ? opts.footer : 'Reply STOP to unsubscribe';
+  const language = (opts && opts.language) || 'en';
+  const components = [bodyComponentWithExample(bodyText)];
+  if (footer) components.push({ type: 'FOOTER', text: footer });
   if (buttonLabels.length) {
     components.push({ type: 'BUTTONS', buttons: buttonLabels.map(text => ({ type: 'QUICK_REPLY', text })) });
   }
-  const res = await axios.post(
-    `${WA_BASE}/${wabaId}/message_templates`,
-    { name, language: 'en', category, components },
-    { headers: getHeaders() },
-  );
-  return res.data;
+  return postTemplate({ name, language, category, components });
 }
 
 async function createPromoTemplate() {
   // Variables: {{1}} first name, {{2}} product name, {{3}} discount %, {{4}} sale price, {{5}} promo name, {{6}} currency code
   const body = 'Hi {{1}}! 🏷️ *{{2}}* is now *{{3}}% OFF* — only {{4}} {{6}}.\n\n{{5}}\n\nTap below to browse all products in this sale!';
-  const wabaId = await getWabaId();
-  const res = await axios.post(
-    `${WA_BASE}/${wabaId}/message_templates`,
-    {
-      name: PROMO_TEMPLATE,
-      language: 'en',
-      category: 'MARKETING',
-      components: [
-        bodyComponentWithExample(body),
-        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
-        { type: 'BUTTONS', buttons: [
-          { type: 'QUICK_REPLY', text: 'Shop Now' },
-          { type: 'QUICK_REPLY', text: 'Opt Out' },
-        ] },
-      ],
-    },
-    { headers: getHeaders() },
-  );
-  return res.data;
+  return postTemplate({
+    name: PROMO_TEMPLATE,
+    language: 'en',
+    category: 'MARKETING',
+    components: [
+      bodyComponentWithExample(body),
+      { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+      { type: 'BUTTONS', buttons: [
+        { type: 'QUICK_REPLY', text: 'Shop Now' },
+        { type: 'QUICK_REPLY', text: 'Opt Out' },
+      ] },
+    ],
+  });
 }
 
 async function deleteTemplate(name) {
-  const wabaId = await getWabaId();
+  const { sender, wabaId } = await templateTarget();
   const res = await axios.delete(`${WA_BASE}/${wabaId}/message_templates`, {
-    headers: getHeaders(),
+    headers: headersFor(sender),
     params:  { name },
   });
   return res.data;
@@ -362,85 +386,61 @@ const NO_SHOW_BODY = 'Hi {{1}}! We missed you at your *{{2}}* appointment.\n\nNo
 async function createWinbackTemplate() {
   // Variables: {{1}} first name
   const body = WINBACK_BODY;
-  const wabaId = await getWabaId();
-  const res = await axios.post(
-    `${WA_BASE}/${wabaId}/message_templates`,
-    {
-      name: WINBACK_TEMPLATE,
-      language: 'en',
-      category: 'MARKETING',
-      components: [
-        bodyComponentWithExample(body),
-        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
-        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
-      ],
-    },
-    { headers: getHeaders() },
-  );
-  return res.data;
+  return postTemplate({
+    name: WINBACK_TEMPLATE,
+    language: 'en',
+    category: 'MARKETING',
+    components: [
+      bodyComponentWithExample(body),
+      { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+      { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
+    ],
+  });
 }
 
 async function createPostPurchaseTemplate() {
   // Variables: {{1}} first name, {{2}} loyalty points
   const body = POST_PURCHASE_BODY;
-  const wabaId = await getWabaId();
-  const res = await axios.post(
-    `${WA_BASE}/${wabaId}/message_templates`,
-    {
-      name: POST_PURCHASE_TEMPLATE,
-      language: 'en',
-      category: 'MARKETING',
-      components: [
-        bodyComponentWithExample(body),
-        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
-        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
-      ],
-    },
-    { headers: getHeaders() },
-  );
-  return res.data;
+  return postTemplate({
+    name: POST_PURCHASE_TEMPLATE,
+    language: 'en',
+    category: 'MARKETING',
+    components: [
+      bodyComponentWithExample(body),
+      { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+      { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
+    ],
+  });
 }
 
 async function createPointsNudgeTemplate() {
   // Variables: {{1}} first name, {{2}} loyalty points
   const body = POINTS_NUDGE_BODY;
-  const wabaId = await getWabaId();
-  const res = await axios.post(
-    `${WA_BASE}/${wabaId}/message_templates`,
-    {
-      name: POINTS_NUDGE_TEMPLATE,
-      language: 'en',
-      category: 'MARKETING',
-      components: [
-        bodyComponentWithExample(body),
-        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
-        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
-      ],
-    },
-    { headers: getHeaders() },
-  );
-  return res.data;
+  return postTemplate({
+    name: POINTS_NUDGE_TEMPLATE,
+    language: 'en',
+    category: 'MARKETING',
+    components: [
+      bodyComponentWithExample(body),
+      { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+      { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Shop Now' }] },
+    ],
+  });
 }
 
 async function createNoShowTemplate() {
   // Variables: {{1}} first name, {{2}} service name
   const body = NO_SHOW_BODY;
-  const wabaId = await getWabaId();
-  const res = await axios.post(
-    `${WA_BASE}/${wabaId}/message_templates`,
-    {
-      name: NO_SHOW_TEMPLATE,
-      language: 'en',
-      category: 'MARKETING',
-      components: [
-        bodyComponentWithExample(body),
-        { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
-        { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Rebook Free' }] },
-      ],
-    },
-    { headers: getHeaders() },
-  );
-  return res.data;
+  return postTemplate({
+    name: NO_SHOW_TEMPLATE,
+    language: 'en',
+    category: 'MARKETING',
+    components: [
+      bodyComponentWithExample(body),
+      { type: 'FOOTER', text: 'Reply STOP to unsubscribe' },
+      { type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: 'Rebook Free' }] },
+    ],
+  });
 }
 
 // ── Template sending ──────────────────────────────────────────────────────────
@@ -601,19 +601,23 @@ async function sendPointsNudgeTemplate(to, customerName, loyaltyPoints, flowId, 
 // Template. bodyParams fills {{1}}, {{2}}, ... positionally; buttonPayloads is
 // one payload string per button (0-2), in the same order the template's BUTTONS
 // component was submitted with.
-async function sendCustomFlowTemplate(to, templateName, bodyParams, buttonPayloads) {
+//
+// opts.language is the template's language code (default 'en'): it must match the language the template was submitted in.
+async function sendCustomFlowTemplate(to, templateName, bodyParams, buttonPayloads, opts = {}) {
+  const language = (opts && opts.language) || 'en';
   return waPost({
     messaging_product: 'whatsapp',
     to,
     type: 'template',
     template: {
       name:     templateName,
-      language: { code: 'en' },
+      language: { code: language },
       components: [
-        {
+        // A message with no {{n}} variable has no body component to fill (an empty one is not sent).
+        ...(bodyParams.length ? [{
           type: 'body',
           parameters: bodyParams.map(text => ({ type: 'text', text: String(text) })),
-        },
+        }] : []),
         ...buttonPayloads.map((payload, index) => ({
           type: 'button',
           sub_type: 'quick_reply',

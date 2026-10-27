@@ -264,7 +264,7 @@ describe('4) owner-only routes follow the LIVE membership, never the JWT role', 
     }
   });
 
-  test('no token / a garbage token / a pre-auth token never reach the data; the onboarding handlers themselves never answer 401', async () => {
+  test('no token / a garbage token / a pre-auth token never reach the data (requireAuth answers 401 before any onboarding handler runs)', async () => {
     expect((await w.agent.get('/api/onboarding/state')).status).toBe(401);
     expect((await w.agent.get('/api/onboarding/state').set('Authorization', 'Bearer nonsense')).status).toBe(401);
     const jwt = require('jsonwebtoken');
@@ -272,7 +272,8 @@ describe('4) owner-only routes follow the LIVE membership, never the JWT role', 
     const pre = jwt.sign({ sub: t.owner.id, preAuth: true }, JWT_SECRET, { expiresIn: '5m', issuer: ISSUER, audience: AUDIENCE });
     for (const r of allRoutes()) {
       const res = await w.agent[r.method](`/api/onboarding${r.path}`).set('Authorization', `Bearer ${pre}`).send(r.method === 'get' ? undefined : {});
-      expect([r.method, r.path, [401].includes(res.status), res.status < 500]).toEqual([r.method, r.path, false, true]);
+      // The pre-login token has no workspace: requireAuth itself turns it away, so no onboarding handler is ever reached with it.
+      expect([r.method, r.path, res.status]).toEqual([r.method, r.path, 401]);
       expect(JSON.stringify(res.body)).not.toContain(t.ws);
     }
     expect(ctx.graph).toBeTruthy();

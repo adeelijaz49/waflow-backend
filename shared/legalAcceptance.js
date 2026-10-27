@@ -18,7 +18,7 @@ async function latestAcceptedVersions(filter) {
   return bySlug;
 }
 
-async function getAcceptanceStatus({ userId, workspaceId, role }) {
+async function getAcceptanceStatus({ userId, workspaceId, role, actAs = false }) {
   const [personalRows, dpaRow] = await Promise.all([
     latestAcceptedVersions({ userId, documentSlug: { $in: legalDocuments.COMBINED_SLUGS } }),
     LegalAcceptance.findOne({ workspaceId, documentSlug: legalDocuments.DPA_SLUG }).sort({ createdAt: -1 }).lean(),
@@ -35,7 +35,8 @@ async function getAcceptanceStatus({ userId, workspaceId, role }) {
       acceptedVersion: accepted?.documentVersion || null,
     };
   });
-  const requiresCombinedAcceptance = combinedDocuments.some((d) => !d.accepted);
+  // actAs: WaFlow staff entered this customer (shared/platformAdmin.js) - nothing is required of that session.
+  const requiresCombinedAcceptance = !actAs && combinedDocuments.some((d) => !d.accepted);
 
   const dpaDoc = legalDocuments.getDocument(legalDocuments.DPA_SLUG);
   const dpaCurrentVersion = legalDocuments.getCurrentVersion(legalDocuments.DPA_SLUG);
@@ -50,12 +51,19 @@ async function getAcceptanceStatus({ userId, workspaceId, role }) {
   };
   // Only an Owner is ever blocked by the DPA — a non-owner teammate can see
   // its status here but is never required to accept it themselves.
-  const requiresDpaAcceptance = role === 'owner' && !dpaAccepted;
+  const requiresDpaAcceptance = !actAs && role === 'owner' && !dpaAccepted;
 
   return { requiresCombinedAcceptance, requiresDpaAcceptance, combined: { documents: combinedDocuments }, dpa };
 }
 
-async function recordCombinedAcceptance({ userId, workspaceId, role, ipAddress, userAgent }) {
+function refuseActAs() {
+  const err = new Error('WaFlow staff cannot accept legal documents on behalf of a customer');
+  err.statusCode = 403;
+  return err;
+}
+
+async function recordCombinedAcceptance({ userId, workspaceId, role, ipAddress, userAgent, actAs = false }) {
+  if (actAs) throw refuseActAs();
   const rows = legalDocuments.COMBINED_SLUGS.map((slug) => ({
     workspaceId, userId, documentSlug: slug, documentVersion: legalDocuments.getCurrentVersion(slug),
     flow: 'combined_tos_privacy_aup', ipAddress, userAgent,
@@ -64,7 +72,8 @@ async function recordCombinedAcceptance({ userId, workspaceId, role, ipAddress, 
   return getAcceptanceStatus({ userId, workspaceId, role });
 }
 
-async function recordDpaAcceptance({ userId, workspaceId, role, ipAddress, userAgent }) {
+async function recordDpaAcceptance({ userId, workspaceId, role, ipAddress, userAgent, actAs = false }) {
+  if (actAs) throw refuseActAs();
   if (role !== 'owner') {
     const err = new Error('Only the workspace Owner can accept the Data Processing Agreement');
     err.statusCode = 403;

@@ -6,7 +6,8 @@ const schema = new mongoose.Schema({
   codeHash:   { type: String, required: true }, // SHA-256 of the 6-digit code or the magic-link token
   attempts:   { type: Number, default: 0 },
   consumedAt: { type: Date },
-  expiresAt:  { type: Date, required: true },
+  validUntil: { type: Date }, // when the code / link stops working (minutes after it was made); rows written before this field ended at expiresAt
+  expiresAt:  { type: Date, required: true }, // when the ROW is cleaned away (TTL index): a day and an hour, because the rate limits count the rows
 }, { timestamps: true });
 
 schema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

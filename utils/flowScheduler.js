@@ -18,6 +18,9 @@ const Settings = require('../models/Settings');
 const MessageNode = require('../models/MessageNode');
 const triggers = require('./flowTriggers');
 const { canSendMarketing } = require('../shared/consent');
+const senderContext = require('./senderContext');
+const settingsCache = require('./settingsCache');
+const { dataScope, ledgerScope, workspaceOid } = require('./flowTriggers/scope');
 
 const FLOW_SCHEDULER_INTERVAL_MS = +(process.env.FLOW_SCHEDULER_INTERVAL_MS || 5 * 60 * 1000);
 const LOCK_ID = 'flowScheduler';
@@ -25,6 +28,21 @@ const DEFAULT_COOLDOWN_DAYS = 3;
 
 function wamidOf(sendResult) {
   return sendResult?.messages?.[0]?.id;
+}
+
+// One app, many customers: everything a flow does belongs to ITS workspace. Inside this wrapper the WhatsApp number and
+// the currency are the flow's own workspace's (utils/senderContext.js -> utils/waTenant.js, utils/settingsCache.js).
+// A flow with no workspaceId (only reachable by calling an exported single-step function by hand; runSweep skips such
+// a flow) runs with no context, exactly as before.
+function inFlowContext(flow, fn) {
+  const oid = workspaceOid(flow);
+  return oid ? senderContext.run(String(oid), fn) : fn();
+}
+
+// The workspace id to stamp on rows the engine creates (undefined for a flow with no workspaceId: the row is written as before).
+function stampOf(flow) {
+  const oid = workspaceOid(flow);
+  return oid ? { workspaceId: oid } : {};
 }
 
 // Classic Mongo TTL-lock pattern. This is an efficiency/thundering-herd guard
@@ -64,6 +82,7 @@ async function filterByRequiresPriorFlow(flow, candidates) {
     flow: flow.requiresPriorFlowId,
     customer: { $in: customerIds },
     state: { $in: ['messaged', 'exited'] }, // sent (or exited) but never 'completed' — i.e. didn't convert
+    ...ledgerScope(flow),
   }).distinct('customer');
   const eligibleSet = new Set(priorNonConverted.map(id => id.toString()));
 
@@ -79,6 +98,7 @@ async function enrollEligibleCustomers(flow) {
   for (const c of candidates) {
     try {
       await FlowEnrollment.create({
+        ...stampOf(flow), // the flow's workspace: the row must be visible to every workspace-scoped query (reports, taps)
         flow: flow._id, customer: c.customerId,
         sourceModel: c.sourceModel, sourceRef: c.sourceRef,
       });
@@ -93,6 +113,10 @@ async function enrollEligibleCustomers(flow) {
 // then the real send. Exported standalone so tests can exercise concurrency
 // on a single enrollment directly.
 async function processEnrollment(flow, enrollment) {
+  return inFlowContext(flow, () => processEnrollmentInContext(flow, enrollment));
+}
+
+async function processEnrollmentInContext(flow, enrollment) {
   const trigger = triggers[flow.triggerType];
   if (!trigger) return;
 
@@ -106,15 +130,16 @@ async function processEnrollment(flow, enrollment) {
   }
   if (verdict.outcome !== 'proceed') return; // 'skip' — try again next tick
 
-  const settings = await Settings.findOne();
+  // The flow's own workspace's cooldown setting (a flow with no workspaceId keeps reading the first Settings document).
+  const settings = flow.workspaceId ? await settingsCache.getSettings(flow.workspaceId) : await Settings.findOne();
   const cooldownDays = flow.cooldownDaysOverride ?? settings?.flowCooldownDays ?? DEFAULT_COOLDOWN_DAYS;
   const cooldownSince = new Date(Date.now() - cooldownDays * 24 * 60 * 60 * 1000);
   const blockedByOtherFlow = await CampaignMessage.findOne({
-    customer: enrollment.customer, kind: 'flow', flow: { $ne: flow._id }, sentAt: { $gte: cooldownSince },
+    customer: enrollment.customer, kind: 'flow', flow: { $ne: flow._id }, sentAt: { $gte: cooldownSince }, ...ledgerScope(flow),
   });
   if (blockedByOtherFlow) return; // skip this tick only — retried once the cooldown window rolls past
 
-  const customer = await Customer.findById(enrollment.customer);
+  const customer = await Customer.findOne({ _id: enrollment.customer, ...dataScope(flow) });
   if (!customer || !canSendMarketing(customer)) { // defense in depth — most triggers already check this in revalidate
     await FlowEnrollment.findOneAndUpdate(
       { _id: enrollment._id, state: 'enrolled' },
@@ -133,6 +158,7 @@ async function processEnrollment(flow, enrollment) {
   // this flow's message (see shared/localization/flowBridge.js). null / any error = the unchanged English code below.
   let localized = null;
   try { localized = await require('../shared/localization/flowBridge').sendLocalizedFlowMessage({ flow, enrollment: claimed, customer }); } catch (_) { localized = null; }
+  // (the bridge already stamps the flow's workspaceId on the row it returns)
   if (localized && localized.record) {
     await CampaignMessage.create(localized.record).catch(() => {});
     return;
@@ -158,11 +184,13 @@ async function processEnrollment(flow, enrollment) {
     promotionRef = flow.promotionId;
     try {
       const Promotion = require('../models/Promotion');
-      const { resolveApprovedEntryNode, buildPromoEntryNodeParams, resolvePromoItems } = require('../shared/operations');
+      const { resolveApprovedEntryNode, entryNodeParams, resolvePromoItems, buildEntryButtonPayloads } = require('../shared/operations');
       const { sendCustomFlowTemplate } = require('./whatsapp');
 
-      const promotion = await Promotion.findById(flow.promotionId).populate('products').populate('services');
+      const promotion = await Promotion.findOne({ _id: flow.promotionId, ...ledgerScope(flow) }).populate('products').populate('services');
       if (!promotion) throw new Error('Referenced promotion not found');
+      // An "Ask customers to opt in" promotion is sent by hand to customers who have not answered yet - never by a flow.
+      if (promotion.purpose === 'consent_request') throw new Error('A flow cannot send an "Ask customers to opt in" promotion. Pick a normal promotion.');
 
       const entryNode = await resolveApprovedEntryNode(promotion);
       if (!entryNode) throw new Error("This flow's referenced promotion needs an approved custom message before it can send.");
@@ -175,8 +203,10 @@ async function processEnrollment(flow, enrollment) {
       messageNode = entryNode._id;
 
       const items = await resolvePromoItems(promotion);
-      const params = await buildPromoEntryNodeParams(customer, promotion, items);
-      const buttonPayloads = entryNode.buttons.map(b => `msgnode_${entryNode._id}_${b.position}`);
+      const params = await entryNodeParams(customer, promotion, items, entryNode); // as many values as the approved text has slots
+      // msgnode_<node>_<position> for every ordinary button, promo:<promotion>:<action>:<position> for an Opt in / Opt out / Interested
+      // button (the payload the consent tap handler understands): a flow-sent "Opt out" button must really opt the person out.
+      const buttonPayloads = buildEntryButtonPayloads(entryNode, promotion);
       const result = await sendCustomFlowTemplate(customer.phone, entryNode.templateName, params, buttonPayloads);
       wamid = wamidOf(result);
     } catch (err) {
@@ -191,7 +221,7 @@ async function processEnrollment(flow, enrollment) {
     // flow went active.
     let entryNode = null;
     if (flow.entryNodeId) {
-      const node = await MessageNode.findById(flow.entryNodeId);
+      const node = await MessageNode.findOne({ _id: flow.entryNodeId, ...ledgerScope(flow) });
       if (node && node.templateStatus === 'approved') entryNode = node;
     }
     try {
@@ -206,6 +236,7 @@ async function processEnrollment(flow, enrollment) {
   }
 
   await CampaignMessage.create({
+    ...stampOf(flow), // the flow's workspace (delivery callbacks, reports and msgnode_ taps look rows up by it)
     kind: 'flow', flow: flow._id, flowEnrollment: claimed._id, promotion: promotionRef,
     customer: customer._id, phone: customer.phone,
     wamid, messageType: 'template', templateName, messageNode,
@@ -215,16 +246,18 @@ async function processEnrollment(flow, enrollment) {
 
 // Phase B — every currently-enrolled (unsent) FlowEnrollment for this flow.
 async function sendPendingEnrollments(flow) {
-  const pending = await FlowEnrollment.find({ flow: flow._id, state: 'enrolled' });
+  const pending = await FlowEnrollment.find({ flow: flow._id, state: 'enrolled', ...ledgerScope(flow) });
   for (const enrollment of pending) {
     await processEnrollment(flow, enrollment);
   }
 }
 
-async function sweepFlow(flow) {
-  await enrollEligibleCustomers(flow);
-  await sendPendingEnrollments(flow);
-  await Flow.findByIdAndUpdate(flow._id, { lastRunAt: new Date() });
+function sweepFlow(flow) {
+  return inFlowContext(flow, async () => {
+    await enrollEligibleCustomers(flow);
+    await sendPendingEnrollments(flow);
+    await Flow.findByIdAndUpdate(flow._id, { lastRunAt: new Date() });
+  });
 }
 
 async function runSweep() {
@@ -233,9 +266,16 @@ async function runSweep() {
 
   const activeFlows = await Flow.find({ status: 'active' });
   for (const flow of activeFlows) {
+    // A flow with no (or a malformed) workspaceId cannot be tied to one customer: never sweep it, or it would read every customer's data.
+    let hasWorkspace = false;
+    try { hasWorkspace = !!workspaceOid(flow); } catch (_) { /* malformed id: treated as none */ }
+    if (!hasWorkspace) {
+      console.warn(`Flow scheduler: skipping flow ${flow._id} (${flow.triggerType}): it has no workspaceId`);
+      continue;
+    }
     try {
       try { if (await require('../shared/onboarding/sendGate').flowBlocked(flow)) continue; } catch (_) { /* fail open: sweep as before */ }
-      await sweepFlow(flow);
+      await senderContext.run(String(flow.workspaceId), () => sweepFlow(flow)); // this flow's workspace: its own WhatsApp number and currency
     } catch (err) {
       console.error(`Flow scheduler error (flow ${flow._id}, ${flow.triggerType}):`, err.message);
     }

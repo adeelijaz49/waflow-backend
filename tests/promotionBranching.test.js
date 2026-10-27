@@ -72,12 +72,41 @@ describe('promotion branching: entry send (entryNodeId)', () => {
     }
   });
 
-  test('a promotion with an unapproved entryNodeId falls back to the fixed default', async () => {
+  // An unapproved custom message is no longer replaced by the default message silently: the send is refused with a typed
+  // error BEFORE any customer is touched (a message that was never submitted is also submitted to Meta - covered with a
+  // stubbed Meta in localization/integration/consentPromo.itest.js; this suite has no stub, so it uses a message that is already
+  // waiting for approval). PROMO_ENTRY_FALLBACK=on restores the old fallback.
+  test('a promotion with an unapproved entryNodeId is blocked (TEMPLATE_NOT_APPROVED) and nothing is sent', async () => {
     const node = await MessageNode.create({
       ownerType: 'promotion', ownerId: promotion._id, isEntryNode: true, bodyText: 'Hi {{1}}!',
       templateStatus: 'pending', buttons: [],
     });
     await Promotion.findByIdAndUpdate(promotion._id, { entryNodeId: node._id });
+    const before = await CampaignMessage.countDocuments({ promotion: promotion._id });
+    const savedFallback = process.env.PROMO_ENTRY_FALLBACK;
+    delete process.env.PROMO_ENTRY_FALLBACK;
+    try {
+      await expect(ops.sendPromotion({ promotionId: promotion._id, customerIds: [customer._id] }))
+        .rejects.toMatchObject({ code: 'TEMPLATE_NOT_APPROVED', status: 409, templateStatus: 'pending', submittedNow: false });
+      // refused before the customer loop: no message row was written
+      expect(await CampaignMessage.countDocuments({ promotion: promotion._id })).toBe(before);
+      // the intended send is remembered, so the screen can offer it once the message is approved
+      const saved = await Promotion.findById(promotion._id);
+      expect(saved.sendRequest.customerIds.map(String)).toEqual([String(customer._id)]);
+    } finally {
+      if (savedFallback === undefined) delete process.env.PROMO_ENTRY_FALLBACK; else process.env.PROMO_ENTRY_FALLBACK = savedFallback;
+      await Promotion.findByIdAndUpdate(promotion._id, { $unset: { entryNodeId: 1, sendRequest: 1 } });
+    }
+  });
+
+  test('with PROMO_ENTRY_FALLBACK=on an unapproved entryNodeId falls back to the fixed default, as it used to', async () => {
+    const node = await MessageNode.create({
+      ownerType: 'promotion', ownerId: promotion._id, isEntryNode: true, bodyText: 'Hi {{1}}!',
+      templateStatus: 'pending', buttons: [],
+    });
+    await Promotion.findByIdAndUpdate(promotion._id, { entryNodeId: node._id });
+    const savedFallback = process.env.PROMO_ENTRY_FALLBACK;
+    process.env.PROMO_ENTRY_FALLBACK = 'on';
     try {
       const res = await ops.sendPromotion({ promotionId: promotion._id, customerIds: [customer._id] });
       expect(res.sentCount + res.errors.length).toBe(1);
@@ -91,8 +120,8 @@ describe('promotion branching: entry send (entryNodeId)', () => {
       expect(cm.templateName).not.toBe('waflow_promo_test_custom');
       expect(cm.messageNode).toBeFalsy();
     } finally {
+      if (savedFallback === undefined) delete process.env.PROMO_ENTRY_FALLBACK; else process.env.PROMO_ENTRY_FALLBACK = savedFallback;
       await Promotion.findByIdAndUpdate(promotion._id, { $unset: { entryNodeId: 1 } });
-      await MessageNode.findByIdAndDelete(node._id);
     }
   });
 });

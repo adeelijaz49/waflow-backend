@@ -1,6 +1,7 @@
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
 const { MARKETING_ELIGIBLE_QUERY } = require('../../shared/consent');
+const { dataScope, ledgerScope } = require('./scope');
 
 // DEFECT-03 §8.1: "Points threshold — customer earns more than [1000] points."
 // A value-crossing trigger, not a recurring reminder (unlike
@@ -14,6 +15,7 @@ async function findEligible(flow) {
     loyaltyPoints: { $gte: threshold },
     ...MARKETING_ELIGIBLE_QUERY,
     isDemo: { $ne: true },
+    ...dataScope(flow), // this flow's workspace only
   }, '_id');
   if (!qualifying.length) return [];
 
@@ -23,7 +25,7 @@ async function findEligible(flow) {
   // excludes ANY prior enrollment ever, live or resolved, matching the
   // one-time "crossing" semantics above.
   const everEnrolled = await FlowEnrollment.find({
-    flow: flow._id, customer: { $in: customerIds },
+    flow: flow._id, customer: { $in: customerIds }, ...ledgerScope(flow),
   }).distinct('customer');
   const enrolledSet = new Set(everEnrolled.map(id => id.toString()));
 
@@ -33,7 +35,7 @@ async function findEligible(flow) {
 }
 
 async function revalidate(flow, enrollment) {
-  const customer = await Customer.findById(enrollment.customer);
+  const customer = await Customer.findOne({ _id: enrollment.customer, ...dataScope(flow) }); // this flow's workspace only
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };

@@ -13,8 +13,17 @@ const AdminAuditLog = require('../models/AdminAuditLog');
 const { trackActivity, checkBreach } = require('../utils/breachAlert');
 const { toWesternDigits } = require('../shared/localization/arabicText');
 
+// Every value interpolated into these pages is escaped: customer names are tenant-controlled and inbound WhatsApp profile names
+// (set by any WhatsApp user) become Customer.firstname, so an unescaped value is a stored XSS against whoever uses this page
+// with the staff credential. layout()'s body argument is HTML built from escaped parts; its title is plain text, escaped there.
+function esc(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function layout(title, body) {
-  return `<!doctype html><html><head><title>${title} — Waflow Internal Admin</title>
+  return `<!doctype html><html><head><title>${esc(title)} — Waflow Internal Admin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   body{font-family:system-ui,sans-serif;background:#0b0f14;color:#e6e6e6;margin:0;padding:2rem}
@@ -32,7 +41,7 @@ function layout(title, body) {
   label{display:block;font-size:.8rem;color:#9aa4af;margin-bottom:.25rem}
 </style></head><body>
 <div class="muted"><a href="/internal-admin">&larr; Search</a></div>
-<h1>${title}</h1>
+<h1>${esc(title)}</h1>
 ${body}
 </body></html>`;
 }
@@ -68,13 +77,13 @@ router.get('/customers', async (req, res) => {
 
   const rows = customers.map(c => `
     <tr>
-      <td><a href="/internal-admin/customers/${c._id}">${c.firstname} ${c.lastname}</a>${c.deletedAt ? ' <span class="muted">(deleted)</span>' : ''}</td>
-      <td>${c.phone}</td><td>${c.email || ''}</td><td>${wsName[String(c.workspaceId)] || c.workspaceId}</td>
+      <td><a href="/internal-admin/customers/${esc(c._id)}">${esc(c.firstname)} ${esc(c.lastname)}</a>${c.deletedAt ? ' <span class="muted">(deleted)</span>' : ''}</td>
+      <td>${esc(c.phone)}</td><td>${esc(c.email)}</td><td>${esc(wsName[String(c.workspaceId)] || c.workspaceId)}</td>
     </tr>`).join('');
 
   res.send(layout('Search results', `
     <div class="card">
-      <p class="muted">${customers.length} match${customers.length === 1 ? '' : 'es'} for "${q}"</p>
+      <p class="muted">${customers.length} match${customers.length === 1 ? '' : 'es'} for "${esc(q)}"</p>
       <table><thead><tr><th>Name</th><th>Phone</th><th>Email</th><th>Workspace</th></tr></thead><tbody>${rows}</tbody></table>
     </div>
   `));
@@ -95,24 +104,24 @@ router.get('/customers/:id', async (req, res) => {
   ]);
 
   const eventRows = events.map(e => `
-    <tr><td>${new Date(e.createdAt).toLocaleString()}</td><td>${e.type}</td><td>${e.method}</td><td>${e.source || ''}</td></tr>
+    <tr><td>${esc(new Date(e.createdAt).toLocaleString())}</td><td>${esc(e.type)}</td><td>${esc(e.method)}</td><td>${esc(e.source)}</td></tr>
   `).join('') || '<tr><td colspan="4" class="muted">No consent events recorded.</td></tr>';
 
-  res.send(layout(`${customer.firstname} ${customer.lastname}`, `
+  res.send(layout(`${customer.firstname || ''} ${customer.lastname || ''}`, `
     <div class="card">
-      <p class="muted">Workspace: ${workspace?.name || customer.workspaceId} ${customer.isDemo ? '· <strong>DEMO</strong>' : ''} ${customer.deletedAt ? '· <strong>DELETED</strong>' : ''}</p>
+      <p class="muted">Workspace: ${esc(workspace?.name || customer.workspaceId)} ${customer.isDemo ? '· <strong>DEMO</strong>' : ''} ${customer.deletedAt ? '· <strong>DELETED</strong>' : ''}</p>
       <p>Orders: ${orderCount} · Bookings: ${bookingCount}</p>
-      <p>Marketing consent: ${customer.marketingConsent ? `Yes (${customer.marketingConsentMethod || 'unknown'})` : 'No'} · Opted out: ${customer.optedOut ? 'Yes' : 'No'}</p>
+      <p>Marketing consent: ${customer.marketingConsent ? `Yes (${esc(customer.marketingConsentMethod || 'unknown')})` : 'No'} · Opted out: ${customer.optedOut ? 'Yes' : 'No'}</p>
     </div>
 
     <div class="card">
       <h2 style="font-size:1rem">Correct details</h2>
-      <form method="POST" action="/internal-admin/customers/${customer._id}/correct">
-        <div class="field"><label>First name</label><input name="firstname" value="${customer.firstname || ''}"></div>
-        <div class="field"><label>Last name</label><input name="lastname" value="${customer.lastname || ''}"></div>
-        <div class="field"><label>Phone</label><input name="phone" value="${customer.phone || ''}"></div>
-        <div class="field"><label>Email</label><input name="email" value="${customer.email || ''}"></div>
-        <div class="field"><label>Address</label><input name="address" value="${customer.address || ''}"></div>
+      <form method="POST" action="/internal-admin/customers/${esc(customer._id)}/correct">
+        <div class="field"><label>First name</label><input name="firstname" value="${esc(customer.firstname)}"></div>
+        <div class="field"><label>Last name</label><input name="lastname" value="${esc(customer.lastname)}"></div>
+        <div class="field"><label>Phone</label><input name="phone" value="${esc(customer.phone)}"></div>
+        <div class="field"><label>Email</label><input name="email" value="${esc(customer.email)}"></div>
+        <div class="field"><label>Address</label><input name="address" value="${esc(customer.address)}"></div>
         <button type="submit">Save correction</button>
       </form>
     </div>
@@ -126,7 +135,7 @@ router.get('/customers/:id', async (req, res) => {
     <div class="card">
       <h2 style="font-size:1rem">Delete this customer's data</h2>
       <p class="warn">Anonymizes name/phone/email/address/notes on this record. Orders, bookings, and message-send history are kept for financial record-keeping — some of those already-existing records (e.g. delivery notifications) retain the original phone number, matching how this data is stored elsewhere in the app. This cannot be undone.</p>
-      <form method="POST" action="/internal-admin/customers/${customer._id}/delete" onsubmit="return confirm('Anonymize this customer\\'s PII? This cannot be undone.');">
+      <form method="POST" action="/internal-admin/customers/${esc(customer._id)}/delete" onsubmit="return confirm('Anonymize this customer\\'s PII? This cannot be undone.');">
         <div class="field"><label>Reason</label><input name="reason" placeholder="e.g. customer data-deletion request"></div>
         <button type="submit" class="danger">Delete customer data</button>
       </form>

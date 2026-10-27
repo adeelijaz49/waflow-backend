@@ -25,13 +25,22 @@ async function send(payload) {
   return data;
 }
 
+// Anything a person typed (a customer's name, a support message, a contact address) is text, never markup: it is escaped before it
+// goes into the HTML of a message that other people open, and stripped of line breaks before it goes into a subject line.
+function escapeHtml(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function oneLine(value) {
+  return String(value == null ? '' : value).replace(/[\r\n\u{2028}\u{2029}]+/gu, ' ').trim();
+}
+
 async function sendMagicLinkEmail(to, link) {
   return send({
     from: FROM,
     to,
     subject: 'Your Waflow login link',
     html: `<p>Click below to log in to Waflow. This link expires in 15 minutes and can only be used once.</p>
-<p><a href="${link}">${link}</a></p>
+<p><a href="${escapeHtml(link)}">${escapeHtml(link)}</a></p>
 <p>If you didn't request this, you can ignore this email.</p>`,
   });
 }
@@ -40,9 +49,9 @@ async function sendInviteEmail(to, workspaceName, link) {
   return send({
     from: FROM,
     to,
-    subject: `You've been invited to join ${workspaceName} on Waflow`,
-    html: `<p>You've been invited to join <strong>${workspaceName}</strong> on Waflow.</p>
-<p><a href="${link}">Log in with this email address</a> to get started — no password needed.</p>`,
+    subject: `You've been invited to join ${oneLine(workspaceName)} on Waflow`,
+    html: `<p>You've been invited to join <strong>${escapeHtml(workspaceName)}</strong> on Waflow.</p>
+<p><a href="${escapeHtml(link)}">Log in with this email address</a> to get started — no password needed.</p>`,
   });
 }
 
@@ -53,13 +62,13 @@ async function sendSupportTicketEmail({ workspaceName, userLabel, contactEmail, 
     from: FROM,
     to: SUPPORT_DESK_EMAIL,
     replyTo: contactEmail,
-    subject: `Support request from ${workspaceName}`,
-    html: `<p><strong>Workspace:</strong> ${workspaceName}</p>
-<p><strong>From:</strong> ${userLabel}</p>
-<p><strong>Contact email:</strong> ${contactEmail}</p>
+    subject: `Support request from ${oneLine(workspaceName)}`,
+    html: `<p><strong>Workspace:</strong> ${escapeHtml(workspaceName)}</p>
+<p><strong>From:</strong> ${escapeHtml(userLabel)}</p>
+<p><strong>Contact email:</strong> ${escapeHtml(contactEmail)}</p>
 <p><strong>Message:</strong></p>
-<p>${message.replace(/\n/g, '<br>')}</p>`,
+<p>${escapeHtml(message).replace(/\r?\n/g, '<br>')}</p>`,
   });
 }
 
-module.exports = { sendMagicLinkEmail, sendInviteEmail, sendSupportTicketEmail };
+module.exports = { sendMagicLinkEmail, sendInviteEmail, sendSupportTicketEmail, escapeHtml };

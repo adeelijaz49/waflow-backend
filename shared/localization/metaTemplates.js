@@ -335,13 +335,14 @@ function sameOrigin(candidate, origin) {
 // ── Graph client ──────────────────────────────────────────────────────────
 // deps (all optional; defaults are the real thing, loaded lazily):
 //   http        axios-like { get, post }
-//   getToken    () => token             (default utils/tokenManager.getToken)
-//   getWabaId   async () => wabaId      (default utils/whatsapp.getWabaId)
+//   getToken    () => token             (default: the token of the sender in progress - utils/waTenant.resolveCurrent: the platform
+//                                        token unless the customer has a WhatsApp number of its own)
+//   getWabaId   async () => wabaId      (default utils/whatsapp.getWabaId, per sender as well)
 //   baseUrl, timeoutMs
 function createMetaClient(deps = {}) {
   let http = deps.http;
   const client = () => { if (!http) http = require('axios'); return http; };
-  const getToken = deps.getToken || (() => require('../../utils/tokenManager').getToken());
+  const getToken = deps.getToken || (async () => (await require('../../utils/waTenant').resolveCurrent({ waba: false })).token);
   const getWabaId = deps.getWabaId || (() => require('../../utils/whatsapp').getWabaId());
   const base = String(deps.baseUrl || GRAPH_BASE).replace(/\/+$/, '');
   const timeout = deps.timeoutMs || REQUEST_TIMEOUT_MS;

@@ -18,14 +18,34 @@ const mongoose = require('mongoose');
 // keys (targetNodeId here). Passing an explicit Schema instance as the `type`
 // value sidesteps the ambiguity entirely.
 const nextActionSchema = new mongoose.Schema({
-  type: { type: String, enum: ['send_message', 'end_flow', 'apply_discount', 'redeem_points'], required: true },
+  // opt_in / opt_out / interested are the consent actions (entry nodes only, see shared/promoConsentTap.js); end_flow is
+  // what the screen shows as "None".
+  type: { type: String, enum: ['send_message', 'end_flow', 'apply_discount', 'redeem_points', 'opt_in', 'opt_out', 'interested'], required: true },
   targetNodeId: { type: mongoose.Schema.Types.ObjectId, ref: 'MessageNode' }, // only for send_message
+  replyText: { type: String, maxlength: 1000 }, // optional confirmation sent after the tap (consent actions)
 }, { _id: false });
 
+// maxlength 25 is the template quick-reply limit (entry nodes). Follow-up nodes are sent as interactive reply buttons
+// (limit 20): that stricter limit is enforced in shared/operations.js#validateButtons, which knows which node it is.
 const buttonSchema = new mongoose.Schema({
   position: { type: Number, required: true, min: 0, max: 2 },
-  label:    { type: String, required: true, maxlength: 20 },
+  label:    { type: String, required: true, maxlength: 25 },
   nextAction: { type: nextActionSchema, required: true },
+}, { _id: false });
+
+// Exactly what was submitted to Meta for the current template version. A consent record must quote the words the
+// customer saw, not whatever the merchant has typed into the editor since.
+const snapshotButtonSchema = new mongoose.Schema({
+  position:  Number,
+  label:     String,
+  action:    String,
+  replyText: String,
+}, { _id: false });
+const templateSnapshotSchema = new mongoose.Schema({
+  bodyText: String,
+  footer:   String,
+  language: String,
+  buttons:  [snapshotButtonSchema],
 }, { _id: false });
 
 const schema = new mongoose.Schema({
@@ -36,6 +56,15 @@ const schema = new mongoose.Schema({
   bodyText:  { type: String, required: true }, // stores literal {{1}}/{{2}} tokens, same format the existing hardcoded flow bodies use
   templateName:   String, // set once a dynamically-generated template is submitted — only meaningful for entry nodes
   templateStatus: { type: String, enum: ['not_created', 'pending', 'approved', 'rejected'], default: 'not_created' },
+  // Template lifecycle (all optional, written by shared/operations.js and shared/templateApproval.js).
+  templateVersion:        Number,
+  templateSubmittedAt:    Date,
+  templateApprovedAt:     Date,
+  templateRejectedReason: String,
+  templateCategory:       String,
+  templateLastCheckedAt:  Date,
+  templateWabaId:         String, // the WhatsApp Business Account the template was submitted to
+  templateSnapshot:       { type: templateSnapshotSchema },
   depth: { type: Number, default: 0, max: 3 },
   buttons: {
     type: [buttonSchema],

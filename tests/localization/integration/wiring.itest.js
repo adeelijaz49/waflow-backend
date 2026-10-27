@@ -197,7 +197,8 @@ describe('POST /webhook: typed Arabic opt-out vs the existing English flow', () 
     const c = await homeCustomer({ marketingConsent: true, optedOut: true, optedOutAt: new Date() });
     await webhook(c.phone, text('START'));
     await waitFor(async () => (await Customer.findById(c._id).lean()).optedOut === false, { what: 'the English START reinstatement' });
-    expect((await events(c)).map((e) => [e.type, e.source])).toEqual([['consent_reinstated', 'WhatsApp START reply']]);
+    // START from an opted-out customer is a fresh opt-in now (it was recorded as consent_reinstated): same customer state either way
+    expect((await events(c)).map((e) => [e.type, e.source])).toEqual([['consent_given', 'START after opt-out']]);
 
     const before = consentState(await Customer.findById(c._id).lean());
     transport.clearDryRuns();

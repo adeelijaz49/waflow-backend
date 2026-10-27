@@ -595,13 +595,13 @@ describe('sendPaymentLink — the message in the customer\'s language', () => {
 });
 
 describe('sendPaymentLink — the Stripe PaymentIntent', () => {
-  test('is created exactly like the existing action: cents, lower-case currency, automatic payment methods, same metadata keys', async () => {
+  test('is created exactly like the existing action: cents, lower-case currency, automatic payment methods, same metadata keys (+ the workspace the Stripe webhook credits)', async () => {
     const deps = makeDeps();
     await tools.sendPaymentLink({ workspaceId: WS, customerId: CUST, amount: '150.50' }, deps);
     expect(deps.stripe.paymentIntents.create).toHaveBeenCalledTimes(1);
     expect(deps.stripe.paymentIntents.create).toHaveBeenCalledWith({
       amount: 15050, currency: 'sar', automatic_payment_methods: { enabled: true },
-      metadata: { buyerPhone: '966501234567', source: 'inbox_manual_payment_link' },
+      metadata: { buyerPhone: '966501234567', source: 'inbox_manual_payment_link', workspaceId: WS },
     });
   });
 

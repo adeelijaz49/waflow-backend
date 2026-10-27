@@ -68,6 +68,15 @@ const NOT_SENDING = new Set([
   'PUT /api/localization/settings/me',
   'PUT /api/localization/templates/:id',
   'PUT /api/localization/templates/:id/variants/:language',
+  // Super-admin console: customer (tenant) management, a customer's own WhatsApp number, enter/exit. Nothing here sends a message.
+  'DELETE /api/platform/tenants/:id/whatsapp',
+  'PATCH /api/platform/tenants/:id',
+  'POST /api/platform/exit',
+  'POST /api/platform/tenants',
+  'POST /api/platform/tenants/:id/enter',
+  'POST /api/platform/tenants/:id/members',
+  'POST /api/platform/tenants/:id/whatsapp/verify',
+  'PUT /api/platform/tenants/:id/whatsapp',
   // Referral authoring and admin (sending is in the send table)
   'POST /api/referrals/promotions',
   'POST /api/referrals/promotions/:id/customer-links',
@@ -100,6 +109,7 @@ const NOT_SENDING = new Set([
   'POST /api/message-nodes',
   'POST /api/products',
   'POST /api/promotions',
+  'POST /api/promotions/:id/dismiss-send-request',
   'POST /api/services',
   'POST /api/services/:id/slots',
   'POST /api/support',

@@ -11,12 +11,15 @@ const { sendMagicLinkEmail } = require('../utils/email');
 const { FRONTEND_URL } = require('../utils/config');
 const { JWT_SECRET, ISSUER, AUDIENCE } = require('../middleware/requireAuth');
 const { toWesternDigits } = require('../shared/localization/arabicText');
+const { normalizePhone, normalizeEmail, isSuperAdminUser, selfServeSignupAllowed } = require('../shared/platformAdmin');
+const otpLockout = require('../shared/otpLockout');
 
 // Set only in local/CI env, NEVER in Azure App Service production settings —
 // echoes the real code/token back in the response so tests don't need a real
 // WhatsApp/email round trip. Mirrors this app's __test_-prefixed safe-test-data
 // convention elsewhere.
-const TEST_MODE = process.env.AUTH_TEST_MODE === 'true';
+// (Read at each use, not once at load: it is fixed for the life of a real process, and a test can switch it.)
+const testMode = () => process.env.AUTH_TEST_MODE === 'true';
 
 const OTP_TTL_MS = 5 * 60 * 1000;
 const MAGIC_LINK_TTL_MS = 15 * 60 * 1000;
@@ -24,25 +27,39 @@ const MAX_ATTEMPTS = 5;
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RATE_LIMIT_MAX = 3;
 
-function normalizePhone(phone) {
-  return toWesternDigits(String(phone || '')).replace(/\D/g, ''); // IM-D B2a: Arabic-Indic digits accepted
+// A code is usable for OTP_TTL_MS (a link for MAGIC_LINK_TTL_MS): that is `validUntil`. The ROW stays in the database for a day and an
+// hour: the limits count it (3 requests per 10 minutes, and the wrong-guess lockout over 24 hours: shared/otpLockout.js), and the
+// collection's TTL index on `expiresAt` would otherwise delete it five minutes after it was written and quietly shrink those windows.
+const ROW_RETENTION_MS = 25 * 60 * 60 * 1000;
+const challengeTimes = (ttlMs) => ({ validUntil: new Date(Date.now() + ttlMs), expiresAt: new Date(Date.now() + ROW_RETENTION_MS) });
+// Rows written before `validUntil` existed still end at `expiresAt`.
+const stillUsable = () => {
+  const now = new Date();
+  return { $or: [{ validUntil: { $gt: now } }, { validUntil: { $exists: false }, expiresAt: { $gt: now } }] };
+};
+function waitText(ms) {
+  const minutes = Math.max(1, Math.ceil(ms / 60000));
+  if (minutes < 120) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  return `about ${Math.ceil(minutes / 60)} hours`;
 }
-function normalizeEmail(email) {
-  return String(email || '').trim().toLowerCase();
-}
+
 function hashCode(code) {
   return crypto.createHash('sha256').update(code).digest('hex');
 }
 
 async function underRateLimit(contact, method) {
-  if (TEST_MODE) return true; // avoids flaking whenever the test suite reruns within one window
+  if (testMode()) return true; // avoids flaking whenever the test suite reruns within one window
   const since = new Date(Date.now() - RATE_LIMIT_WINDOW_MS);
   const count = await LoginChallenge.countDocuments({ contact, method, createdAt: { $gte: since } });
   return count < RATE_LIMIT_MAX;
 }
 
-function issueSessionToken(userId, workspaceId, role) {
-  return jwt.sign({ sub: String(userId), workspaceId: String(workspaceId), role }, JWT_SECRET, {
+// `user` (optional) is the signed-in User document: a super admin's token carries `sa: true` (a UI hint only - every
+// platform route re-checks the allowlist against the database, see middleware/requireSuperAdmin.js).
+function issueSessionToken(userId, workspaceId, role, user) {
+  const claims = { sub: String(userId), workspaceId: String(workspaceId), role };
+  if (user && isSuperAdminUser(user)) claims.sa = true;
+  return jwt.sign(claims, JWT_SECRET, {
     expiresIn: '30d', issuer: ISSUER, audience: AUDIENCE,
   });
 }
@@ -72,6 +89,7 @@ function workspaceSummary(workspace) {
 
 async function resolveSessionForUser(res, user) {
   const memberships = await Membership.find({ userId: user._id });
+  const superAdmin = isSuperAdminUser(user); // also returned to the app so it can offer the Platform area
 
   if (memberships.length === 0) {
     const contactFilters = [];
@@ -86,8 +104,14 @@ async function resolveSessionForUser(res, user) {
       invite.status = 'accepted';
       await invite.save();
       const workspace = await Workspace.findById(invite.workspaceId);
-      const token = issueSessionToken(user._id, invite.workspaceId, invite.role);
-      return res.json({ token, workspace: workspaceSummary(workspace), role: invite.role });
+      const token = issueSessionToken(user._id, invite.workspaceId, invite.role, user);
+      return res.json({ token, workspace: workspaceSummary(workspace), role: invite.role, superAdmin });
+    }
+
+    // ALLOW_SELF_SERVE_SIGNUP=false: a stranger (no membership, no invite) does not get a workspace of their own - the
+    // customers of this deployment are created by a super admin. Super admins still get one.
+    if (!superAdmin && !selfServeSignupAllowed()) {
+      return res.status(403).json({ error: 'Ask your administrator to invite you.' });
     }
 
     // Explicitly false — this is the one place the onboarding wizard actually
@@ -98,21 +122,22 @@ async function resolveSessionForUser(res, user) {
       onboarding: { completed: false, currentStep: 1 },
     });
     await Membership.create({ userId: user._id, workspaceId: workspace._id, role: 'owner' });
-    const token = issueSessionToken(user._id, workspace._id, 'owner');
-    return res.json({ token, workspace: workspaceSummary(workspace), role: 'owner' });
+    const token = issueSessionToken(user._id, workspace._id, 'owner', user);
+    return res.json({ token, workspace: workspaceSummary(workspace), role: 'owner', superAdmin });
   }
 
   if (memberships.length === 1) {
     const m = memberships[0];
     const workspace = await Workspace.findById(m.workspaceId);
-    const token = issueSessionToken(user._id, m.workspaceId, m.role);
-    return res.json({ token, workspace: workspaceSummary(workspace), role: m.role });
+    const token = issueSessionToken(user._id, m.workspaceId, m.role, user);
+    return res.json({ token, workspace: workspaceSummary(workspace), role: m.role, superAdmin });
   }
 
   const workspaces = await Workspace.find({ _id: { $in: memberships.map(m => m.workspaceId) } });
   const preAuthToken = issuePreAuthToken(user._id);
   res.json({
     chooseWorkspace: true,
+    superAdmin,
     preAuthToken,
     workspaces: workspaces.map(w => ({
       id: w._id, name: w.name,
@@ -133,11 +158,10 @@ router.post('/otp/request', async (req, res) => {
 
     const code = String(crypto.randomInt(100000, 1000000));
     await LoginChallenge.create({
-      method: 'whatsapp_otp', contact: phone, codeHash: hashCode(code),
-      expiresAt: new Date(Date.now() + OTP_TTL_MS),
+      method: 'whatsapp_otp', contact: phone, codeHash: hashCode(code), ...challengeTimes(OTP_TTL_MS),
     });
 
-    if (TEST_MODE) return res.json({ success: true, testCode: code });
+    if (testMode()) return res.json({ success: true, testCode: code });
     try {
       await sendOtpTemplate(phone, code);
     } catch (err) {
@@ -159,19 +183,44 @@ router.post('/otp/verify', async (req, res) => {
     const code = toWesternDigits(String(req.body.code || '')); // IM-D O4: Arabic-Indic digits accepted in the typed code
     if (!phone || !code) return res.status(400).json({ error: 'phone and code are required' });
 
+    // Wrong guesses are counted across every code of this number, not only the latest one (see shared/otpLockout.js).
+    if (!testMode()) {
+      const wait = await otpLockout.waitMs({ model: LoginChallenge, contact: phone, method: 'whatsapp_otp' });
+      if (wait > 0) {
+        res.set('Retry-After', String(Math.ceil(wait / 1000)));
+        return res.status(429).json({ error: `Too many incorrect codes for this number - please wait ${waitText(wait)} and try again, or ask your administrator.` });
+      }
+    }
+
     const challenge = await LoginChallenge.findOne({
-      contact: phone, method: 'whatsapp_otp', consumedAt: null, expiresAt: { $gt: new Date() },
+      contact: phone, method: 'whatsapp_otp', consumedAt: null, ...stillUsable(),
     }).sort({ createdAt: -1 });
     if (!challenge) return res.status(400).json({ error: 'No pending code for this number — request a new one' });
     if (challenge.attempts >= MAX_ATTEMPTS) return res.status(400).json({ error: 'Too many incorrect attempts — request a new code' });
 
-    if (challenge.codeHash !== hashCode(code)) {
-      challenge.attempts += 1;
-      await challenge.save();
-      return res.status(400).json({ error: 'Incorrect code' });
+    // The guess is counted BEFORE it is looked at, in one atomic step: requests sent in parallel cannot all get past the limit on the
+    // same count (a read-then-save counter loses updates, so a burst of guesses would count as one).
+    const taken = await LoginChallenge.findOneAndUpdate(
+      { _id: challenge._id, consumedAt: null, attempts: { $lt: MAX_ATTEMPTS } },
+      { $inc: { attempts: 1 } },
+      { returnDocument: 'after' },
+    );
+    if (!taken) return res.status(400).json({ error: 'Too many incorrect attempts — request a new code' });
+    if (taken.codeHash !== hashCode(code)) return res.status(400).json({ error: 'Incorrect code' });
+
+    // The right code: used exactly once (a second request with it at the same moment finds it gone), and the guess is given back so
+    // that signing in is never counted as a wrong guess.
+    const used = await LoginChallenge.findOneAndUpdate( // (findOneAndUpdate and the returned document: the way every other claim in this app is made)
+      { _id: taken._id, consumedAt: null },
+      { $set: { consumedAt: new Date() }, $inc: { attempts: -1 } },
+      { returnDocument: 'after' },
+    );
+    if (!used) {
+      // A second request with the same right code at the same moment: the first one signed in. This guess was not a wrong one either, so
+      // it is given back too (never below zero).
+      await LoginChallenge.findOneAndUpdate({ _id: taken._id, attempts: { $gt: 0 } }, { $inc: { attempts: -1 } }).catch(() => {});
+      return res.status(400).json({ error: 'No pending code for this number — request a new one' });
     }
-    challenge.consumedAt = new Date();
-    await challenge.save();
 
     let user = await User.findOne({ phone });
     if (!user) user = await User.create({ phone });
@@ -194,11 +243,10 @@ router.post('/magic-link/request', async (req, res) => {
 
     const token = crypto.randomBytes(32).toString('hex');
     await LoginChallenge.create({
-      method: 'email_link', contact: email, codeHash: hashCode(token),
-      expiresAt: new Date(Date.now() + MAGIC_LINK_TTL_MS),
+      method: 'email_link', contact: email, codeHash: hashCode(token), ...challengeTimes(MAGIC_LINK_TTL_MS),
     });
 
-    if (TEST_MODE) return res.json({ success: true, testToken: token });
+    if (testMode()) return res.json({ success: true, testToken: token });
     try {
       await sendMagicLinkEmail(email, `${FRONTEND_URL}/auth/verify?token=${token}`);
     } catch (err) {
@@ -217,7 +265,7 @@ router.post('/magic-link/verify', async (req, res) => {
     if (!token) return res.status(400).json({ error: 'token is required' });
 
     const challenge = await LoginChallenge.findOne({
-      method: 'email_link', codeHash: hashCode(token), consumedAt: null, expiresAt: { $gt: new Date() },
+      method: 'email_link', codeHash: hashCode(token), consumedAt: null, ...stillUsable(),
     });
     if (!challenge) return res.status(400).json({ error: 'This link is invalid or has expired — request a new one' });
     challenge.consumedAt = new Date();
@@ -250,9 +298,9 @@ router.post('/select-workspace', async (req, res) => {
     const membership = await Membership.findOne({ userId: payload.sub, workspaceId });
     if (!membership) return res.status(403).json({ error: "You don't have access to that workspace" });
 
-    const workspace = await Workspace.findById(workspaceId);
-    const token = issueSessionToken(payload.sub, workspaceId, membership.role);
-    res.json({ token, workspace: workspaceSummary(workspace), role: membership.role });
+    const [workspace, user] = await Promise.all([Workspace.findById(workspaceId), User.findById(payload.sub)]);
+    const token = issueSessionToken(payload.sub, workspaceId, membership.role, user);
+    res.json({ token, workspace: workspaceSummary(workspace), role: membership.role, superAdmin: isSuperAdminUser(user) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -290,11 +338,20 @@ router.get('/me', require('../middleware/requireAuth').requireAuth, async (req, 
       Workspace.findById(req.user.workspaceId),
     ]);
     if (!user || !workspace) return res.status(401).json({ error: 'Session no longer valid' });
-    res.json({
+    const body = {
       user: { id: user._id, name: user.name, phone: user.phone, email: user.email },
       workspace: workspaceSummary(workspace),
       role: req.user.role,
-    });
+      // Re-checked against the database on every call (the token's `sa` claim is only a hint), so removing a contact
+      // from SUPER_ADMIN_CONTACTS stops the Platform area showing at the next refresh.
+      superAdmin: isSuperAdminUser(user),
+      // May this session manage the WhatsApp token and templates it sends from (the Settings cards)? The very rule routes/whatsapp.js
+      // enforces (shared/platformStaff.js): platform staff for the platform's account, the owner of a customer for its own account.
+      canManageWhatsApp: await require('../shared/platformStaff').canManageWhatsApp({ user, actAs: !!req.user.actAs, workspaceId: req.user.workspaceId, role: req.user.role }),
+    };
+    // "Enter this customer" sessions (token claim actAs): tell the app who it is looking at so it can show the banner.
+    if (req.user.actAs) body.actingAs = { workspaceId: String(workspace._id), customerName: workspace.name, homeWorkspaceId: null };
+    res.json(body);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

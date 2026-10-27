@@ -170,11 +170,13 @@ describe('typed opt-in / decline words only count while a consent ask is pending
     expect(await inbound(ws, never, textMsg('اشترك'))).toBe(true);
     expect((await Customer.findById(never._id).lean()).marketingConsent).not.toBe(true);
     expect(await events(never)).toHaveLength(0);
-    // someone who consented, opted out, and now comes back IS reinstated (and logged)
+    // someone who consented, opted out, and now comes back IS reinstated (and logged). Since the opt-in buttons / START work, that
+    // comeback is recorded as a FRESH opt-in (consent_given, method whatsapp_start_command) rather than a reinstatement: the
+    // customer asked to hear from the business again, in their own words.
     const back = await fx.makeCustomer(ws.workspaceId, { marketingConsent: true, optedOut: true, optedOutAt: new Date() });
     expect(await inbound(ws, back, textMsg('اشترك'))).toBe(true);
     expect((await Customer.findById(back._id).lean()).optedOut).toBe(false);
-    expect((await events(back)).map((e) => e.type)).toEqual(['consent_reinstated']);
+    expect((await events(back)).map((e) => [e.type, e.method])).toEqual([['consent_given', 'whatsapp_start_command']]);
   });
 });
 

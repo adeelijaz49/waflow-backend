@@ -211,12 +211,26 @@ describe('B. through the real webhook (server.js branches + the Arabic hook)', (
     expect((await reload(primary)).optedOut).toBe(false);
     expect((await reload(dup)).optedOut).toBe(true);
   });
-  test('a different workspace with the same number is never touched by the webhook sweep', async () => {
-    const W2 = (await Q('Workspace').create({ name: 'Another tenant' }))._id;
+  // Several customers (workspaces) now share ONE WhatsApp number: a typed STOP on it cannot say which business it means, so the
+  // phone is opted out in every workspace that sends from that number (shared/crossWorkspaceOptOut.js). This replaces the
+  // earlier rule "a STOP only ever touches the oldest workspace", which was only right while there was a single customer.
+  test('a typed STOP on the shared number opts the phone out in every workspace that sends from it, each with its own ConsentEvent', async () => {
+    const W2 = (await Q('Workspace').create({ name: 'Another tenant (shared number)' }))._id;
     const d = digitsOf();
     const mine = await mk(W, d); const theirs = await mk(W2, `+${d}`);
     await post(envelope(textMsg(d, 'STOP')));
     expect((await reload(mine)).optedOut).toBe(true);
+    expect((await reload(theirs)).optedOut).toBe(true);
+    expect((await events(theirs._id))[0]).toMatchObject({ type: 'consent_withdrawn', method: 'whatsapp_stop_command' });
+    expect(String((await events(theirs._id))[0].workspaceId)).toBe(String(W2));
+  });
+  test('a workspace that sends from a number of its OWN is not touched by a STOP typed on the shared number', async () => {
+    const own = await Q('Workspace').create({ name: 'Own-number tenant', whatsapp: { phoneId: `99${String(Date.now()).slice(-9)}`, enabled: true } });
+    const d = digitsOf();
+    const mine = await mk(W, d); const theirs = await mk(own._id, `+${d}`);
+    await post(envelope(textMsg(d, 'STOP')));
+    expect((await reload(mine)).optedOut).toBe(true);
     expect((await reload(theirs)).optedOut).toBeFalsy();
+    expect(await events(theirs._id)).toHaveLength(0);
   });
 });

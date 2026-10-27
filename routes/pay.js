@@ -166,7 +166,9 @@ router.get('/payment-result', async (req, res) => {
 // ── Explicit cancel from the payment page ────────────────────────────────────
 router.get('/payment-cancelled', async (req, res) => {
   const phone = req.query.phone;
-  if (phone) {
+  // Anyone can open this link with any number in it (it is public), so it acts only for a number that really has a cart waiting - the
+  // buyer who has just left the payment page - and never as a way to send a WhatsApp message to an arbitrary number.
+  if (phone && carts.has(phone)) {
     carts.delete(phone);
     await wa.waPost({
       messaging_product: 'whatsapp', to: phone, type: 'text',

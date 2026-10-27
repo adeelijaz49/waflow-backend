@@ -2,6 +2,10 @@
 // This suite characterises the sending behaviour as it was BEFORE the 24-hour-window delivery fix (docs/promo-delivery-fix.md), so it
 // runs with the fix's kill switch off. The fix itself is covered by promoWindowRouting.itest.js.
 process.env.PROMO_DELIVERY_FIX = 'off';
+// An unapproved custom message used to fall back to the default message silently; it is now refused (and submitted to Meta)
+// unless this kill switch is on. This suite pins the old behaviour, so it keeps the switch on. The new behaviour is covered by
+// consentPromo.itest.js.
+process.env.PROMO_ENTRY_FALLBACK = 'on';
 // WIRING ACCEPTANCE (ACC-BE): the combined end-to-end test of the Arabic wiring phase. The REAL server.js (webhook, Stripe webhook,
 // dashboard routes, hub routes, customer pages) and the REAL shared/operations.js senders run against the THROWAWAY mongod with
 // the axios adapter stubbed - nothing leaves the machine, no real WhatsApp / Meta / Stripe / Anthropic call is possible
@@ -664,11 +668,12 @@ describe('3. Automated flows: promotion-linked flow through the scheduler, taps,
     expect(await followRows(F3.arCustomer)).toHaveLength(1);
     // (b) the English customer of the same flow: the unchanged English follow-up
     reset();
-    // PRE-EXISTING defect IB-13 (report only, decision G6): the English scheduler writes its flow CampaignMessage WITHOUT a workspaceId, and the
-    // production webhook correlates taps by workspace, so a tap on the scheduler's English entry message finds no row. Whatever happens, it is never Arabic.
+    // Defect IB-13 (decision G6) is fixed: the English scheduler used to write its flow CampaignMessage WITHOUT a workspaceId, and the production
+    // webhook correlates taps by workspace, so a tap on the scheduler's English entry message found no row. The row now carries the flow's workspace,
+    // so the tap is found and answered with the unchanged English follow-up. It is never Arabic.
     await tap(F3.enCustomer, F3.enWamid);
     for (const m of to(F3.enCustomer.phone)) expect(W.englishProblems(m)).toEqual([]);
-    expect(await Q('CampaignMessage').findOne({ flow: F3.flow._id, customer: F3.enCustomer._id }).lean()).not.toHaveProperty('workspaceId');
+    expect(String((await Q('CampaignMessage').findOne({ flow: F3.flow._id, customer: F3.enCustomer._id }).lean()).workspaceId)).toBe(String(F3.flow.workspaceId));
     // an English customer whose entry row DOES carry the workspace (a promotion send row): the unchanged English follow-up
     const eng2 = await staleCustomer('en');
     reset();
@@ -1063,7 +1068,10 @@ describe('5. H1: STOP / Opt Out button / Arabic opt-out word opts out EVERY reco
     const other = await fx.makeCustomer(B.workspaceId, { phone: n, firstname: 'Other', lastname: 'Tenant', loyaltyPoints: 50 });
     return { n, records, other };
   }
-  async function expectAllOptedOut({ n, records, other }, label) {
+  // sharedNumberStop: a STOP typed on the SHARED WhatsApp number (workspace B has no number of its own) opts the phone out in
+  // every workspace that sends from that number, so B's record is opted out too, with an event of its own. Any other opt-out
+  // (the Opt Out button of a promotion, the Arabic hook) still only touches the workspace it arrived in.
+  async function expectAllOptedOut({ n, records, other }, label, { sharedNumberStop = false } = {}) {
     for (const r of records) {
       const fresh = await Q('Customer').findById(r._id).lean();
       expect([label, r.phone, !!fresh.optedOut]).toEqual([label, r.phone, true]);
@@ -1071,9 +1079,15 @@ describe('5. H1: STOP / Opt Out button / Arabic opt-out word opts out EVERY reco
       expect([label, r.phone, events.length]).toEqual([label, r.phone, 1]); // its OWN event
     }
     const o = await Q('Customer').findById(other._id).lean();
-    expect(o.optedOut).toBeFalsy();
     expect(o.marketingConsent).toBe(true);
-    expect(await Q('ConsentEvent').countDocuments({ customerId: other._id })).toBe(0);
+    if (sharedNumberStop) {
+      expect(o.optedOut).toBe(true);
+      const otherEvents = await Q('ConsentEvent').find({ customerId: other._id }).lean();
+      expect(otherEvents.map((e) => [e.type, String(e.workspaceId)])).toEqual([['consent_withdrawn', String(B.workspaceId)]]);
+    } else {
+      expect(o.optedOut).toBeFalsy();
+      expect(await Q('ConsentEvent').countDocuments({ customerId: other._id })).toBe(0);
+    }
   }
   async function expectSendersSkip({ records }) {
     const ops = require('../../../shared/operations');
@@ -1086,17 +1100,17 @@ describe('5. H1: STOP / Opt Out button / Arabic opt-out word opts out EVERY reco
     expect(msgs()).toHaveLength(0);
   }
 
-  test('typed STOP from the number: every record of workspace A is opted out with its own ConsentEvent, workspace B untouched, English senders skip them all', async () => {
+  test('typed STOP from the number: every record of workspace A is opted out with its own ConsentEvent, and so is the same number in workspace B (it sends from the same shared number); English senders skip them all', async () => {
     const d = await duplicates();
     await post(textMsg(d.n, 'STOP'));
-    await expectAllOptedOut(d, 'STOP');
-    // the primary reply is the English one for the (English) primary record, exactly one reply
+    await expectAllOptedOut(d, 'STOP', { sharedNumberStop: true });
+    // one reply, however many businesses the STOP reached: the English one for the (English) primary record
     expect(to(d.n)).toHaveLength(1);
     await expectSendersSkip(d);
-    // another workspace's record can still be messaged by ITS workspace (not opted out there)
+    // the other workspace's record is opted out there as well, so ITS workspace's reminders skip it too
     reset();
     const out = await require('../../../shared/operations').sendLoyaltyReminders({ workspaceId: B.workspaceId, customerIds: ids(d.other) });
-    expect(out).toMatchObject({ sentCount: 1, skippedOptedOut: 0 });
+    expect(out).toMatchObject({ sentCount: 0, skippedOptedOut: 1 });
   });
 
   test('the Opt Out button of a promotion (template quick reply and interactive reply) opts out every record', async () => {
@@ -1147,7 +1161,7 @@ describe('5. H1: STOP / Opt Out button / Arabic opt-out word opts out EVERY reco
   test('a record of that number created AFTER the opt-out is excluded by the Arabic path (same-phone rule); the opted-out records keep their state', async () => {
     const d = await duplicates();
     await post(textMsg(d.n, 'STOP'));
-    await expectAllOptedOut(d, 'before');
+    await expectAllOptedOut(d, 'before', { sharedNumberStop: true });
     const late = await fx.makeCustomer(A.workspaceId, { phone: `+${d.n}`, firstname: 'سارة', lastname: 'Late', loyaltyPoints: 70, language: 'ar' });
     const tpl = await arabicTemplate(A.workspaceId, { useCase: 'loyalty_reminder', body: 'أهلاً {name}، رصيدك الحالي من النقاط: {points}، وقيمته {amount}. نسعد بخدمتك دائماً', buttons: [{ ...OPT_OUT_AR }] });
     reset();
@@ -1760,13 +1774,18 @@ describe('10. Tenant isolation: no Arabic leaks across workspaces, no cross-work
     expect((await Q('CustomerLanguage').findOne({ workspaceId: A.workspaceId, customerId: a._id }).lean()).language).toBe('ar');
   });
 
-  test('a customer of workspace B messaging the (single-workspace) webhook is matched only inside workspace A: no B record is touched, no Arabic words reach a B-only number', async () => {
+  // The webhook used to hand EVERY message to the oldest workspace (A), so a message from B's customer was looked up in A only. Each event is
+  // now attributed to its own customer's workspace (shared/whatsappInbound.js: here by the sender's phone, which only B has), so the words are
+  // handled inside B - and never inside A.
+  test('a customer of workspace B messaging the webhook is attributed to B: whatever is recorded is recorded in B, and nothing is created or touched in A', async () => {
     const phone = `96659${String(Date.now()).slice(-7)}`;
     const b = await bCustomer({ phone, firstname: 'Bee' });
-    await post(textMsg(phone, 'إلغاء الاشتراك'), 'Bee'); // arrives at A's webhook; the number is unknown in A
-    expect((await Q('Customer').findById(b._id).lean()).optedOut).toBeFalsy();
-    expect(await Q('ConsentEvent').countDocuments({ customerId: b._id })).toBe(0);
-    expect(await Q('CustomerLanguage').countDocuments({ workspaceId: B.workspaceId, customerId: b._id })).toBe(0);
+    await post(textMsg(phone, 'إلغاء الاشتراك'), 'Bee');
+    const events = await Q('ConsentEvent').find({ phone }).lean();
+    expect(events.every((e) => String(e.workspaceId) === String(B.workspaceId))).toBe(true);
+    expect(await Q('Customer').countDocuments({ workspaceId: A.workspaceId, phone })).toBe(0); // A did not create a customer out of B's phone
+    expect(await Q('CustomerLanguage').countDocuments({ workspaceId: A.workspaceId, customerId: b._id })).toBe(0);
+    expect(await Q('WhatsAppMessage').countDocuments({ workspaceId: A.workspaceId, phone })).toBe(0); // and A's inbox holds nothing of it
   });
 
   test('every sidecar / campaign row written by this whole suite for workspace A belongs to A (no row of A references a customer of B)', async () => {

@@ -63,6 +63,10 @@ router.get('/:id/slots', async (req, res) => {
 
 router.post('/:id/slots', async (req, res) => {
   try {
+    // a slot is only ever created for a service of the signed-in customer (a slot filed under another customer's service id is an orphan
+    // in this workspace that points into theirs)
+    const service = await Service.findOne({ _id: req.params.id, workspaceId: req.user.workspaceId }).select('_id').lean();
+    if (!service) return res.status(404).json({ error: 'Not found' });
     const slot = await TimeSlot.create({ ...req.body, serviceId: req.params.id, workspaceId: req.user.workspaceId });
     res.json(slot);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -70,7 +74,9 @@ router.post('/:id/slots', async (req, res) => {
 
 router.put('/:id/slots/:slotId', async (req, res) => {
   try {
-    const slot = await TimeSlot.findOneAndUpdate({ _id: req.params.slotId, workspaceId: req.user.workspaceId }, req.body, { new: true });
+    // a slot stays with the service it was made for: it is found through that service, and the body cannot move it to another one
+    const { serviceId, ...changes } = req.body || {};
+    const slot = await TimeSlot.findOneAndUpdate({ _id: req.params.slotId, serviceId: req.params.id, workspaceId: req.user.workspaceId }, changes, { new: true });
     res.json(slot);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

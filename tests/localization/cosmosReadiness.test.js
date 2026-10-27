@@ -57,6 +57,36 @@ describe('Cosmos DB sort rules', () => {
   });
 });
 
+// The same rule for the rest of the backend, for the code added by the multi-customer / opt-in build: a literal multi-field
+// .sort({...}) is refused unless it is one of the few that already ran in production (each of those has a compound index of its own).
+describe('Cosmos DB sort rules: no new multi-field sorts anywhere in the backend sources', () => {
+  const EXISTING = new Set([
+    'date:1,startTime:1', // TimeSlot lists (compound index on the model)
+    'scheduledAt:-1,createdAt:-1', // Instagram posts list
+    'countryCode:1,messageCategory:1,effectiveFrom:-1', // WhatsApp rate card
+    'customer:1,createdAt:1', // points ledger rebuild
+  ]);
+  test('every multi-field .sort({...}) in shared/, routes/, utils/, middleware/, models/ and server.js is one that already ran in production', () => {
+    const files = [...sourceFiles('shared'), ...sourceFiles('routes'), ...sourceFiles('utils'), ...sourceFiles('middleware'), ...sourceFiles('models'), 'server.js'];
+    const offenders = [];
+    for (const file of files) {
+      const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+      for (const match of text.matchAll(/\.sort\(\{([^}]*)\}\)/g)) {
+        const parts = match[1].split(',').map((part) => part.replace(/\s+/g, '')).filter(Boolean);
+        if (parts.length > 1 && !EXISTING.has(parts.join(','))) offenders.push(`${file}: .sort({${match[1].trim()}})`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+  test('the consent log, the customers consent column, the platform lists and the template sweeper sort by _id only', () => {
+    for (const file of ['shared/operations.js', 'shared/consent.js', 'shared/templateApproval.js', 'routes/platform.js']) {
+      const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+      expect(`${file}: ${/createdAt:\s*-?1,\s*_id:\s*-?1/.test(text)}`).toBe(`${file}: false`);
+      expect(`${file}: ${/\$sort:\s*\{\s*createdAt:\s*-?1,/.test(text)}`).toBe(`${file}: false`);
+    }
+  });
+});
+
 describe('indexes on collections that already exist in production', () => {
   test('LocalizedTemplate (created by the first build) gets no new index: linkedPromotionId is looked up through the workspaceId index', () => {
     const indexes = require('../../models/LocalizedTemplate').schema.indexes().map(([keys]) => Object.keys(keys).join(','));

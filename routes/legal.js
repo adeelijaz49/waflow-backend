@@ -12,17 +12,23 @@ router.get('/documents/:slug', (req, res) => {
   res.json(doc);
 });
 
+// A super admin 'entering' a customer (req.user.actAs) is WaFlow staff, not that customer: nothing is required of the
+// session, and it must never be able to accept the customer's Data Processing Agreement or terms on their behalf.
+const refuseActAs = (req, res, next) => (req.user && req.user.actAs
+  ? res.status(403).json({ error: 'WaFlow staff cannot accept legal documents on behalf of a customer' })
+  : next());
+
 router.get('/acceptance-status', async (req, res) => {
   try {
     res.json(await legalAcceptance.getAcceptanceStatus({
-      userId: req.user.id, workspaceId: req.user.workspaceId, role: req.user.role,
+      userId: req.user.id, workspaceId: req.user.workspaceId, role: req.user.role, actAs: !!req.user.actAs,
     }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-router.post('/accept/combined', async (req, res) => {
+router.post('/accept/combined', refuseActAs, async (req, res) => {
   try {
     res.json(await legalAcceptance.recordCombinedAcceptance({
       userId: req.user.id, workspaceId: req.user.workspaceId, role: req.user.role,
@@ -33,7 +39,7 @@ router.post('/accept/combined', async (req, res) => {
   }
 });
 
-router.post('/accept/dpa', async (req, res) => {
+router.post('/accept/dpa', refuseActAs, async (req, res) => {
   try {
     res.json(await legalAcceptance.recordDpaAcceptance({
       userId: req.user.id, workspaceId: req.user.workspaceId, role: req.user.role,

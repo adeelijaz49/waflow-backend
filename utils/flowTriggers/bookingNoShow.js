@@ -2,6 +2,7 @@ const Booking = require('../../models/Booking');
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
 const { sendNoShowTemplate, sendCustomFlowTemplate } = require('../whatsapp');
+const { dataScope, ledgerScope } = require('./scope');
 
 const DEFAULT_DELAY_HOURS = 1;
 
@@ -15,13 +16,13 @@ function delayMs(flow) {
 async function findEligible(flow) {
   const cutoff = new Date(Date.now() - delayMs(flow));
   const candidates = await Booking.find(
-    { status: 'no-show', customerId: { $ne: null }, updatedAt: { $lte: cutoff } },
+    { status: 'no-show', customerId: { $ne: null }, updatedAt: { $lte: cutoff }, ...dataScope(flow) }, // this flow's workspace only
     '_id customerId',
   );
   if (!candidates.length) return [];
 
   const bookingIds = candidates.map(b => b._id);
-  const alreadyAttempted = await FlowEnrollment.find({ flow: flow._id, sourceRef: { $in: bookingIds } }).distinct('sourceRef');
+  const alreadyAttempted = await FlowEnrollment.find({ flow: flow._id, sourceRef: { $in: bookingIds }, ...ledgerScope(flow) }).distinct('sourceRef');
   const attemptedSet = new Set(alreadyAttempted.map(id => id.toString()));
 
   return candidates
@@ -30,7 +31,7 @@ async function findEligible(flow) {
 }
 
 async function revalidate(flow, enrollment) {
-  const customer = await Customer.findById(enrollment.customer);
+  const customer = await Customer.findOne({ _id: enrollment.customer, ...dataScope(flow) }); // this flow's workspace only
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   // Demo customers must never receive a real WhatsApp send from an unattended
@@ -40,7 +41,7 @@ async function revalidate(flow, enrollment) {
   if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
   if (!customer.marketingConsent) return { outcome: 'exit', reason: 'no_marketing_consent' };
 
-  const booking = await Booking.findById(enrollment.sourceRef);
+  const booking = await Booking.findOne({ _id: enrollment.sourceRef, ...dataScope(flow) });
   if (!booking) return { outcome: 'exit', reason: 'booking_deleted' };
   // Nothing today updates a no-show booking for an unrelated reason, but if it
   // ever did, this would (harmlessly) push the delay clock out further.
@@ -58,7 +59,7 @@ async function revalidate(flow, enrollment) {
 // flownoshow_ payload the default send uses — that one is hardcoded straight
 // to handleRebookRequest and would bypass branching entirely.
 async function buildSend(flow, enrollment, customer, entryNode) {
-  const booking = await Booking.findById(enrollment.sourceRef).populate('serviceId');
+  const booking = await Booking.findOne({ _id: enrollment.sourceRef, ...dataScope(flow) }).populate('serviceId');
   if (!booking) throw new Error('Booking not found for no-show send');
 
   if (entryNode) {

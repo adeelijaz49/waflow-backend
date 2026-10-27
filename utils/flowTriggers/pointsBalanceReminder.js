@@ -2,6 +2,7 @@ const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
 const { sendPointsNudgeTemplate, sendCustomFlowTemplate } = require('../whatsapp');
 const { MARKETING_ELIGIBLE_QUERY } = require('../../shared/consent');
+const { dataScope, ledgerScope } = require('./scope');
 
 const DEFAULT_INACTIVITY_DAYS = 30;
 
@@ -24,12 +25,13 @@ async function findEligible(flow) {
     loyaltyPointsUpdatedAt: { $lte: cutoff },
     ...MARKETING_ELIGIBLE_QUERY,
     isDemo: { $ne: true },
+    ...dataScope(flow), // this flow's workspace only
   }, '_id');
   if (!stale.length) return [];
 
   const customerIds = stale.map(c => c._id);
   const alreadyEnrolled = await FlowEnrollment.find({
-    flow: flow._id, customer: { $in: customerIds }, state: { $in: ['enrolled', 'messaged'] },
+    flow: flow._id, customer: { $in: customerIds }, state: { $in: ['enrolled', 'messaged'] }, ...ledgerScope(flow),
   }).distinct('customer');
   const enrolledSet = new Set(alreadyEnrolled.map(id => id.toString()));
 
@@ -39,7 +41,7 @@ async function findEligible(flow) {
 }
 
 async function revalidate(flow, enrollment) {
-  const customer = await Customer.findById(enrollment.customer);
+  const customer = await Customer.findOne({ _id: enrollment.customer, ...dataScope(flow) }); // this flow's workspace only
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };

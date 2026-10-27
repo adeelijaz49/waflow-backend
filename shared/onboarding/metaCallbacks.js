@@ -79,7 +79,7 @@ function statusPage(status) {
  */
 function createRouter(deps = {}) {
   const router = express.Router();
-  const secret = () => (deps.appSecret ? deps.appSecret() : (process.env.WA_APP_SECRET ? String(process.env.WA_APP_SECRET) : null));
+  const secret = () => (deps.appSecret ? deps.appSecret() : (process.env.WA_APP_SECRET ? String(process.env.WA_APP_SECRET).trim() || null : null));
   const Conn = () => deps.Connection || require('../../models/WhatsAppConnection');
   const Inbound = () => deps.Inbound || require('../../models/OnboardingInbound');
   const refresh = () => deps.statusRefresh || statusRefresh;

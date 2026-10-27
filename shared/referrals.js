@@ -28,6 +28,7 @@ const SchedulerLock      = require('../models/SchedulerLock');
 
 const { waPost } = require('../utils/whatsapp');
 const tokenManager = require('../utils/tokenManager');
+const waTenant = require('../utils/waTenant');
 const { APP_URL } = require('../utils/config');
 const { canSendMarketing } = require('./consent');
 const { oneWordLastname } = require('./localization/nameGuard');
@@ -83,8 +84,24 @@ function customerName(c) {
 // needs), not the Graph API's internal phone-number-id. Cached in-process
 // for the life of the server — mirrors utils/whatsapp.js#getWabaId's own
 // cache-first pattern, kept here rather than added to that file.
-let cachedWaNumber = null;
-async function getMerchantWaNumber() {
+//
+// Per customer: a workspace with its own WhatsApp number (utils/waTenant.js) gets links to THAT number, never the platform
+// one; everyone else keeps the platform number exactly as before. workspaceId is the owner of the code/link being served
+// (public redirects have no logged-in context); without it the work-in-progress context decides.
+let cachedWaNumber = null; // the platform number
+const tenantWaNumbers = new Map(); // `${workspaceId}|${phoneId}` -> { number, exp }
+const TENANT_NUMBER_TTL_MS = 5 * 60 * 1000;
+async function getMerchantWaNumber(workspaceId) {
+  let sender;
+  try {
+    sender = workspaceId
+      ? await waTenant.resolveSender(workspaceId, { waba: false })
+      : await waTenant.resolveCurrent({ waba: false });
+  } catch (err) {
+    console.error('[referrals] could not resolve the customer WhatsApp number:', err.code || err.message);
+    return ''; // its own number is unusable: no link at all rather than a link to the platform number
+  }
+  if (sender.source === 'tenant') return getTenantWaNumber(sender);
   if (cachedWaNumber) return cachedWaNumber;
   try {
     const res = await axios.get(`${WA_BASE}/${WA_PHONE_ID}`, {
@@ -96,6 +113,26 @@ async function getMerchantWaNumber() {
     console.error('[referrals] could not resolve merchant WhatsApp number:', err.message);
   }
   return cachedWaNumber || (process.env.WA_DISPLAY_NUMBER || '').replace(/[^\d]/g, '');
+}
+
+// The digits of a customer's own number: the display number saved with it, else read once from Graph with ITS token.
+async function getTenantWaNumber(sender) {
+  if (sender.displayNumber) return String(sender.displayNumber).replace(/[^\d]/g, '');
+  const key = `${sender.workspaceId}|${sender.phoneId}`;
+  const hit = tenantWaNumbers.get(key);
+  if (hit && hit.exp > Date.now()) return hit.number;
+  try {
+    const res = await axios.get(`${WA_BASE}/${sender.phoneId}`, {
+      params: { fields: 'display_phone_number' },
+      headers: { Authorization: `Bearer ${sender.token}` },
+    });
+    const number = (res.data?.display_phone_number || '').replace(/[^\d]/g, '');
+    if (number) tenantWaNumbers.set(key, { number, exp: Date.now() + TENANT_NUMBER_TTL_MS });
+    return number;
+  } catch (err) {
+    console.error('[referrals] could not resolve the customer WhatsApp number:', err.message);
+    return '';
+  }
 }
 
 function buildWaMeLink(number, message) {
@@ -158,6 +195,8 @@ async function getOrCreateCustomerCode({ referralPromotionId, customerId, worksp
   if (code) return code;
 
   const promo = await getReferralPromotion({ id: referralPromotionId, workspaceId });
+  // The referrer must be a customer of THIS workspace: the reward (loyalty points, a voucher) is later paid to that customer record.
+  if (workspaceId && !(await Customer.countDocuments({ _id: customerId, workspaceId }))) throw new Error('Customer not found');
   const value = generateCode();
   try {
     code = await ReferralCode.create({
@@ -284,7 +323,7 @@ async function recordClickAndGetRedirect({ code, source, medium, ip, userAgent }
     });
   }
 
-  const number = await getMerchantWaNumber();
+  const number = await getMerchantWaNumber(referralCode.workspaceId);
   const message = `Hi, I'd like to claim my referral offer. Code: ${referralCode.code}`;
   const waLink = number ? buildWaMeLink(number, message) : null;
 
@@ -615,7 +654,7 @@ async function getCustomerReferralSummary({ customerId, workspaceId }) {
   const [asReferrer, asReferred, rewards] = await Promise.all([
     Referral.find(withWorkspace({ referrerCustomerId: customerId }, workspaceId)).sort({ createdAt: -1 }).lean(),
     Referral.findOne(withWorkspace({ referredCustomerId: customerId }, workspaceId)).lean(),
-    ReferralReward.find({ referrerCustomerId: customerId, status: 'issued' }).lean(),
+    ReferralReward.find(withWorkspace({ referrerCustomerId: customerId, status: 'issued' }, workspaceId)).lean(),
   ]);
   return {
     referralLinksShared: asReferrer.length,

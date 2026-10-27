@@ -242,7 +242,9 @@ describe('processEnrollment: everything else is the unchanged English path', () 
     expect(dryRuns()).toHaveLength(0); // no Arabic send
     const [row] = await rows(world);
     expect(row.status).toBe(expectStatus);
-    expect(row.workspaceId).toBeUndefined(); // the English engine row: no workspaceId (IB-13 is report-only)
+    // The English engine row now carries the flow's workspace too (one app, many customers: delivery callbacks, reports and
+    // msgnode_ taps look the row up by it). It used to be written without one (IB-13).
+    expect(String(row.workspaceId)).toBe(String(world.workspaceId));
     return { row, out: messageCalls() };
   };
 
@@ -301,10 +303,18 @@ describe('processEnrollment: everything else is the unchanged English path', () 
     expect(row.statusReason).toMatch(/approved custom message/);
   });
 
-  test('a customer of ANOTHER workspace enrolled by the tenant-blind trigger never gets Arabic', async () => {
+  // The triggers used to be tenant-blind: a customer of ANOTHER workspace could be enrolled in this flow and was sent the English
+  // message (the cross-tenant leak itself). Every lookup is now scoped to the flow's workspace, so that enrollment is closed
+  // out and nothing is sent - in any language.
+  test('a customer of ANOTHER workspace enrolled by the old tenant-blind trigger is exited and gets nothing (no Arabic, no English)', async () => {
     const world = await promotionFlowWorld(ctx.A, { language: 'ar', customerWorkspace: ctx.B.wsId });
-    const { out } = await english(world);
-    expect(out).toHaveLength(1);
+    await run(world);
+    expect(dryRuns()).toHaveLength(0);
+    expect(messageCalls()).toHaveLength(0);
+    expect(await rows(world)).toHaveLength(0);
+    const enrollment = await FlowEnrollment.findById(world.enrollment._id).lean();
+    expect(enrollment.state).toBe('exited');
+    expect(enrollment.exitReason).toBe('customer_deleted');
   });
 
   test('an opted-out customer exits before anything is sent (engine behaviour)', async () => {
@@ -361,7 +371,8 @@ describe('processEnrollment: legacy flows', () => {
     expect(messageCalls()).toHaveLength(1);
     expect(messageCalls()[0].body.template.language).toEqual({ code: 'en' });
     const sent = await CampaignMessage.find({ flow: legacy.flow._id }).lean();
-    expect(sent.filter((r) => r.workspaceId)).toHaveLength(1); // only the Arabic row is workspace-tagged
+    expect(sent).toHaveLength(2); // the Arabic row and the English row: both carry the flow's workspace now
+    expect(sent.every((r) => String(r.workspaceId) === String(legacy.workspaceId))).toBe(true);
   });
 
   test('booking_no_show with {service}: the booking\'s service (reviewed Arabic name first) fills the Arabic message', async () => {

@@ -2,6 +2,7 @@ const Order = require('../../models/Order');
 const Customer = require('../../models/Customer');
 const FlowEnrollment = require('../../models/FlowEnrollment');
 const { sendPostPurchaseTemplate, sendCustomFlowTemplate } = require('../whatsapp');
+const { dataScope, ledgerScope } = require('./scope');
 
 const DEFAULT_DELAY_HOURS = 2;
 const LOOKBACK_SLACK_MS = 24 * 60 * 60 * 1000; // covers a scheduler outage without ever full-scanning Orders
@@ -15,11 +16,11 @@ function delayMs(flow) {
 // (sent, or exited because it got refunded) is never reconsidered.
 async function findEligible(flow) {
   const lookbackSince = new Date(Date.now() - delayMs(flow) - LOOKBACK_SLACK_MS);
-  const candidates = await Order.find({ paymentStatus: 'paid', paidAt: { $gte: lookbackSince } }, '_id customer');
+  const candidates = await Order.find({ paymentStatus: 'paid', paidAt: { $gte: lookbackSince }, ...dataScope(flow) }, '_id customer');
   if (!candidates.length) return [];
 
   const orderIds = candidates.map(o => o._id);
-  const alreadyAttempted = await FlowEnrollment.find({ flow: flow._id, sourceRef: { $in: orderIds } }).distinct('sourceRef');
+  const alreadyAttempted = await FlowEnrollment.find({ flow: flow._id, sourceRef: { $in: orderIds }, ...ledgerScope(flow) }).distinct('sourceRef');
   const attemptedSet = new Set(alreadyAttempted.map(id => id.toString()));
 
   return candidates
@@ -28,7 +29,7 @@ async function findEligible(flow) {
 }
 
 async function revalidate(flow, enrollment) {
-  const customer = await Customer.findById(enrollment.customer);
+  const customer = await Customer.findOne({ _id: enrollment.customer, ...dataScope(flow) }); // this flow's workspace only
   if (!customer) return { outcome: 'exit', reason: 'customer_deleted' };
   if (customer.optedOut) return { outcome: 'exit', reason: 'opted_out' };
   // Demo customers must never receive a real WhatsApp send from an unattended
@@ -38,7 +39,7 @@ async function revalidate(flow, enrollment) {
   if (customer.isDemo) return { outcome: 'exit', reason: 'demo_customer' };
   if (!customer.marketingConsent) return { outcome: 'exit', reason: 'no_marketing_consent' };
 
-  const order = await Order.findById(enrollment.sourceRef);
+  const order = await Order.findOne({ _id: enrollment.sourceRef, ...dataScope(flow) });
   if (!order) return { outcome: 'exit', reason: 'order_deleted' };
   if (order.paymentStatus === 'refunded' || order.paymentStatus === 'failed') {
     return { outcome: 'exit', reason: 'order_refunded' };

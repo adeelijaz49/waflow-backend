@@ -7,6 +7,27 @@ const mongoose = require('mongoose');
 // resulting order once one is attributed — this is what campaign reporting
 // (sent/delivered/clicked/ordered/revenue) and customer WhatsApp history
 // are both built from.
+// What the customer was shown, copied at send time (only for consent-request sends, so ordinary promotion rows stay
+// exactly as they were). A single nested sub-schema: it stays undefined unless set, instead of materialising an empty
+// `buttons: []` on every CampaignMessage.
+const consentButtonSchema = new mongoose.Schema({
+  position: Number,
+  label:    String,
+  action:   String,
+  payload:  String,
+}, { _id: false });
+const consentSnapshotSchema = new mongoose.Schema({
+  promotionName:   String,
+  purpose:         String,
+  templateName:    String,
+  templateVersion: Number,
+  language:        String,
+  bodyTemplate:    String, // the submitted text with its {{n}} placeholders
+  renderedBody:    String, // the text exactly as sent to this customer
+  footer:          String,
+  buttons:         [consentButtonSchema],
+}, { _id: false });
+
 const schema = new mongoose.Schema({
   workspaceId:  { type: mongoose.Schema.Types.ObjectId, ref: 'Workspace', index: true },
   kind:         { type: String, enum: ['promotion', 'booking_notification', 'loyalty_reminder', 'flow', 'consent_request'], required: true, default: 'promotion' },
@@ -36,13 +57,17 @@ const schema = new mongoose.Schema({
   messageNode:          { type: mongoose.Schema.Types.ObjectId, ref: 'MessageNode' },
   respondedAt:          Date,
   clickedButtonPosition: Number,
+  clickedButtonAction:   String, // the action of the LAST button tapped (opt_in / opt_out / interested / end_flow ...)
+  lastTapWamid:          String, // inbound message id of the last tap handled by shared/promoConsentTap.js (redelivery guard for taps that write no ConsentEvent)
+  consentSnapshot:       { type: consentSnapshotSchema }, // consent-request sends only
 }, { timestamps: true });
 
 schema.index({ promotion: 1, customer: 1 });
 schema.index({ flow: 1, customer: 1 });
 schema.index({ customer: 1, createdAt: -1 });
+schema.index({ phone: 1, createdAt: -1 }); // latest message to a phone (inbound routing, tap fallback)
 schema.index({ customer: 1, kind: 1, sentAt: -1 }); // cross-flow cooldown lookup (see utils/flowScheduler.js)
 schema.index({ wamid: 1 }, { unique: true, sparse: true });
 schema.index({ status: 1 });
 
-module.exports = mongoose.model('CampaignMessage', schema);
+module.exports = require('../utils/indexWatch')(mongoose.model('CampaignMessage', schema)); // a failed index build is logged, not silent

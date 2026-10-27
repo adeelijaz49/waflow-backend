@@ -30,12 +30,17 @@
 
 const axios = require('axios');
 const mime  = require('mime-types');
-const tokenManager    = require('./tokenManager');
+const waTenant        = require('./waTenant');
 const { money }       = require('./currency');
 const { getCurrency } = require('./settingsCache');
 
-const WA_BASE  = 'https://graph.facebook.com/v25.0';
+const WA_BASE  = waTenant.GRAPH_BASE; // https://graph.facebook.com/v25.0
 const WA_APP_ID = process.env.WA_APP_ID;
+
+// Every Graph call below uses the sender (token, WABA, phone id) of the work in progress - the customer's own number when it
+// has one, the platform number otherwise - resolved once per call (see utils/waTenant.js). The resumable-upload session is
+// app-level (WA_APP_ID), so a customer's own token must belong to the same Meta app to use it.
+const currentSender = () => waTenant.resolveCurrent({ waba: false });
 
 function carouselTemplateName(cardCount) {
   return `waflow_carousel_${cardCount}`;
@@ -44,8 +49,9 @@ function carouselTemplateName(cardCount) {
 // ── Resumable Upload API — template-creation example images only ──────────────
 // (Send-time card images use the regular Media API via uploadMediaFromUrl,
 // imported from ./whatsapp below — different endpoint, different purpose.)
-async function uploadResumableMedia(imageUrl) {
+async function uploadResumableMedia(imageUrl, sender) {
   if (!WA_APP_ID) throw new Error('WA_APP_ID not set — required to upload carousel template example images');
+  if (!sender) sender = await currentSender();
 
   const imgRes = await axios.get(imageUrl, { responseType: 'arraybuffer', timeout: 10000 });
   const buffer      = Buffer.from(imgRes.data);
@@ -56,14 +62,14 @@ async function uploadResumableMedia(imageUrl) {
       file_name:    `carousel-example.${mime.extension(contentType) || 'jpg'}`,
       file_length:  buffer.length,
       file_type:    contentType,
-      access_token: tokenManager.getToken(),
+      access_token: sender.token,
     },
   });
   const sessionId = startRes.data.id; // "upload:<session-id>"
 
   const uploadRes = await axios.post(`${WA_BASE}/${sessionId}`, buffer, {
     headers: {
-      Authorization:  `OAuth ${tokenManager.getToken()}`,
+      Authorization:  `OAuth ${sender.token}`,
       file_offset:    '0',
       'Content-Type': 'application/octet-stream',
     },
@@ -77,14 +83,14 @@ async function uploadResumableMedia(imageUrl) {
 // it stays a single generic word that reads correctly whether the card is a
 // product, a service, or a points redemption.
 async function createCarouselTemplate(cardCount, exampleImageUrls) {
-  const { getWabaId } = require('./whatsapp');
-  const wabaId = await getWabaId();
+  const sender = await currentSender();
+  const wabaId = await waTenant.wabaIdOf(sender);
   const name   = carouselTemplateName(cardCount);
 
   const handles = [];
   for (let i = 0; i < cardCount; i++) {
     const url = exampleImageUrls[Math.min(i, exampleImageUrls.length - 1)];
-    handles.push(await uploadResumableMedia(url));
+    handles.push(await uploadResumableMedia(url, sender));
   }
 
   const cards = handles.map(handle => ({
@@ -127,26 +133,32 @@ async function createCarouselTemplate(cardCount, exampleImageUrls) {
         { type: 'CAROUSEL', cards },
       ],
     },
-    { headers: { Authorization: `Bearer ${tokenManager.getToken()}`, 'Content-Type': 'application/json' } },
+    { headers: { Authorization: `Bearer ${sender.token}`, 'Content-Type': 'application/json' } },
   );
   return res.data;
 }
 
 // Self-healing "create once" pattern, mirroring ensureTemplateExists in
 // ./whatsapp.js, but with its own local cache — never touches that file's
-// knownTemplates Set.
+// knownTemplates Set. Keyed `${wabaId}|${name}`: each customer WABA has its own templates.
 const knownCarouselTemplates = new Set();
 
 async function ensureCarouselTemplateExists(cardCount, exampleImageUrls) {
   const name = carouselTemplateName(cardCount);
-  if (knownCarouselTemplates.has(name)) return;
+  let key;
+  try {
+    key = `${await waTenant.wabaIdOf(await currentSender())}|${name}`;
+  } catch (_) {
+    return; // no usable sender / WABA: nothing can be looked up or created (never throws, as before); the send surfaces the error
+  }
+  if (knownCarouselTemplates.has(key)) return;
   const { getTemplate } = require('./whatsapp');
   try {
-    if (await getTemplate(name)) { knownCarouselTemplates.add(name); return; }
+    if (await getTemplate(name)) { knownCarouselTemplates.add(key); return; }
   } catch (_) { /* listTemplates failed — fall through and attempt creation anyway */ }
   try {
     await createCarouselTemplate(cardCount, exampleImageUrls);
-    knownCarouselTemplates.add(name);
+    knownCarouselTemplates.add(key);
   } catch (_) {
     // Might already exist (race with a concurrent send) or genuinely failed —
     // don't cache a failure; the next call (preview re-open or actual send)

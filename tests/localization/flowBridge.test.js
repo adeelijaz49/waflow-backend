@@ -982,10 +982,16 @@ describe('the flow engine hook is in place (utils/flowScheduler.js)', () => {
     expect(source).toMatch(/\} catch \(_\) \{ localized = null; \}/);
     expect(source).toMatch(/if \(localized && localized\.record\) \{\s*await CampaignMessage\.create\(localized\.record\)\.catch\(\(\) => \{\}\);\s*return;\s*\}/);
   });
-  test('the English CampaignMessage write after it is untouched: still no workspaceId (IB-13 is report-only)', () => {
+  // The English row used to be written without a workspaceId (IB-13). Several customers now share this engine, so every row the
+  // scheduler writes is stamped with the flow's workspace (delivery callbacks, reports and msgnode_ taps look rows up by it);
+  // that stamp is the ONLY change to the English write: every other field is exactly the old one.
+  test('the English CampaignMessage write is stamped with the flow\'s workspace and otherwise unchanged', () => {
     const tail = source.slice(source.indexOf("let status = 'sent';"));
     const create = tail.slice(tail.indexOf('CampaignMessage.create('));
-    expect(create.slice(0, create.indexOf('.catch'))).not.toMatch(/workspaceId/);
-    expect(source.match(/workspaceId/g)).toBeNull();
+    const written = create.slice(0, create.indexOf('.catch'));
+    expect(written).toMatch(/\.\.\.stampOf\(flow\)/);
+    expect(written.replace(/\.\.\.stampOf\(flow\), \/\/[^\n]*\n\s*/, '').replace(/\s+/g, ' ')).toBe(
+      "CampaignMessage.create({ kind: 'flow', flow: flow._id, flowEnrollment: claimed._id, promotion: promotionRef, customer: customer._id, phone: customer.phone, wamid, messageType: 'template', templateName, messageNode, status, statusReason, sentAt: new Date(), })",
+    );
   });
 });

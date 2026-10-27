@@ -118,11 +118,14 @@ describe('tokens the guard cannot attribute fall through to the route\'s own 401
       expect(res.body).toEqual({ error: 'Session expired or invalid — please log in again' });
     }
   });
-  test('a pre-auth token (no workspace) is never gated by the guard', async () => {
+  test('a pre-auth token (no workspace) is never gated by the guard (requireAuth turns it away with its own 401, as it does a malformed workspace id)', async () => {
     await state.enrol({ workspaceId: enrolled, by: 'cli:test' }, { track: async () => {} });
     state.clearCache();
-    notOurs(await sendRoute(sign({ sub: '507f1f77bcf86cd799439099', preAuth: true })));
-    notOurs(await sendRoute(sign({ sub: '507f1f77bcf86cd799439099', workspaceId: 'not-an-object-id', role: 'owner' })));
+    for (const token of [sign({ sub: '507f1f77bcf86cd799439099', preAuth: true }), sign({ sub: '507f1f77bcf86cd799439099', workspaceId: 'not-an-object-id', role: 'owner' })]) {
+      const res = await sendRoute(token);
+      expect(ACCESS).not.toContain(res.body && res.body.code); // never the guard's answer (402 / a gate code)...
+      expect(res.status).toBe(401); // ...the 401 of requireAuth: no workspace to attribute, so nothing is read or sent
+    }
     await state.unenrol({ workspaceId: enrolled, by: 'cli:test' }, { track: async () => {} });
   });
 });

@@ -1,16 +1,15 @@
 require("dotenv").config();
 const tokenManager = require("./utils/tokenManager");
 const express  = require("express");
-const axios    = require("axios");
 const cors     = require("cors");
-const multer   = require("multer");
-const FormData = require("form-data");
-const mime     = require("mime-types");
 const Stripe   = require("stripe");
 const mongoose = require("mongoose");
 const helmet   = require("helmet");
 
 const { PORT, APP_URL } = require("./utils/config");
+const senderContext = require("./utils/senderContext"); // which customer (workspace) a WhatsApp job is for — see utils/senderContext.js
+const whatsappInbound = require("./shared/whatsappInbound"); // per-event workspace resolution for the webhook
+const metaSignature = require("./shared/onboarding/webhookSignature"); // X-Hub-Signature-256 helpers
 const { carts, pendingCatalogs, pendingAddressReqs, pendingPointsCheckouts, pendingSlotSelections, pendingServiceCheckouts, pendingVariantSelections, pendingPayLaterSlots } = require("./utils/state");
 const { money } = require("./utils/currency");
 const { getCurrency } = require("./utils/settingsCache");
@@ -19,19 +18,23 @@ const FlowEnrollment  = require("./models/FlowEnrollment");
 const MessageNode     = require("./models/MessageNode");
 const Workspace       = require("./models/Workspace");
 const { requireAuth } = require("./middleware/requireAuth");
+const sanitizeBody = require("./middleware/sanitizeBody"); // drops workspaceId/_id/isDemo from bodies, refuses "$operator" keys — see the file
 const { withWorkspace, scopedFilter } = require("./shared/operations");
 const inbox            = require("./shared/inbox"); // WhatsApp Inbox — see shared/inbox.js
 const referrals         = require("./shared/referrals"); // Referral Promotions — see shared/referrals.js
 const instagram         = require("./shared/instagram"); // Instagram Promotion Scheduler — see shared/instagram.js
 const localization      = require("./shared/localization"); // Arabic localisation — see shared/localization/index.js
+const envFlag           = require("./utils/envFlag"); // on/off settings read from the environment, a value that is not understood is reported
 
 // The WhatsApp webhook and Stripe webhook serve real customers directly, with
-// no logged-in session to read a workspaceId from. Only one platform WABA
-// exists today, so every inbound conversation belongs to the one workspace
-// scripts/migrate-to-workspace.js created — resolve it fresh per webhook call
-// rather than caching, since correctness matters more than one indexed query.
-// A future multi-WABA setup would resolve via the payload's phone_number_id
-// (Workspace.findOne({ 'whatsapp.phoneId': ... })) before this fallback.
+// no logged-in session to read a workspaceId from. The OLDEST workspace (the
+// one scripts/migrate-to-workspace.js created) is the answer for everything
+// that cannot be attributed to a customer (tenant) — resolve it fresh per
+// webhook call rather than caching, since correctness matters more than one
+// indexed query. Each WhatsApp EVENT is attributed to its own workspace first
+// (customer's own phone number, wamid, payload id, phone — see
+// shared/whatsappInbound.js) and Stripe payments by pi.metadata.workspaceId;
+// this oldest-workspace lookup is the fallback for both.
 async function resolveWebhookWorkspaceId() {
   const workspace = await Workspace.findOne().sort({ createdAt: 1 });
   return workspace?._id;
@@ -45,7 +48,82 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/waflow
 app.post("/stripe-webhook", express.raw({ type: "application/json" }), handleStripeWebhook);
 try { require("./shared/onboarding/earlyMounts").mount(app, express); } catch (err) { console.error("[onboarding] early mounts not installed:", err.message); }
 
-app.use(express.json());
+// POST /webhook: the exact bytes Meta signed are captured while express.json() parses the body (req.rawBody), and
+// X-Hub-Signature-256 is checked against them (req.metaSignature = 'valid' | 'invalid' | 'missing' | 'unconfigured').
+//   WEBHOOK_SIGNATURE_MODE  off     not checked ('unconfigured')
+//                           log     (default) checked, an invalid/missing one is logged, never rejected
+//                           enforce an invalid/missing one is answered 401 BEFORE the 200 — only when WA_APP_SECRET is set
+// Every other route is parsed exactly as before (the callback does nothing for them).
+// The decision to refuse does not rest on this callback alone: the route itself runs webhookSignatureGate (below), which refuses
+// anything whose signature was not positively checked as valid - another capitalisation of the path (Express matches routes
+// case-insensitively), a form-encoded or text body that express.json() never reads, a request the callback never saw.
+function webhookSignatureMode() {
+  const v = String(process.env.WEBHOOK_SIGNATURE_MODE || "").trim().toLowerCase();
+  return v === "off" || v === "enforce" ? v : "log";
+}
+// trimmed: a newline or space pasted along with the secret into the hosting settings would otherwise make every signature "invalid"
+function webhookAppSecret() {
+  return process.env.WA_APP_SECRET ? String(process.env.WA_APP_SECRET).trim() : "";
+}
+let lastSignatureLogAt = 0;
+function captureWebhookSignature(req, res, buf) {
+  if (req.method !== "POST") return;
+  const path = String(req.originalUrl || req.url || "").split("?")[0].replace(/\/+$/, "").toLowerCase();
+  if (path !== "/webhook") return;
+  req.rawBody = buf;
+  const mode = webhookSignatureMode();
+  const secret = webhookAppSecret();
+  let state = "unconfigured";
+  if (mode !== "off" && secret) {
+    let header = req.headers["x-hub-signature-256"];
+    if (Array.isArray(header)) header = header[0];
+    state = typeof header !== "string" || !header.trim() ? "missing" : (metaSignature.verify(buf, header, secret) ? "valid" : "invalid");
+  }
+  req.metaSignature = state;
+  if (state !== "invalid" && state !== "missing") return;
+  if (mode === "enforce") {
+    const err = new Error("Invalid webhook signature");
+    err.status = 401; err.statusCode = 401; err.type = "webhook.signature";
+    throw err; // express.json() hands this to the error handler below: 401, nothing processed
+  }
+  const now = Date.now();
+  if (now - lastSignatureLogAt > 60 * 1000) { // log mode: say so (at most once a minute), never reject
+    lastSignatureLogAt = now;
+    console.warn(`[webhook] X-Hub-Signature-256 ${state} (WEBHOOK_SIGNATURE_MODE=log: accepted)`);
+  }
+}
+app.use(express.json({ verify: captureWebhookSignature }));
+app.use((err, req, res, next) => {
+  if (err && err.type === "webhook.signature") return res.status(401).json({ error: "Invalid signature" });
+  return next(err);
+});
+if (webhookSignatureMode() === "enforce" && !webhookAppSecret()) {
+  console.warn("[startup] WEBHOOK_SIGNATURE_MODE=enforce but WA_APP_SECRET is not set: webhook signatures are NOT being checked.");
+}
+// A typo in a setting that is a safety net must not pass silently: a value that is not understood gets the default (for the sign-up
+// switch it counts as OFF: a typo must not leave sign-up open) - say so once.
+envFlag.warnUnknown([{ name: "ALLOW_SELF_SERVE_SIGNUP", treatedAs: "off" }, "CONSENT_REQUIRE_SIGNATURE", "PROMO_ENTRY_FALLBACK", "TEMPLATE_APPROVAL_SWEEP", "WEBHOOK_LOG_BODIES"]);
+if (process.env.WEBHOOK_SIGNATURE_MODE && !["off", "log", "enforce"].includes(String(process.env.WEBHOOK_SIGNATURE_MODE).trim().toLowerCase())) {
+  console.warn(`[startup] WEBHOOK_SIGNATURE_MODE="${String(process.env.WEBHOOK_SIGNATURE_MODE).slice(0, 20)}" is not understood (use off, log or enforce): "log" is used.`);
+}
+{
+  // CONSENT_REQUIRE_SIGNATURE on with no way to verify a signature would refuse every opt-in: say so at start-up, not only per tap.
+  const consentSetupProblem = require("./shared/consent").signatureSetupProblem({ secretConfigured: !!webhookAppSecret(), mode: webhookSignatureMode() });
+  if (consentSetupProblem) console.warn(`[startup] ${consentSetupProblem}`);
+}
+// Who may open the Platform area (a count only: never the contacts). A value with a typo is reported by the parser itself, masked.
+try {
+  const admins = require("./shared/platformAdmin").parseSuperAdminContacts();
+  const count = admins.emails.size + admins.phones.size;
+  console.log(`[startup] platform super admins configured: ${count}${count ? "" : " (SUPER_ADMIN_CONTACTS is empty: the Platform area is closed to everyone)"}`);
+} catch (err) { console.warn("[startup] SUPER_ADMIN_CONTACTS could not be read:", err && err.message); }
+// The route-level check behind WEBHOOK_SIGNATURE_MODE=enforce (only with WA_APP_SECRET set): the request must have been positively
+// verified. Read per request, like the mode. 401 BEFORE the route's 200, so nothing is processed.
+function webhookSignatureGate(req, res, next) {
+  if (webhookSignatureMode() !== "enforce" || !webhookAppSecret()) return next();
+  if (req.metaSignature === "valid") return next();
+  return res.status(401).json({ error: "Invalid signature" });
+}
 app.use(express.urlencoded({ extended: true })); // OAuth token/authorize endpoints use form-encoded bodies
 app.use(cors());
 // Cheap, real HTTP header hardening (HSTS, X-Content-Type-Options, etc.) —
@@ -73,28 +151,33 @@ try { require("./shared/onboarding/mount").mount(app, { requireAuth, requireInte
 app.use("/api/auth", require("./routes/auth"));
 
 // ─── API routes — everything below requires a logged-in session ────────────
-app.use("/api/products",   requireAuth, require("./routes/products"));
-app.use("/api/customers",  requireAuth, require("./routes/customers"));
-app.use("/api/orders",     requireAuth, require("./routes/orders"));
-app.use("/api/promotions", requireAuth, require("./routes/promotions"));
-app.use("/api/flows",      requireAuth, require("./routes/flows"));
-app.use("/api/message-nodes", requireAuth, require("./routes/messageNodes"));
-app.use("/api/services",   requireAuth, require("./routes/services"));
-app.use("/api/whatsapp",   requireAuth, require("./routes/whatsapp"));
-app.use("/api/settings",  requireAuth, require("./routes/settings"));
+// (sanitizeBody: a write never carries workspaceId / _id / isDemo or a "$operator" key from the client — several of these routes
+// hand req.body straight to findOneAndUpdate.)
+app.use("/api/products",   requireAuth, sanitizeBody, require("./routes/products"));
+app.use("/api/customers",  requireAuth, sanitizeBody, require("./routes/customers"));
+app.use("/api/orders",     requireAuth, sanitizeBody, require("./routes/orders"));
+app.use("/api/promotions", requireAuth, sanitizeBody, require("./routes/promotions"));
+app.use("/api/flows",      requireAuth, sanitizeBody, require("./routes/flows"));
+app.use("/api/message-nodes", requireAuth, sanitizeBody, require("./routes/messageNodes"));
+app.use("/api/services",   requireAuth, sanitizeBody, require("./routes/services"));
+app.use("/api/whatsapp",   requireAuth, sanitizeBody, require("./routes/whatsapp"));
+app.use("/api/settings",  requireAuth, sanitizeBody, require("./routes/settings"));
 app.use("/api/ai-chat",   requireAuth, require("./routes/aiChat"));
 app.use("/api/uploads",   requireAuth, require("./routes/uploads"));
-app.use("/api/workspaces", requireAuth, require("./routes/workspaces"));
+app.use("/api/workspaces", requireAuth, sanitizeBody, require("./routes/workspaces"));
 app.use("/api/support",    requireAuth, require("./routes/support"));
 app.use("/api/imports",    requireAuth, require("./routes/imports"));
-app.use("/api/inbox",      requireAuth, require("./routes/inbox"));
-app.use("/api/insights",   requireAuth, require("./routes/insights"));
-app.use("/api/entitlements", requireAuth, require("./routes/entitlements"));
+app.use("/api/inbox",      requireAuth, sanitizeBody, require("./routes/inbox"));
+app.use("/api/insights",   requireAuth, sanitizeBody, require("./routes/insights"));
+app.use("/api/entitlements", requireAuth, sanitizeBody, require("./routes/entitlements"));
 app.use("/api/legal",      requireAuth, require("./routes/legal"));
-app.use("/api/referrals",  requireAuth, require("./routes/referrals"));
-app.use("/api/instagram-posts", requireAuth, require("./routes/instagramPosts"));
+app.use("/api/referrals",  requireAuth, sanitizeBody, require("./routes/referrals"));
+app.use("/api/instagram-posts", requireAuth, sanitizeBody, require("./routes/instagramPosts"));
 app.use("/api/instagram-media", requireAuth, require("./routes/instagramMedia"));
-app.use("/api/social-accounts",  requireAuth, require("./routes/socialAccounts"));
+app.use("/api/social-accounts",  requireAuth, sanitizeBody, require("./routes/socialAccounts"));
+// WaFlow staff (super admins) onboard and manage customers (tenants) here — see routes/platform.js. 403 for everyone else.
+try { app.use("/api/platform", requireAuth, require("./middleware/requireSuperAdmin"), require("./routes/platform")); }
+catch (err) { console.error("[platform] routes not mounted:", err.message); }
 // Arabic localisation (all new files). Every route except /settings is also gated
 // by the per-merchant arabic_enabled flag — see routes/localization/index.js. A
 // failure to load this feature must never stop the existing app from starting.
@@ -141,49 +224,11 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 const STRIPE_SIGNING_SECRET = process.env.STRIPE_SIGNING_SECRET;
 
 // ─── WhatsApp helpers ────────────────────────────────────────────────────────
-const WA_PHONE_ID = process.env.WA_PHONE_ID || "1032683093271618";
-const WA_MESSAGES_URL = `https://graph.facebook.com/v25.0/${WA_PHONE_ID}/messages`;
-
-function waHeaders() {
-  return {
-    Authorization: `Bearer ${process.env.WA_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-}
-
-async function waPost(body) {
-  try { const out = localization.localizeOutbound(body); if (out !== body) body = await out; } catch (_) { /* fail open: original payload */ } // Arabic localisation: same object back (no await) unless an Arabic version applies
-  const res = await axios.post(WA_MESSAGES_URL, body, { headers: waHeaders() });
-  return res.data;
-}
-
-async function uploadMediaToWhatsApp(file) {
-  const form = new FormData();
-  form.append("messaging_product", "whatsapp");
-  const ct = file.mimetype && !file.mimetype.startsWith("text/")
-    ? file.mimetype
-    : mime.lookup(file.originalname) || "application/octet-stream";
-  form.append("file", file.buffer, { filename: file.originalname, contentType: ct });
-  const res = await axios.post(
-    `https://graph.facebook.com/v25.0/${WA_PHONE_ID}/media`,
-    form,
-    { headers: { Authorization: waHeaders().Authorization, ...form.getHeaders() } }
-  );
-  return res.data.id;
-}
-
-function sendImageWithButton(to, mediaId, bodyText, productId) {
-  return waPost({
-    messaging_product: "whatsapp",
-    to,
-    type: "interactive",
-    interactive: {
-      type: "button",
-      header: { type: "image", image: { id: mediaId } },
-      body:   { text: bodyText },
-      action: { buttons: [{ type: "reply", reply: { id: `int_${productId}`, title: "Interested? 🛍️" } }] },
-    },
-  });
+// ONE sender: the same function every other part of the app uses (utils/whatsapp.js — Arabic localisation hook, the
+// customer's own phone number when the workspace in context has one, platform number otherwise). This file used to
+// carry its own copy that always used the platform number and token.
+function waPost(body) {
+  return require("./utils/whatsapp").waPost(body);
 }
 
 function sendGoodChoice(to) {
@@ -204,13 +249,9 @@ function sendGoodChoice(to) {
   });
 }
 
-function generateProductId() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-}
-
 // ─── In-memory state ─────────────────────────────────────────────────────────
 // carts / pendingCatalogs / pendingAddressReqs live in ./utils/state (shared with routes/pay.js)
-const pendingProducts = new Map(); // randomId → { name, priceAud, description }
+const pendingProducts = new Map(); // randomId → { name, priceAud, description } (legacy "int_" button; nothing fills it since POST /send-message was removed)
 
 // ─── Campaign message tracking (delivery status + click correlation) ────────
 // Rank for monotonic status updates — never let an out-of-order webhook event
@@ -364,7 +405,7 @@ function buildCartSummary(cart, currency) {
 
 const SHIPPING_COST = 0.5;
 
-async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, address, currency, promotionId, campaignMessageId) {
+async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, address, currency, promotionId, campaignMessageId, workspaceId) {
   const total = +(subtotal + shippingCost).toFixed(2);
   return stripe.paymentIntents.create({
     amount: Math.round(total * 100),
@@ -377,6 +418,7 @@ async function createPaymentIntent(buyerPhone, cart, shippingCost, subtotal, add
       address:      address || "",
       promotionId:       promotionId ? String(promotionId) : "",
       campaignMessageId: campaignMessageId ? String(campaignMessageId) : "",
+      ...(workspaceId ? { workspaceId: String(workspaceId) } : {}), // the Stripe webhook resolves the customer (tenant) from this
     },
   });
 }
@@ -391,7 +433,7 @@ async function proceedToPayment(from, customer, cart) {
   const source = promotion ? "campaign" : "product";
 
   try {
-    const pi = await createPaymentIntent(from, cart, SHIPPING_COST, subtotal, customer.address, currency, promotion?._id, campaignMessageId);
+    const pi = await createPaymentIntent(from, cart, SHIPPING_COST, subtotal, customer.address, currency, promotion?._id, campaignMessageId, customer.workspaceId);
 
     // Visible in the dashboard immediately as pending — the Stripe webhook updates
     // this same document (matched by stripePaymentIntentId) to paid/failed.
@@ -440,6 +482,19 @@ async function proceedToPointsConfirmation(from, customer, cart) {
 }
 
 // ─── Stripe webhook ──────────────────────────────────────────────────────────
+// The customer (tenant) a payment belongs to: the workspaceId written into the PaymentIntent metadata when it was created,
+// else (payments created before that, or by a creation site that does not write it yet) the oldest workspace, as before.
+async function resolveStripeWorkspaceId(pi) {
+  const fromMetadata = pi && pi.metadata && pi.metadata.workspaceId;
+  if (typeof fromMetadata === "string" && /^[0-9a-fA-F]{24}$/.test(fromMetadata)) {
+    try {
+      const workspace = await Workspace.findById(fromMetadata).select("_id");
+      if (workspace) return workspace._id;
+    } catch (_) { /* fall back to the oldest workspace */ }
+  }
+  return resolveWebhookWorkspaceId();
+}
+
 async function handleStripeWebhook(req, res) {
   let event;
   try {
@@ -448,7 +503,8 @@ async function handleStripeWebhook(req, res) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  const workspaceId = await resolveWebhookWorkspaceId();
+  const workspaceId = await resolveStripeWorkspaceId(event.data && event.data.object);
+  senderContext.enter(workspaceId); // the payment confirmations below go out from this customer's WhatsApp number
   localization.enterContext(workspaceId); // Arabic localisation: same scoping for the payment confirmations sent from here (never throws)
 
   if (event.type === "payment_intent.payment_failed") {
@@ -626,6 +682,24 @@ app.get("/webhook", (req, res) => {
 
 // ─── Promo catalog helpers ────────────────────────────────────────────────────
 const { sendCatalog, sendProductCarousel, sendVariantPicker, sendPromoAnnouncement, sendServiceSlots } = require("./utils/whatsapp");
+
+// A tap on a consent-request button (payload promo:<promotionId>:<action>:<position>): shared/promoConsentTap.js records
+// the consent evidence and answers; it reaches the shop/book flow below only through deps. Never throws.
+async function handlePromoConsentTapSafe({ from, message, signature, workspaceId }) {
+  try {
+    const { handlePromoConsentTap } = require("./shared/promoConsentTap");
+    await handlePromoConsentTap({
+      from, message, signature, workspaceId,
+      deps: {
+        handlePromoInterest,
+        waPost,
+        sendText: (to, body) => waPost({ messaging_product: "whatsapp", to, type: "text", text: { body } }),
+      },
+    });
+  } catch (err) {
+    console.error("promo consent tap error:", err && err.message);
+  }
+}
 
 async function handlePromoInterest(from, promoId, campaignMessageId, workspaceId) {
   try {
@@ -860,6 +934,7 @@ async function handleSlotSelection(from, slotId, isFree, oldBookingId, workspace
           slotLabel:   `${slot.date} at ${slot.startTime}`,
           promotionId:       promotion?._id ? String(promotion._id) : "",
           campaignMessageId: pending?.campaignMessageId ? String(pending.campaignMessageId) : "",
+          ...((slot.workspaceId || workspaceId) ? { workspaceId: String(slot.workspaceId || workspaceId) } : {}), // the Stripe webhook resolves the customer (tenant) from this
         },
       });
 
@@ -952,24 +1027,170 @@ async function handleRebookRequest(from, serviceId, oldBookingId, flowEnrollment
 }
 
 // ─── WhatsApp incoming messages ──────────────────────────────────────────────
-app.post("/webhook", async (req, res) => {
+// Meta may batch several entries / changes / messages into ONE POST: every one is processed. Each EVENT is attributed to
+// its own customer (workspace) — the customer's own number, the wamid it replies to, the id in its button payload, or the
+// phone it comes from; the OLDEST workspace when nothing says otherwise (see shared/whatsappInbound.js).
+app.post("/webhook", webhookSignatureGate, async (req, res) => {
   res.sendStatus(200);
   try { const ob = require("./shared/onboarding/webhookEvents"); if (ob.enabled() && await ob.intercept(req)) return; } catch (_) { /* fail open: existing flow */ } // WhatsApp onboarding: merchant-WABA events only
-  const value = req.body?.entry?.[0]?.changes?.[0]?.value;
-  const workspaceId = await resolveWebhookWorkspaceId();
+  try { await handleWebhookBody(req); }
+  catch (err) { console.error("[webhook] processing failed:", err && err.message); }
+});
 
-  // Delivery/read/failed callbacks for outbound messages — no inbound message here.
-  if (value?.statuses?.length) {
-    await handleStatusCallbacks(value.statuses, workspaceId);
+// Runs fn in a fresh async scope: the AsyncLocalStorage contexts one event enters (sender, Arabic localisation) must not
+// leak into the next event of the same POST.
+const isolated = (fn) => Promise.resolve().then(fn);
+
+// 'valid' | 'invalid' | 'missing' | 'unconfigured' — what captureWebhookSignature (above) worked out for THIS request.
+// ('absent' is the spelling of the onboarding middleware, which reads the body first when ONBOARDING_FLOW is on.)
+function webhookSignatureOf(req) {
+  const s = req.metaSignature;
+  if (s === "valid" || s === "invalid" || s === "unconfigured") return s;
+  return "missing";
+}
+
+// How much one request may make this server do: everything when Meta signed it, a capped share otherwise (shared/webhookBudget.js).
+const { MAX_UNSIGNED_EVENTS, MAX_UNSIGNED_STATUSES, TEMPLATE_EVENT_COST, newBudget, takeEvents, takeStatuses } = require("./shared/webhookBudget");
+
+async function handleWebhookBody(req) {
+  const entries = Array.isArray(req.body?.entry) ? req.body.entry : [];
+  if (!entries.length) return;
+  const signature = webhookSignatureOf(req);
+  const budget = newBudget(signature);
+  let oldestWorkspaceId;
+  let lookupFailed = false;
+  try {
+    // retried like the per-event lookups: one throttled query must not cost the whole request (a typed STOP included)
+    oldestWorkspaceId = await whatsappInbound.withRetries(undefined, () => resolveWebhookWorkspaceId());
+  } catch (err) {
+    lookupFailed = true;
+    console.error(`[webhook] the oldest workspace could not be looked up (${err && err.message}): the messages of this request cannot be attributed (a typed STOP is still honoured); delivery updates and template news are handled on their own`);
+  }
+  for (const entry of entries) {
+    const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+    for (const change of changes) {
+      try {
+        const value = change?.value;
+        const isMessages = change?.field !== "message_template_status_update" && value && !value.statuses?.length;
+        if (lookupFailed && isMessages) {
+          for (const message of takeEvents(budget, value.messages)) {
+            try { await handleUnattributedMessage({ message, value, signature }); }
+            catch (e) { console.error("[webhook] unattributed message not handled:", e && e.message); }
+          }
+        } else {
+          // delivery updates attribute themselves by message id and template news works from the template name: neither needs the oldest
+          // workspace (left undefined after a failed lookup, it is only looked up again - with retries - for an update nothing claims)
+          await handleWebhookChange({ change, signature, oldestWorkspaceId, budget });
+        }
+      } catch (err) { console.error("[webhook] change not processed:", err && err.message); }
+    }
+  }
+  if (budget.skipped) console.warn(`[webhook] ${budget.skipped} event(s) of a request without a valid signature were NOT processed (at most ${MAX_UNSIGNED_EVENTS} messages or template changes and ${MAX_UNSIGNED_STATUSES} delivery updates per such request)`);
+}
+
+async function handleWebhookChange({ change, signature, oldestWorkspaceId, budget = newBudget("valid") }) {
+  const value = change?.value;
+
+  // Template approval news (Meta tells us a template changed status): the handler re-reads the real status itself.
+  if (change?.field === "message_template_status_update") {
+    if (!takeEvents(budget, [change], TEMPLATE_EVENT_COST).length) return;
+    try { await require("./shared/templateApproval").handleTemplateStatusEvent({ value, change, signature }); }
+    catch (err) { console.error("[webhook] template status event not handled:", err && err.message); }
+    return;
+  }
+  if (!value) return;
+
+  // Delivery/read/failed callbacks for outbound messages — no inbound message here. Grouped per customer (workspace).
+  if (value.statuses?.length) {
+    const statuses = takeStatuses(budget, value.statuses);
+    if (!statuses.length) return;
+    const groups = await whatsappInbound.resolveStatusGroups({ value, statuses, oldestWorkspaceId });
+    for (const group of groups) {
+      if (group.rule === "R3_error") { // the lookup kept failing: whose messages these are is unknown, so none is updated
+        console.error(`[webhook] ${group.statuses.length} delivery update(s) NOT applied: their customer could not be determined (database lookup failed)`);
+        continue;
+      }
+      await handleStatusCallbacks(group.statuses, group.workspaceId);
+    }
     return;
   }
 
-  const message = value?.messages?.[0];
-  if (!message) return;
+  const messages = takeEvents(budget, value.messages);
+  for (const message of messages) {
+    try {
+      await isolated(async () => {
+        const { workspaceId, rule } = await whatsappInbound.resolveEventWorkspace({ value, message, oldestWorkspaceId });
+        if (rule === "R3_error") { await handleUnattributedMessage({ message, value, signature }); return; }
+        if (String(workspaceId) !== String(oldestWorkspaceId)) console.log(`[webhook] event attributed to workspace ${workspaceId} (${rule})`);
+        // every WhatsApp send below goes out from this customer's number - or, for an event that arrived on the SHARED number, from the
+        // shared number (the customer's 24-hour window is with it, even if the customer has a number of its own by now)
+        senderContext.enter(workspaceId, { viaPlatformNumber: rule !== "R1_phone_id" });
+        await processInboundMessage({ value, message, workspaceId, signature, rule, oldestWorkspaceId });
+      });
+    } catch (err) {
+      console.error("[webhook] message not processed:", err && err.message);
+    }
+  }
+}
+
+// A phone number for the log: only its last four digits.
+const maskedPhone = (v) => String(v == null ? "" : v).replace(/\d(?=\d{4})/g, "*");
+
+// CONSENT_REQUIRE_SIGNATURE=on: a customer's own opt-in tap counts only when Meta signed the request (an opt-out always counts).
+function optInTapAllowed(signature) {
+  if (!require("./shared/consent").requireSignature()) return true;
+  if (signature === "valid") return true;
+  console.warn(`[webhook] an opt-in tap was ignored: CONSENT_REQUIRE_SIGNATURE is on and the webhook signature was "${signature || "missing"}"`);
+  return false;
+}
+
+// Does this inbound message ask to stop? A typed STOP / UNSUBSCRIBE, or a tapped Opt Out button (the older `optout_<id>` payload or a
+// consent request's `promo:<id>:opt_out:<n>`). None of them needs to know whose message it is to be honoured.
+function stopRequestOf(message) {
+  if (!message) return null;
+  if (message.type === "text") {
+    const typed = String(message.text?.body || "").trim().toUpperCase();
+    return typed === "STOP" || typed === "UNSUBSCRIBE"
+      ? { method: "whatsapp_stop_command", source: "WhatsApp STOP reply (customer could not be identified at the time)", messageText: message.text.body }
+      : null;
+  }
+  const payload = String(message.button?.payload || message.interactive?.button_reply?.id || message.interactive?.list_reply?.id || "");
+  return /^optout_/.test(payload) || /^promo:[0-9a-f]{24}:opt_out:[0-9]+$/i.test(payload)
+    ? { method: "whatsapp_optout_button", source: "Opt Out button (customer could not be identified at the time)", messageText: "" }
+    : null;
+}
+
+// The database lookup that says WHOSE message this is kept failing (shared/whatsappInbound.js tried several times). Filing it under
+// the oldest workspace would put another customer's phone number and words into that customer's inbox, so nothing is written
+// (no inbox entry, no customer, no flow). The one thing that needs no attribution is honoured: a typed STOP or a tapped Opt Out
+// opts the number out in EVERY customer that has it (the number it arrived on is unknown, so a customer with a number of its own
+// is included too). It is confirmed to the person only when something really was opted out and the message came in on the platform
+// number (a reply can only leave from there). Everything else is logged loudly; WhatsApp is not asked to redeliver (the webhook was
+// answered before processing), so the person simply sends it again.
+async function handleUnattributedMessage({ message, value, signature }) {
+  const from = message && message.from;
+  console.error(`[webhook] message from ${maskedPhone(from)} NOT processed: its customer could not be determined (database lookup failed)`);
+  const stop = from ? stopRequestOf(message) : null;
+  if (!stop) return;
+  const arrivedOn = value && value.metadata && value.metadata.phone_number_id;
+  const onPlatformNumber = !arrivedOn || String(arrivedOn) === String(whatsappInbound.platformPhoneId());
+  await require("./shared/crossWorkspaceOptOut").optOutEverywhere({
+    from, method: stop.method, source: stop.source, messageText: stop.messageText, wamid: message.id, signature,
+    unattributed: true, silent: !onPlatformNumber,
+  });
+}
+
+// One inbound message, already attributed to its workspace (`rule` = how: see shared/whatsappInbound.js; R1_phone_id means
+// it arrived on the customer's OWN number). The body is the original single-message webhook handler.
+async function processInboundMessage({ value, message, workspaceId, signature, rule, oldestWorkspaceId }) {
   localization.enterContext(workspaceId); // Arabic localisation: scopes the outbound-language lookup to this message's workspace (never throws)
 
   const from = message.from;
-  console.log(`Incoming from ${from}:`, JSON.stringify(message, null, 2));
+  // A customer's phone number and words are personal data, and the log stream is kept and read by more people than the database is.
+  // By default only the kind of message, the last four digits of the number and the message id are logged;
+  // WEBHOOK_LOG_BODIES=on (for a short while, while debugging) logs the whole message as it always did.
+  if (envFlag.isOn("WEBHOOK_LOG_BODIES", false)) console.log(`Incoming from ${from}:`, JSON.stringify(message, null, 2));
+  else console.log(`Incoming ${message.type || "message"} from ${maskedPhone(from)} (${message.id || "no id"})`);
 
   // WhatsApp Inbox — log every inbound message into the merchant-facing
   // conversation thread before any of the existing shopping/flow dispatch
@@ -1000,7 +1221,16 @@ app.post("/webhook", async (req, res) => {
   // conversation thread before any of the existing shopping/flow dispatch
   // below runs. Never throws (self-contained try/catch inside), so a logging
   // failure can never block the customer-facing flow that follows.
-  await inbox.logInboundMessage({ workspaceId, from, message, contactName })
+  // The Inbox hook creates a Customer for any sender it does not know. That is today's behaviour for the oldest workspace
+  // and for a customer's OWN number (rule R1_phone_id: whoever writes to that number is theirs). In any OTHER customer's
+  // workspace an event that only reached it through a button payload / replied-to message must not create a customer out
+  // of a stranger's phone, so there it is logged only when the phone is already known there.
+  let logInbound = true;
+  if (rule && rule !== "R1_phone_id" && oldestWorkspaceId !== undefined && String(workspaceId) !== String(oldestWorkspaceId)) {
+    logInbound = await whatsappInbound.customerKnownInWorkspace(workspaceId, from);
+    if (!logInbound) console.warn(`[webhook] not creating a customer from an unknown phone in workspace ${workspaceId} (event attributed by ${rule})`);
+  }
+  if (logInbound) await inbox.logInboundMessage({ workspaceId, from, message, contactName })
     .catch(err => console.error("inbox logInboundMessage error:", err.message));
 
   // Arabic localisation — honours typed Arabic opt-out/opt-in keywords and Arabic
@@ -1012,7 +1242,11 @@ app.post("/webhook", async (req, res) => {
   // ── Template quick-reply (user tapped button on a template message) ──────────
   if (message.type === "button") {
     const payload = message.button?.payload || "";
-    if (payload.startsWith("promo_")) {
+    if (payload.startsWith("promo:")) {
+      // Consent-request buttons (opt in / opt out / interested) of a promotion — see shared/promoConsentTap.js. The workspace,
+      // customer and exact text shown come from the CampaignMessage the tap replies to, not from the payload alone.
+      await handlePromoConsentTapSafe({ from, message, signature, workspaceId });
+    } else if (payload.startsWith("promo_")) {
       const promoId = payload.slice(6);
       const cm = await correlateClick({ from, wamid: message.context?.id, promotionId: promoId, workspaceId });
       await handlePromoInterest(from, promoId, cm?._id, workspaceId);
@@ -1040,7 +1274,7 @@ app.post("/webhook", async (req, res) => {
       const { grantMarketingConsent } = require("./shared/consent");
       await correlateClick({ from, wamid: message.context?.id, workspaceId });
       const customer = await Customer.findOne(withWorkspace({ _id: payload.slice(12) }, workspaceId));
-      if (customer) {
+      if (customer && optInTapAllowed(signature)) {
         await grantMarketingConsent({ customer, method: 'whatsapp_button', source: 'bulk consent-request campaign', workspaceId });
         await waPost({ messaging_product: "whatsapp", to: from, type: "text",
           text: { body: "🎉 You're subscribed! We'll send occasional offers and updates. Reply STOP anytime to opt out." } }).catch(() => {});
@@ -1127,7 +1361,7 @@ app.post("/webhook", async (req, res) => {
     // Button reply
     if (message.interactive.type === "button_reply") {
       const buttonId = message.interactive.button_reply.id;
-      console.log(`Button: ${buttonId} from ${from}`);
+      console.log(`Button: ${buttonId} from ${maskedPhone(from)}`);
 
       if (buttonId.startsWith("rebook_")) {
         // Customer tapped "Rebook Free" from cancellation message
@@ -1244,7 +1478,7 @@ app.post("/webhook", async (req, res) => {
         const Customer = require("./models/Customer");
         const { grantMarketingConsent } = require("./shared/consent");
         const customer = await Customer.findOne(withWorkspace({ _id: buttonId.slice(12) }, workspaceId));
-        if (customer) {
+        if (customer && optInTapAllowed(signature)) {
           await grantMarketingConsent({ customer, method: 'whatsapp_button', source: 'order/booking confirmation consent button', workspaceId });
           await waPost({ messaging_product: "whatsapp", to: from, type: "text",
             text: { body: "🎉 You're subscribed! We'll send occasional offers and updates. Reply STOP anytime to opt out." } }).catch(() => {});
@@ -1287,6 +1521,17 @@ app.post("/webhook", async (req, res) => {
 
     // Opt-out / opt-back-in — checked first, ahead of any pending flow, per
     // the "Reply STOP to unsubscribe" promise already in the promo template footer.
+    // On the shared platform number (every rule except the customer's OWN number, R1) the phone is opted out / back in
+    // in every workspace that has it — see shared/crossWorkspaceOptOut.js. A customer's own number: this workspace only.
+    const sharedNumber = rule !== "R1_phone_id";
+    if ((upperText === "STOP" || upperText === "UNSUBSCRIBE") && sharedNumber) {
+      await require("./shared/crossWorkspaceOptOut").optOutEverywhere({ from, method: 'whatsapp_stop_command', source: 'WhatsApp STOP reply', messageText: text, wamid: message.id, workspaceId, signature });
+      return;
+    }
+    if ((upperText === "START" || upperText === "SUBSCRIBE") && sharedNumber) {
+      await require("./shared/crossWorkspaceOptOut").startEverywhere({ from, method: 'whatsapp_start_command', source: 'WhatsApp START reply', messageText: text, wamid: message.id, workspaceId, signature });
+      return;
+    }
     if (upperText === "STOP" || upperText === "UNSUBSCRIBE") {
       const Customer = require("./models/Customer");
       const { withdrawMarketingConsent } = require("./shared/consent");
@@ -1301,9 +1546,13 @@ app.post("/webhook", async (req, res) => {
       const Customer = require("./models/Customer");
       const { reinstateMarketingConsent } = require("./shared/consent");
       const customer = await Customer.findOne(withWorkspace({ phone: from }, workspaceId));
-      // Never fabricates consent — only clears optedOut if this customer had
-      // genuinely opted in before (marketingConsent already true).
-      const reinstated = customer ? await reinstateMarketingConsent({ customer, method: 'whatsapp_start_command', source: 'WhatsApp START reply', workspaceId }) : false;
+      // A START from an opted-out customer is a fresh, customer-initiated opt-in: recorded with its evidence (the words they typed, the
+      // WhatsApp message id, the webhook signature) and, with CONSENT_REQUIRE_SIGNATURE=on, only when Meta signed the request. A
+      // customer who never opted in and never opted out is left as they are: a bare START never fabricates consent.
+      const reinstated = customer ? await reinstateMarketingConsent({
+        customer, method: 'whatsapp_start_command', source: 'WhatsApp START reply', workspaceId, signature,
+        ...(customer.optedOut === true ? { evidence: { messageText: text, inboundWamid: message.id, signature } } : {}),
+      }) : false;
       await waPost({ messaging_product: "whatsapp", to: from, type: "text",
         text: { body: reinstated
           ? "You're subscribed to promotional messages again. Welcome back! 🎉"
@@ -1472,35 +1721,9 @@ app.post("/webhook", async (req, res) => {
       await handleProductSelection(from, products[i]._id.toString(), "", workspaceId);
     }
   }
-});
+}
 
-// ─── Send images from frontend ───────────────────────────────────────────────
-const upload = multer({ storage: multer.memoryStorage() });
-
-app.post("/send-message", upload.array("images"), async (req, res) => {
-  const { to, message, productName, price } = req.body;
-  if (!to || !message) return res.status(400).json({ success: false, error: "to and message required" });
-  const files = req.files || [];
-
-  try {
-    if (!files.length) {
-      const result = await waPost({ messaging_product: "whatsapp", to, type: "text", text: { body: message } });
-      return res.json({ success: true, data: result });
-    }
-
-    const results = await Promise.all(files.map(async (file) => {
-      const productId = generateProductId();
-      pendingProducts.set(productId, { name: productName || message, priceAud: parseFloat(price) || 0, description: message });
-      const mediaId = await uploadMediaToWhatsApp(file);
-      return sendImageWithButton(to, mediaId, message, productId);
-    }));
-    return res.json({ success: true, data: results });
-  } catch (err) {
-    console.error("send-message error:", err.response?.data ?? err.message);
-    return res.status(500).json({ success: false, error: err.response?.data ?? err.message });
-  }
-});
-
+// POST /send-message (an unauthenticated route that sent WhatsApp messages from the platform number to any phone) was removed: nothing used it.
 app.get("/", (req, res) => res.send("Waflow backend running"));
 
 // Guarded so tests can `require('./server')` for its exported `app` (Supertest)
@@ -1516,6 +1739,9 @@ if (require.main === module) {
     catch (err) { console.error("[localization] scheduler not started:", err.message); }
     try { require("./shared/onboarding/scheduler").startOnboardingScheduler(); }
     catch (err) { console.error("[onboarding] scheduler not started:", err.message); }
+    // Meta template approvals (every 5 minutes): tells merchants when a message they submitted has been approved.
+    try { require("./shared/templateApproval").startTemplateApprovalSweeper(); }
+    catch (err) { console.error("[templateApproval] sweeper not started:", err.message); }
   });
 }
 

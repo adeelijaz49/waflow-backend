@@ -29,6 +29,7 @@ const tokenCrypto = require('./socialTokenCrypto');
 const igApi = require('./instagramApi');
 const igAi  = require('./instagramAi');
 const tokenManager = require('../utils/tokenManager');
+const waTenant = require('../utils/waTenant');
 const axios = require('axios');
 const { APP_URL } = require('../utils/config');
 const { oneWordLastname } = require('./localization/nameGuard');
@@ -398,8 +399,23 @@ async function reconcilePublishJobs() {
 
 // ─── Tracking link click + redirect ──────────────────────────────────────────
 
-let cachedWaNumber = null;
-async function getMerchantWaNumber() {
+// Per customer: a workspace with its own WhatsApp number (utils/waTenant.js) gets links to THAT number, never the platform
+// one; everyone else keeps the platform number exactly as before. workspaceId = the owner of the tracking link being served
+// (the public redirect has no logged-in context).
+let cachedWaNumber = null; // the platform number
+const tenantWaNumbers = new Map(); // `${workspaceId}|${phoneId}` -> { number, exp }
+const TENANT_NUMBER_TTL_MS = 5 * 60 * 1000;
+async function getMerchantWaNumber(workspaceId) {
+  let sender;
+  try {
+    sender = workspaceId
+      ? await waTenant.resolveSender(workspaceId, { waba: false })
+      : await waTenant.resolveCurrent({ waba: false });
+  } catch (err) {
+    console.error('[instagram] could not resolve the customer WhatsApp number:', err.code || err.message);
+    return null; // its own number is unusable: no link at all rather than a link to the platform number
+  }
+  if (sender.source === 'tenant') return getTenantWaNumber(sender);
   if (cachedWaNumber) return cachedWaNumber;
   try {
     const res = await axios.get(`${WA_BASE}/${WA_PHONE_ID}`, {
@@ -411,6 +427,26 @@ async function getMerchantWaNumber() {
     console.error('[instagram] could not resolve merchant WhatsApp number:', err.message);
   }
   return cachedWaNumber || null;
+}
+
+// The digits of a customer's own number: the display number saved with it, else read once from Graph with ITS token.
+async function getTenantWaNumber(sender) {
+  if (sender.displayNumber) return String(sender.displayNumber).replace(/[^\d]/g, '') || null;
+  const key = `${sender.workspaceId}|${sender.phoneId}`;
+  const hit = tenantWaNumbers.get(key);
+  if (hit && hit.exp > Date.now()) return hit.number;
+  try {
+    const res = await axios.get(`${WA_BASE}/${sender.phoneId}`, {
+      params: { fields: 'display_phone_number' },
+      headers: { Authorization: `Bearer ${sender.token}` },
+    });
+    const number = (res.data?.display_phone_number || '').replace(/[^\d]/g, '');
+    if (number) tenantWaNumbers.set(key, { number, exp: Date.now() + TENANT_NUMBER_TTL_MS });
+    return number || null;
+  } catch (err) {
+    console.error('[instagram] could not resolve the customer WhatsApp number:', err.message);
+    return null;
+  }
 }
 
 function hashValue(value) {
@@ -433,7 +469,7 @@ async function recordClickAndGetRedirect({ code, source, medium, ip, userAgent }
   });
   await TrackingLink.findByIdAndUpdate(link._id, { $inc: { clicks: 1, uniqueClicks: alreadyClickedBefore ? 0 : 1 } });
 
-  const number = await getMerchantWaNumber();
+  const number = await getMerchantWaNumber(link.workspaceId);
   const message = `Hi, I'd like to claim the ${post.name} offer. Code: ${post.promotionCode}`;
   const waLink = number ? `https://wa.me/${number}?text=${encodeURIComponent(message)}` : null;
   if (!link.destinationUrl && waLink) await TrackingLink.findByIdAndUpdate(link._id, { destinationUrl: waLink });
