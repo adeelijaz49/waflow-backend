@@ -66,6 +66,9 @@ const ENC_KEY = crypto.randomBytes(32).toString('hex');
 const PLATFORM_WABA = '555000111222';
 const PLATFORM_PHONE_ID = '4440001112223'; // set as WA_PHONE_ID for the run
 const SECRET_TOKEN = `EAAB${TAG}${'x'.repeat(70)}`;
+// the plain sentence for a number whose Meta status is not CONNECTED (shared/whatsappRegistration.js)
+const NOT_CONNECTED_PENDING = "Meta shows this number's status as PENDING, not CONNECTED, so it is not ready to send: WhatsApp is likely to refuse its messages with error 133010 (Account not registered). Check its status in Meta, then check again.";
+const NOT_CONNECTED_NAMELESS = 'Meta does not show this number as CONNECTED, so it is not ready to send: WhatsApp is likely to refuse its messages with error 133010 (Account not registered). Check its status in Meta, then check again.';
 
 const saved = {};
 const ENV_KEYS = ['SUPER_ADMIN_CONTACTS', 'ALLOW_SELF_SERVE_SIGNUP', 'WA_TOKEN_ENCRYPTION_KEY', 'WA_TOKEN_ENCRYPTION_KEY_PREV', 'SOCIAL_TOKEN_ENCRYPTION_KEY', 'WA_WABA_ID', 'WA_PHONE_ID'];
@@ -884,6 +887,76 @@ describe('PUT /tenants/:id/whatsapp', () => {
     expect(res.body.whatsapp).toMatchObject({ mode: 'own', tokenConfigured: true, tokenIsValid: null, checkedAt: null, displayPhoneNumber: null });
     const [row] = await auditRows(t.id, 'set_whatsapp');
     expect(row.detail.verified).toBe(false);
+    expect(res.body.registration).toBeUndefined();
+    expect('registration' in res.body).toBe(false);
+    expect(res.body.message).toBeUndefined();
+  });
+
+  test('a number that is not registered yet is SAVED with a warning: 200, the registration, the plain sentence, tokenIsValid true, audit row unchanged', async () => {
+    const t = await makeTenant();
+    const phoneId = nextPhoneId();
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, displayPhoneNumber: '+1 555-643-3808', verifiedName: 'Test Number', wabaId: '777888999000', status: 'PENDING', registered: false });
+    const res = await put(t.id, { phoneId, wabaId: '777888999000', accessToken: SECRET_TOKEN });
+    expect(res.status).toBe(200);
+    expect(res.body.registration).toEqual({ status: 'PENDING', registered: false });
+    expect(res.body.message).toBe(NOT_CONNECTED_PENDING);
+    expect(res.body.whatsapp).toMatchObject({ mode: 'own', tokenIsValid: true, displayPhoneNumber: '+1 555-643-3808' });
+    const raw = await rawWorkspace(t.id);
+    expect(raw.whatsapp.phoneId).toBe(phoneId);
+    expect(raw.whatsapp.tokenIsValid).toBe(true);
+    expect(invalidateSpy).toHaveBeenCalledTimes(1);
+    const [row] = await auditRows(t.id, 'set_whatsapp');
+    expect(Object.keys(row.detail).sort()).toEqual(['keptSavedToken', 'phoneIdLast4', 'previousMode', 'tokenProvided', 'verified', 'wabaId']);
+    expect(JSON.stringify(res.body)).not.toContain(SECRET_TOKEN);
+  });
+
+  test('the registration comes from the status Meta gave, and a registered number carries no message', async () => {
+    const t = await makeTenant();
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, wabaId: '777888999000', status: 'connected', registered: true });
+    const ok = await put(t.id, { phoneId: nextPhoneId(), wabaId: '777888999000', accessToken: SECRET_TOKEN });
+    expect(ok.status).toBe(200);
+    expect(ok.body.registration).toEqual({ status: 'CONNECTED', registered: true });
+    expect(ok.body.message).toBeUndefined();
+    // Meta said nothing about it (an old Graph version): present, unknown, no message
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, wabaId: '777888999000' });
+    const unknown = await put(t.id, { phoneId: nextPhoneId(), wabaId: '777888999000', accessToken: SECRET_TOKEN });
+    expect(unknown.body.registration).toEqual({ status: null, registered: null });
+    expect(unknown.body.message).toBeUndefined();
+    // a check that decided "not registered" without naming Meta's word: still a warning, the sentence just has no bracket
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, wabaId: '777888999000', registered: false });
+    const nameless = await put(t.id, { phoneId: nextPhoneId(), wabaId: '777888999000', accessToken: SECRET_TOKEN });
+    expect(nameless.status).toBe(200);
+    expect(nameless.body.registration).toEqual({ status: null, registered: false });
+    expect(nameless.body.message).toBe(NOT_CONNECTED_NAMELESS);
+    // a status that is only about quality is not "not registered"
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, wabaId: '777888999000', status: 'FLAGGED', registered: null });
+    const flagged = await put(t.id, { phoneId: nextPhoneId(), wabaId: '777888999000', accessToken: SECRET_TOKEN });
+    expect(flagged.body.registration).toEqual({ status: 'FLAGGED', registered: null });
+    expect(flagged.body.message).toBeUndefined();
+  });
+
+  test('a check that gives only the status (no `registered` key) is still read: PENDING is registered false, with the sentence', async () => {
+    const t = await makeTenant();
+    metaStub.mockResolvedValue({ phoneOk: true, status: 'PENDING' });
+    const res = await put(t.id, { phoneId: nextPhoneId(), accessToken: SECRET_TOKEN });
+    expect(res.status).toBe(200);
+    expect(res.body.registration).toEqual({ status: 'PENDING', registered: false });
+    expect(res.body.message).toBe(NOT_CONNECTED_PENDING);
+  });
+
+  test('a real problem still refuses exactly as before, even when the number is also not registered', async () => {
+    const t = await makeTenant();
+    metaStub.mockResolvedValue({ phoneOk: false, tokenIsValid: false, error: 'Error validating access token', status: 'PENDING', registered: false });
+    const res = await put(t.id, { phoneId: nextPhoneId(), wabaId: '777888999000', accessToken: SECRET_TOKEN });
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('TOKEN_INVALID');
+    expect(res.body.registration).toBeUndefined();
+    expect(res.body.error).not.toMatch(/not registered/);
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, wabaId: '111222333444', status: 'PENDING', registered: false });
+    const mismatch = await put(t.id, { phoneId: nextPhoneId(), wabaId: '777888999000', accessToken: SECRET_TOKEN });
+    expect([mismatch.status, mismatch.body.code]).toEqual([422, 'WABA_MISMATCH']);
+    expect((await rawWorkspace(t.id)).whatsapp?.phoneId).toBeUndefined();
+    expect(await auditRows(t.id, 'set_whatsapp')).toHaveLength(0);
   });
 
   test('input validation: bad ids, bad tokens and non-object bodies are 400 and change nothing', async () => {
@@ -971,6 +1044,53 @@ describe('POST /tenants/:id/whatsapp/verify and DELETE /tenants/:id/whatsapp', (
     expect(rows.map((r) => r.detail.reason).sort()).toEqual(['PHONE_NOT_FOUND', 'WABA_MISMATCH']);
   });
 
+  test('a number that is not registered is reported with the plain sentence and a registration, but the token stays recorded as valid', async () => {
+    const { t } = await tenantWithNumber();
+    await mongoose.connection.collection('workspaces').updateOne({ _id: new mongoose.Types.ObjectId(t.id) }, { $set: { 'whatsapp.tokenIsValid': false } });
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, displayPhoneNumber: '+1 555-643-3808', verifiedName: 'Test Number', wabaId: '777888999000', status: 'PENDING', registered: false });
+    const res = await api('post', `/api/platform/tenants/${t.id}/whatsapp/verify`, staff.token);
+    expect(res.status).toBe(200);
+    expect(res.body.registration).toEqual({ status: 'PENDING', registered: false });
+    expect(res.body.message).toBe(NOT_CONNECTED_PENDING);
+    expect(res.body.whatsapp.tokenIsValid).toBe(true); // the token worked: it is recorded valid, never flipped to false by this warning
+    expect((await rawWorkspace(t.id)).whatsapp.tokenIsValid).toBe(true);
+    const [row] = await auditRows(t.id, 'verify_whatsapp');
+    expect(row.detail).toEqual(expect.objectContaining({ tokenIsValid: true, reason: null }));
+    expect(Object.keys(row.detail).sort()).toEqual(['phoneIdLast4', 'reason', 'tokenIsValid']);
+  });
+
+  test('verify: a check that gives only the status (no `registered` key) is still read: PENDING is registered false, with the sentence', async () => {
+    const { t } = await tenantWithNumber();
+    metaStub.mockResolvedValue({ phoneOk: true, status: 'PENDING' });
+    const res = await api('post', `/api/platform/tenants/${t.id}/whatsapp/verify`, staff.token);
+    expect(res.status).toBe(200);
+    expect(res.body.registration).toEqual({ status: 'PENDING', registered: false });
+    expect(res.body.message).toBe(NOT_CONNECTED_PENDING);
+  });
+
+  test('verify: a registered number or one Meta says nothing about carries no message; an existing failed check still reports its own', async () => {
+    const { t } = await tenantWithNumber();
+    const verify = () => api('post', `/api/platform/tenants/${t.id}/whatsapp/verify`, staff.token);
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, wabaId: '777888999000', status: 'CONNECTED', registered: true });
+    const ok = await verify();
+    expect(ok.body.registration).toEqual({ status: 'CONNECTED', registered: true });
+    expect(ok.body.message).toBeUndefined();
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, wabaId: '777888999000' });
+    const unknown = await verify();
+    expect(unknown.body.registration).toEqual({ status: null, registered: null });
+    expect(unknown.body.message).toBeUndefined();
+    // a worse finding wins over the registration warning, and says nothing about registration itself
+    metaStub.mockResolvedValue({ phoneOk: true, tokenIsValid: true, wabaId: '111222333444', status: 'PENDING', registered: false });
+    const mismatch = await verify();
+    expect(mismatch.body.message).toMatch(/different WhatsApp business account/);
+    expect(mismatch.body.message).not.toMatch(/not registered/);
+    metaStub.mockResolvedValue({ phoneOk: false, tokenIsValid: false, error: 'expired' });
+    const bad = await verify();
+    expect(bad.body.message).toMatch(/not valid or has expired/);
+    expect(bad.body.registration).toEqual({ status: null, registered: null });
+    expect(bad.body.whatsapp.tokenIsValid).toBe(false);
+  });
+
   test('verify when Meta is unreachable: 502 and the recorded status is left as it was', async () => {
     const { t } = await tenantWithNumber();
     metaStub.mockRejectedValue(new Error('socket hang up'));
@@ -1030,6 +1150,212 @@ describe('POST /tenants/:id/whatsapp/verify and DELETE /tenants/:id/whatsapp', (
     // the number can now be used by another customer
     const other = await makeTenant();
     expect((await put(other.id, { phoneId, wabaId: '777888999000', accessToken: SECRET_TOKEN })).status).toBe(200);
+  });
+});
+
+// ── 5b. the shared platform number: is WhatsApp willing to send from it? ───────────────────────────────
+
+describe('GET /whatsapp/platform-number', () => {
+  const PATH = '/api/platform/whatsapp/platform-number';
+  const connected = { phoneOk: true, tokenIsValid: null, displayPhoneNumber: '+1 555-643-3808', verifiedName: 'Test Number', wabaId: PLATFORM_WABA, status: 'CONNECTED', registered: true };
+  const pending = { ...connected, status: 'PENDING', registered: false };
+  const COULD_NOT_READ = 'WhatsApp could not read the platform number with this token. Check the phone number id, and that the token belongs to the same WhatsApp business account.';
+  let stub;
+  let get; // a router of its own per test, so the 60-second memo never leaks from one test into the next
+  beforeEach(() => {
+    stub = jest.fn(async () => connected);
+    const probeApp = buildApp(createRouter({ metaCheck: stub, invalidateSender: invalidateSpy }));
+    get = (query = '', token = staff.token) => {
+      const r = request(probeApp).get(PATH + query);
+      return token ? r.set(auth(token)) : r;
+    };
+  });
+
+  test('a registered number: the shape, the platform token is used, no message', async () => {
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body)).toEqual(['number']);
+    expect(res.body.number).toEqual({
+      phoneIdLast4: PLATFORM_PHONE_ID.slice(-4), displayPhoneNumber: '+1 555-643-3808', verifiedName: 'Test Number',
+      status: 'CONNECTED', registered: true, message: null, checkedAt: expect.any(String),
+    });
+    expect(new Date(res.body.number.checkedAt).toISOString()).toBe(res.body.number.checkedAt);
+    expect(stub).toHaveBeenCalledTimes(1);
+    expect(stub).toHaveBeenCalledWith({ phoneId: PLATFORM_PHONE_ID, wabaId: null, token: undefined });
+    expect(stub.mock.calls[0][0].token).toBeUndefined(); // undefined = the platform token
+    expect(JSON.stringify(res.body)).not.toContain(PLATFORM_PHONE_ID); // only the last four digits
+  });
+
+  test('a PENDING number: registered false with the plain sentence', async () => {
+    stub.mockResolvedValue(pending);
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect(res.body.number).toMatchObject({ status: 'PENDING', registered: false, message: NOT_CONNECTED_PENDING, displayPhoneNumber: '+1 555-643-3808', verifiedName: 'Test Number' });
+  });
+
+  test('a status Meta did not give, or one about something else, is unknown (registered null) with no message', async () => {
+    stub.mockResolvedValue({ phoneOk: true, displayPhoneNumber: '+1 555-643-3808' });
+    const silent = await get('?fresh=1');
+    expect(silent.body.number).toMatchObject({ status: null, registered: null, message: null, verifiedName: null });
+    stub.mockResolvedValue({ ...connected, status: 'RESTRICTED', registered: null });
+    const restricted = await get('?fresh=1');
+    expect(restricted.body.number).toMatchObject({ status: 'RESTRICTED', registered: null, message: null });
+  });
+
+  test('a bad platform token and a number Meta cannot find are plain sentences, with registered unknown', async () => {
+    stub.mockResolvedValue({ phoneOk: false, tokenIsValid: false, error: 'Error validating access token', status: null, registered: null });
+    const badToken = await get();
+    expect(badToken.status).toBe(200);
+    expect(badToken.body.number).toMatchObject({ status: null, registered: null, message: 'WhatsApp says the platform access token is not valid or has expired.', displayPhoneNumber: null, verifiedName: null });
+    stub.mockResolvedValue({ phoneOk: false, tokenIsValid: null, error: 'Unsupported get request' });
+    const missing = await get('?fresh=1');
+    expect(missing.status).toBe(200);
+    expect(missing.body.number).toMatchObject({ status: null, registered: null, message: COULD_NOT_READ });
+  });
+
+  test('no platform token configured: its own sentence, registered unknown (metaCheck says noToken, the route does not guess)', async () => {
+    stub.mockResolvedValue({ phoneOk: false, tokenIsValid: null, noToken: true, error: 'No access token is available to check this number.' });
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect(res.body.number).toMatchObject({ status: null, registered: null, message: 'No platform access token is configured on the server.', displayPhoneNumber: null, verifiedName: null });
+  });
+
+  test('a permission-style failure (number unreadable, no token verdict, no noToken) says the number could not be read, not that it was not found', async () => {
+    stub.mockResolvedValue({ phoneOk: false, tokenIsValid: null, error: '(#10) Application does not have permission for this action', status: 'PENDING', registered: false });
+    const res = await get();
+    expect(res.status).toBe(200);
+    expect(res.body.number.message).toBe(COULD_NOT_READ);
+    expect(res.body.number.message).not.toMatch(/could not find/);
+    expect(res.body.number).toMatchObject({ status: null, registered: null }); // a problem verdict reports no registration, even if the stub offered one
+  });
+
+  test('a problem verdict is answered but never remembered: the next plain request looks again and shows the new state at once', async () => {
+    stub.mockResolvedValue({ phoneOk: false, tokenIsValid: false, error: 'expired' });
+    const bad = await get();
+    expect(bad.body.number.message).toMatch(/not valid or has expired/);
+    stub.mockResolvedValue({ phoneOk: false, tokenIsValid: null, noToken: true });
+    expect((await get()).body.number.message).toBe('No platform access token is configured on the server.');
+    stub.mockResolvedValue({ phoneOk: false, tokenIsValid: null });
+    expect((await get()).body.number.message).toBe(COULD_NOT_READ);
+    expect(stub).toHaveBeenCalledTimes(3);
+    stub.mockResolvedValue(connected); // fixed: a plain reload shows it, and this successful read IS remembered
+    expect((await get()).body.number).toMatchObject({ registered: true, message: null });
+    expect((await get()).body.number.registered).toBe(true);
+    expect(stub).toHaveBeenCalledTimes(4);
+  });
+
+  test('looks that overlap: a slow older look finishing last never overwrites the answer of a newer ?fresh=1 look', async () => {
+    const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
+    const a = deferred();
+    const b = deferred();
+    const queue = [a, b];
+    stub.mockImplementation(() => queue.shift().promise);
+    const waitForCalls = async (n) => { for (let i = 0; i < 200 && stub.mock.calls.length < n; i += 1) await sleep(5); expect(stub.mock.calls.length).toBe(n); };
+    const lookA = get().then((r) => r);
+    await waitForCalls(1);
+    await sleep(15); // B starts clearly later than A
+    const lookB = get('?fresh=1').then((r) => r);
+    await waitForCalls(2);
+    b.resolve(connected); // the newer look finishes first, CONNECTED
+    expect((await lookB).body.number.status).toBe('CONNECTED');
+    a.resolve(pending); // then the older, slower look finishes with PENDING
+    expect((await lookA).body.number.status).toBe('PENDING'); // it still answers its own caller
+    const after = await get(); // but the memo keeps the newer answer, and Meta is not asked again
+    expect(after.body.number).toMatchObject({ status: 'CONNECTED', registered: true });
+    expect(stub).toHaveBeenCalledTimes(2);
+  });
+
+  test('a newer look that finds a problem drops the earlier good answer: a plain reload cannot keep showing "all fine" for the rest of the minute', async () => {
+    expect((await get()).body.number.registered).toBe(true); // CONNECTED, remembered
+    stub.mockResolvedValue({ phoneOk: false, tokenIsValid: false, error: 'expired' });
+    expect((await get('?fresh=1')).body.number.message).toMatch(/not valid or has expired/); // the newer look sees a problem
+    stub.mockResolvedValue(pending);
+    const after = await get(); // not served from the old CONNECTED answer: Meta is asked again
+    expect(after.body.number).toMatchObject({ status: 'PENDING', registered: false });
+    expect(stub).toHaveBeenCalledTimes(3);
+  });
+
+  test('Meta unreachable, or busy: 502 VERIFY_UNAVAILABLE exactly like the other WhatsApp routes, and the failure is not remembered', async () => {
+    stub.mockRejectedValueOnce(new Error('getaddrinfo ENOTFOUND graph.facebook.com'));
+    const down = await get();
+    expect([down.status, down.body.code]).toEqual([502, 'VERIFY_UNAVAILABLE']);
+    expect(down.body.error).toMatch(/could not reach WhatsApp/);
+    expect(JSON.stringify(down.body)).not.toContain('ENOTFOUND');
+    stub.mockResolvedValueOnce({ phoneOk: false, tokenIsValid: null, transient: true, error: 'Service temporarily unavailable' });
+    const busy = await get();
+    expect([busy.status, busy.body.code]).toEqual([502, 'VERIFY_UNAVAILABLE']);
+    expect(busy.body.error).toMatch(/busy/);
+    // the next plain request asks Meta again (nothing was kept) and the good answer is then kept
+    stub.mockResolvedValue(connected);
+    expect((await get()).status).toBe(200);
+    expect(stub).toHaveBeenCalledTimes(3);
+    await get();
+    expect(stub).toHaveBeenCalledTimes(3);
+  });
+
+  test('the answer is reused for 60 seconds; ?fresh=1 skips the memo and refreshes it', async () => {
+    const first = await get();
+    expect(first.body.number.registered).toBe(true);
+    stub.mockResolvedValue(pending); // Meta changed its mind, but the memo still holds the earlier answer
+    const second = await get();
+    expect(stub).toHaveBeenCalledTimes(1);
+    expect(second.body).toEqual(first.body); // same answer, same checkedAt
+    const refreshed = await get('?fresh=1');
+    expect(stub).toHaveBeenCalledTimes(2);
+    expect(refreshed.body.number).toMatchObject({ registered: false, status: 'PENDING' });
+    expect((await get()).body.number.registered).toBe(false); // the refresh replaced the memo
+    expect(stub).toHaveBeenCalledTimes(2);
+    // only the exact value 1 refreshes
+    await get('?fresh=0');
+    expect(stub).toHaveBeenCalledTimes(2);
+  });
+
+  test('after 60 seconds the memo is stale and Meta is asked again', async () => {
+    await get();
+    const realNow = Date.now.bind(Date);
+    jest.spyOn(Date, 'now').mockImplementation(() => realNow() + 59 * 1000);
+    await get();
+    expect(stub).toHaveBeenCalledTimes(1);
+    Date.now.mockImplementation(() => realNow() + 61 * 1000);
+    await get();
+    expect(stub).toHaveBeenCalledTimes(2);
+  });
+
+  test('the phone id is WA_PHONE_ID when set and the built-in default otherwise (and a changed id is never answered from the memo)', async () => {
+    await get();
+    expect(stub.mock.calls[0][0].phoneId).toBe(PLATFORM_PHONE_ID);
+    delete process.env.WA_PHONE_ID;
+    const res = await get(); // not "fresh", but a different number than the one remembered
+    expect(stub).toHaveBeenCalledTimes(2);
+    expect(stub.mock.calls[1][0]).toEqual({ phoneId: '1032683093271618', wabaId: null, token: undefined });
+    expect(res.body.number.phoneIdLast4).toBe('1618');
+  });
+
+  test('read-only: no audit row, and the answer never carries a token or any detail of Meta\'s error', async () => {
+    const before = await PlatformAuditLog.countDocuments({});
+    stub.mockResolvedValue({ phoneOk: false, tokenIsValid: false, error: `Error validating access token: ${SECRET_TOKEN}` });
+    const res = await get();
+    const ok = await get('?fresh=1');
+    expect(res.status).toBe(200);
+    expect(ok.status).toBe(200);
+    expect(res.text).not.toContain(SECRET_TOKEN);
+    expect(res.text).not.toContain('Error validating');
+    expect(Object.keys(res.body.number).sort()).toEqual(['checkedAt', 'displayPhoneNumber', 'message', 'phoneIdLast4', 'registered', 'status', 'verifiedName']);
+    expect(await PlatformAuditLog.countDocuments({})).toBe(before);
+  });
+
+  test('super admins only: 401 without a token, 403 for an ordinary customer owner, for a forged sa claim and for an act-as token; Meta is never asked', async () => {
+    expect((await get('', null)).status).toBe(401);
+    const ordinary = await fx.makeWorkspace({ arabic: false });
+    const refused = await get('', ordinary.token);
+    expect([refused.status, refused.body.error]).toEqual([403, 'Super admin only']);
+    const forged = jwt.sign({ sub: String(ordinary.user._id), workspaceId: String(ordinary.workspaceId), role: 'owner', sa: true }, JWT_SECRET, { expiresIn: '1h', issuer: ISSUER, audience: AUDIENCE });
+    expect((await get('', forged)).status).toBe(403);
+    const t = await makeTenant();
+    const entered = await api('post', `/api/platform/tenants/${t.id}/enter`, staff.token);
+    const act = await get('', entered.body.token);
+    expect([act.status, act.body.error]).toEqual([403, 'Super admin only']);
+    expect(stub).not.toHaveBeenCalled();
   });
 });
 
@@ -1225,10 +1551,10 @@ describe('default metaCheck (read-only Graph GETs)', () => {
       ? { status: 200, data: { data: { is_valid: true, expires_at: 0 } } }
       : { status: 200, data: { display_phone_number: '+966 50 111 2222', verified_name: 'MegaSun', whatsapp_business_account: { id: '123456789012' } } });
     const out = await defaultMetaCheck({ phoneId: '999888777666', wabaId: null, token: SECRET_TOKEN });
-    expect(out).toEqual({ phoneOk: true, tokenIsValid: true, displayPhoneNumber: '+966 50 111 2222', verifiedName: 'MegaSun', wabaId: '123456789012' });
+    expect(out).toEqual({ phoneOk: true, tokenIsValid: true, displayPhoneNumber: '+966 50 111 2222', verifiedName: 'MegaSun', wabaId: '123456789012', status: null, registered: null });
     expect(calls.map((c) => c.method)).toEqual(['GET', 'GET']);
     expect(calls[0].url).toMatch(/^https:\/\/graph\.facebook\.com\/v[\d.]+\/999888777666$/);
-    expect(calls[0].params).toEqual({ fields: 'display_phone_number,verified_name,whatsapp_business_account' });
+    expect(calls[0].params).toEqual({ fields: 'display_phone_number,verified_name,status,code_verification_status,whatsapp_business_account' });
     expect(calls[0].headers.Authorization).toBe('Bearer ' + SECRET_TOKEN);
     expect(JSON.stringify(calls[0].params) + calls[0].url).not.toContain(SECRET_TOKEN); // never in the URL of the phone-number call
     expect(calls[1].url).toBe('https://graph.facebook.com/debug_token');
@@ -1255,9 +1581,80 @@ describe('default metaCheck (read-only Graph GETs)', () => {
     script = () => ({ status: 400, data: { error: { message: 'Unsupported get request', code: 100 } } });
     calls.length = 0;
     const missing = await defaultMetaCheck({ phoneId: '999888777666', token: SECRET_TOKEN });
-    expect(calls).toHaveLength(2); // code 100 on the first fields list: retried once with the core fields only
-    expect(calls[1].params).toEqual({ fields: 'display_phone_number,verified_name' });
-    expect(missing).toMatchObject({ phoneOk: false, tokenIsValid: null });
+    expect(calls).toHaveLength(3); // code 100 every time: the extended fields, then the plain ones, then the core fields only
+    expect(calls[2].params).toEqual({ fields: 'display_phone_number,verified_name' });
+    expect(missing).toMatchObject({ phoneOk: false, tokenIsValid: null, status: null, registered: null });
+  });
+
+  test('it also asks for the registration status, and says whether the number is registered (CONNECTED yes, PENDING no, silent Meta unknown)', async () => {
+    const phone = { display_phone_number: '+1 555-643-3808', verified_name: 'Test Number' };
+    for (const [data, status, registered] of [
+      [{ ...phone, status: 'CONNECTED' }, 'CONNECTED', true],
+      [{ ...phone, status: 'PENDING', code_verification_status: 'NOT_VERIFIED' }, 'PENDING', false],
+      [{ ...phone, status: 'pending ' }, 'PENDING', false],
+      [{ ...phone, status: 'FLAGGED' }, 'FLAGGED', null],
+      [phone, null, null],
+    ]) {
+      calls.length = 0;
+      script = () => ({ status: 200, data });
+      const out = await defaultMetaCheck({ phoneId: '999888777666', token: SECRET_TOKEN });
+      expect([out.phoneOk, out.status, out.registered]).toEqual([true, status, registered]);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].params.fields.split(',')).toEqual(expect.arrayContaining(['status', 'code_verification_status']));
+    }
+  });
+
+  const EXTENDED = 'display_phone_number,verified_name,status,code_verification_status,whatsapp_business_account';
+  const PLAIN = 'display_phone_number,verified_name,whatsapp_business_account';
+  const CORE = 'display_phone_number,verified_name';
+  const goodPhone = { display_phone_number: '+1 555 000 0000', verified_name: 'Biz', whatsapp_business_account: { id: '123456789012' } };
+  const check = () => defaultMetaCheck({ phoneId: '999888777666', token: SECRET_TOKEN });
+  const fieldsAsked = () => calls.map((c) => c.params.fields);
+
+  test('the fields chain: a pass is ONE call, with the status fields asked for', async () => {
+    script = () => ({ status: 200, data: { ...goodPhone, status: 'PENDING' } });
+    const out = await check();
+    expect(fieldsAsked()).toEqual([EXTENDED]);
+    expect(out).toMatchObject({ phoneOk: true, status: 'PENDING', registered: false, wabaId: '123456789012' });
+  });
+
+  test('the fields chain: a refusal that is not a token verdict or a "try later" (here a permission error) asks again for exactly what this check always asked for, so it passes as before', async () => {
+    script = (call, n) => (n === 1 ? { status: 403, data: { error: { message: '(#10) Permission denied', code: 10 } } } : { status: 200, data: goodPhone });
+    const out = await check();
+    expect(fieldsAsked()).toEqual([EXTENDED, PLAIN]);
+    expect(out).toMatchObject({ phoneOk: true, wabaId: '123456789012', status: null, registered: null });
+  });
+
+  test('the fields chain: 400 / code 100 on the first two asks the core fields last, and that last answer is the one used', async () => {
+    const unknownField = { status: 400, data: { error: { message: 'Tried accessing nonexisting field', code: 100 } } };
+    script = (call, n) => (n <= 2 ? unknownField : { status: 200, data: { display_phone_number: '+1 555 000 0000', verified_name: 'Biz' } });
+    const out = await check();
+    expect(fieldsAsked()).toEqual([EXTENDED, PLAIN, CORE]);
+    expect(out).toMatchObject({ phoneOk: true, verifiedName: 'Biz', wabaId: null, status: null, registered: null });
+  });
+
+  test('the fields chain: a wrong phone id (400 / code 100 every time) costs three calls and fails', async () => {
+    script = () => ({ status: 400, data: { error: { message: 'Unsupported get request', code: 100 } } });
+    const out = await check();
+    expect(fieldsAsked()).toEqual([EXTENDED, PLAIN, CORE]);
+    expect(out).toMatchObject({ phoneOk: false, tokenIsValid: null, status: null, registered: null });
+    expect(out.transient).toBeUndefined();
+  });
+
+  test('the fields chain: a token verdict (190) is ONE call', async () => {
+    script = () => ({ status: 400, data: { error: { message: 'Error validating access token', code: 190 } } });
+    const out = await check();
+    expect(calls).toHaveLength(1);
+    expect(out).toMatchObject({ phoneOk: false, tokenIsValid: false });
+  });
+
+  test('the fields chain: a transient failure (5xx or 429) is ONE call and says transient', async () => {
+    for (const status of [503, 500, 429]) {
+      calls.length = 0;
+      script = () => ({ status, data: { error: { message: 'Try later' } } });
+      const out = await check();
+      expect([status, calls.length, out.transient, out.phoneOk]).toEqual([status, 1, true, false]);
+    }
   });
 
   test('no token given means the platform token; none available at all is a plain refusal, not a crash', async () => {
@@ -1270,7 +1667,8 @@ describe('default metaCheck (read-only Graph GETs)', () => {
     calls.length = 0;
     tokenManager.getToken.mockReturnValue('');
     const none = await defaultMetaCheck({ phoneId: '999888777666', token: undefined });
-    expect(none.phoneOk).toBe(false);
+    expect(none).toEqual({ phoneOk: false, tokenIsValid: null, noToken: true, error: 'No access token is available to check this number.' }); // noToken tells the route "nothing configured", not "Meta said no"
+    expect(out.noToken).toBeUndefined();
     expect(calls).toHaveLength(0);
   });
 

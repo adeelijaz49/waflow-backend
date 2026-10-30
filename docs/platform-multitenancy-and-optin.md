@@ -100,6 +100,9 @@ it is approved they are told they can send; English only for now.
   A number added **inside the platform's own WhatsApp account** needs only its phone id (it rides on the platform token).
   Saving a token needs `WA_TOKEN_ENCRYPTION_KEY` (64 hex characters); without it the card answers "not set up on this server".
   The same phone number id cannot belong to two customers or be the platform's own number.
+  The checks also read the number's **status**: Meta requires CONNECTED to send, so a number that is not CONNECTED (for example PENDING) is
+  saved with a warning, not refused, and shown on the card with its status; sends from it fail with `133010` until it is connected
+  (section 7, "A send fails with (#133010)"). The same status of the **shared** number is shown on the Platform screens.
   A check that Meta answers with "busy, try later" (5xx, 429, a throttling code) is **not a verdict**: it is reported as "could not
   check", nothing is saved and nothing is marked invalid. A finding that is not about the token (number not found, other account) is
   shown to the person but does not switch the customer's sending off; only "the token is not valid" does.
@@ -421,6 +424,75 @@ and erases the saved number and token (section 2): entering them again is the on
   sweeper, or when the merchant presses Send again).
 * For every customer with its own number: subscribe their WhatsApp Business Account to WaFlow's app (above).
 * Keep the shared number a real, registered number (not the Meta test number) before real shoppers are messaged.
+
+### A send fails with "(#133010) Account not registered"
+
+**What it means.** Meta's error table: *133010 - Phone number not registered on the WhatsApp Business Platform; register the phone number.*
+Meta also says a business phone number "must have a status of connected" to send. The error is about the **sending** number, never about
+the customer who should receive the message (recipient problems have other codes: `131026` not reachable on WhatsApp, `131030` not on the
+test number's allowed list, `131047` the 24-hour window is closed). The Promotions screen shows Meta's words with one plain sentence under
+them.
+
+**1. Which number sent it?** Platform → the customer → *WhatsApp number* card. "Sending from: The shared platform WhatsApp number" means
+the shared number: the card shows its status, and the Platform list shows a warning banner whenever there is a problem with the shared
+number (it is not connected, or the platform token or phone number id cannot be read). An own number means that number (the last four
+digits of its phone number id are shown). If another customer that uses the same sender fails too, it is the sender.
+
+**2. Read the number's status** (read-only; the token goes only in the Authorization header, never in a URL, a chat or a ticket):
+
+```
+curl -s -H "Authorization: Bearer $TOKEN" "https://graph.facebook.com/v25.0/<phone number id>?fields=display_phone_number,verified_name,status,code_verification_status,name_status,platform_type,whatsapp_business_account"
+```
+
+Healthy: `status` CONNECTED and `code_verification_status` VERIFIED (a Meta *test* number legitimately reads `platform_type`
+NOT_APPLICABLE). Meta requires CONNECTED to send, so `PENDING` means the number is not ready to send. Meta does not define PENDING for a
+phone number: reading it as "not registered" is our inference, backed by the 133010 text and by the shared number reading PENDING /
+NOT_VERIFIED on 25 October 2026 (until it reconnected) and again on 30 October 2026 (a merchant's opt-in send failed with 133010).
+
+**The shared number** is Meta's free test number (a +1 555 number). On 2026-10-25 it was CONNECTED again after the owner generated an
+access token in the Meta developer dashboard (the WaFlow app → WhatsApp → API Setup) and put it on the server; whether that or something
+on Meta's side did the work is **not established** (Meta documents nothing about a test number leaving CONNECTED), and it was PENDING
+again on 2026-10-30. Do **not** delete the test number or the app (Meta may not issue another). There is no documented reason to call
+`/register` on it (it would spend one of the 10 tries per 72 hours and set a PIN). In order:
+
+1. API Setup → *From* must be the test number: the phone number id on the server (`WA_PHONE_ID`, default ending 1618) and its account
+   (`WA_WABA_ID`). If the dashboard shows other ids, Meta re-provisioned the number and the server settings are stale.
+2. *To* → *Manage phone number list*: the phone that should receive the test (up to 5) must be on the list.
+3. Generate the access token, then press *Send message* (the hello_world template) to that phone: this tests the number in Meta's own
+   tool, outside WaFlow. It is a test, not a known repair.
+4. Read the status (above), or press *Check again* on the Platform screen. CONNECTED means it worked; still PENDING: go to step 6.
+5. Give the server a durable token: Business settings → Users → System users → a system user with the app and the WhatsApp account → a
+   token with `whatsapp_business_management` and `whatsapp_business_messaging` and the longest expiry offered. A token from API Setup
+   "expires quickly".
+6. Still PENDING: open a Meta developer support ticket with the phone number id, the account id, the `fbtrace_id` of a failed send and the
+   dates, and stop relying on the test number.
+
+The test number can message only the people on its allow-list, so it cannot serve real customers. Also read the account's health
+(`GET /<waba id>?fields=health_status`): when a BUSINESS-level entity reads BLOCKED, its `errors` array says why (for example that the
+business is not verified or its profile is incomplete). That did not stop test-number sends on 2026-10-25, but fix it before real
+shoppers are messaged, when the shared number should be a real, registered number with an approved display name.
+
+**A customer's own number** (the fix is in the customer's Meta account):
+
+1. Add the number (WhatsApp Manager → Phone numbers) with the display name customers should see. It must be able to receive an SMS or a
+   call and must not be active in a consumer WhatsApp or WhatsApp Business app.
+2. Verify it with the code: `code_verification_status` must read VERIFIED.
+3. Register it for the Cloud API: `POST /<phone number id>/register` with `{"messaging_product":"whatsapp","pin":"123456"}`. The PIN has 6
+   digits: the number's existing two-step PIN if it has one, otherwise the PIN you send **becomes** its two-step PIN (write it down).
+   Token: `whatsapp_business_management` and `whatsapp_business_messaging`. At most 10 tries per number per 72 hours (then `133016`).
+   Meta's registration page says a number can be registered only through the API; reports differ on whether WhatsApp Manager registers it
+   by itself after the code, so go by the status read, not by the screen. A number added by Embedded Signup must be registered within 14
+   days, or the signup repeated.
+4. Read the status: CONNECTED. Then Platform → the customer → *Verify and save* / *Test connection*: both show the number's status, and
+   a number that is not connected is saved with a warning, not refused.
+5. The customer's own account needs its own approved templates (WaFlow submits its standard ones the first time they are needed), a
+   payment method (the account's payment settings in Meta), and a token that belongs to the business that owns that account.
+
+**What tends to fail next:** `131030` for a recipient who is not on the test number's allow-list; a template that does not exist or is not
+approved in the sender's own account (`132001`, `132015`, `132016`); `131047` outside the 24-hour window; `131037` for a display name
+that is not approved yet; `190` when a short-lived token expires (WaFlow then marks that customer's token invalid and stops its sends);
+`131049` marketing limits per person; `131042` when the account has no payment method; and a new business account starts at 250 unique
+recipients per day until it is verified.
 
 ### Roll back
 

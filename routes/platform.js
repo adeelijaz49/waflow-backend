@@ -30,11 +30,13 @@ const tokenVault = require('../shared/onboarding/tokenVault');
 const platformAdmin = require('../shared/platformAdmin');
 const { requireAuth, JWT_SECRET, ISSUER, AUDIENCE } = require('../middleware/requireAuth');
 const requireSuperAdmin = require('../middleware/requireSuperAdmin');
+const { registrationOf, registrationMessage } = require('../shared/whatsappRegistration');
 
 const OBJECT_ID_RE = /^[0-9a-f]{24}$/i;
 const ENTER_TTL = '8h';
 const LIST_LIMIT = 200;
 const PLATFORM_PHONE_ID_DEFAULT = '1032683093271618'; // utils/whatsapp.js's own default for WA_PHONE_ID
+const PLATFORM_NUMBER_MEMO_MS = 60 * 1000; // how long the Platform screen's look at the shared number is reused
 
 // ── small helpers ────────────────────────────────────────────────────────────
 
@@ -85,7 +87,10 @@ function wrap(handler) {
 
 // Defaults for the injectable dependencies (tests pass their own, so no test ever uses the network).
 //
-// metaCheck({ phoneId, wabaId, token }) -> { phoneOk, tokenIsValid, displayPhoneNumber, verifiedName, wabaId, error?, transient? }
+// metaCheck({ phoneId, wabaId, token }) -> { phoneOk, tokenIsValid, displayPhoneNumber, verifiedName, wabaId, status, registered, error?, transient?, noToken? }
+//   noToken: true only when there was no token to test with (none given and no platform token configured): nothing was asked of Graph.
+//   status = Meta's own word for the number's state (CONNECTED, PENDING, ...) or null; registered = true / false / null, see
+//   shared/whatsappRegistration.js (a number that is not registered passes every other check here but WhatsApp refuses its sends).
 //   `token` undefined = "use the platform token". READ-ONLY Graph calls: GET /{phoneId}?fields=... and, when the app
 //   credentials are configured and a token is being tested, GET /debug_token. Throws when Graph cannot be reached; answers
 //   transient: true when Graph answered but only to say "busy / try later" (5xx, 429, a throttling error code): that says nothing
@@ -95,26 +100,41 @@ function isTransientGraphFailure(status, error) {
   if (status >= 500 || status === 429 || status === 408) return true;
   return !!error && (error.is_transient === true || TRANSIENT_GRAPH_CODES.has(Number(error.code)));
 }
+// The status fields are a bonus on top of what this check always asked for (PLAIN), so asking for them must never turn a check that
+// used to pass into one that fails.
+const PHONE_FIELDS_EXTENDED = 'display_phone_number,verified_name,status,code_verification_status,whatsapp_business_account';
+const PHONE_FIELDS_PLAIN = 'display_phone_number,verified_name,whatsapp_business_account';
+const PHONE_FIELDS_CORE = 'display_phone_number,verified_name';
 async function defaultMetaCheck({ phoneId, token }) {
   const axios = require('axios');
   const metaConfig = require('../shared/onboarding/metaConfig');
   const { sanitizeMessage } = require('../shared/onboarding/metaClient');
   const secret = token || require('../utils/tokenManager').getToken();
-  if (!secret) return { phoneOk: false, tokenIsValid: null, error: 'No access token is available to check this number.' };
+  if (!secret) return { phoneOk: false, tokenIsValid: null, noToken: true, error: 'No access token is available to check this number.' };
   const base = metaConfig.GRAPH_BASE();
   const opts = { headers: { Authorization: `Bearer ${secret}` }, timeout: 10000, validateStatus: () => true };
+  const getPhone = (fields) => axios.get(`${base}/${phoneId}`, { ...opts, params: { fields } });
+  const isOk = (r) => r.status >= 200 && r.status < 300;
+  const errorOf = (r) => (r.data && r.data.error) || undefined;
 
-  let res = await axios.get(`${base}/${phoneId}`, { ...opts, params: { fields: 'display_phone_number,verified_name,whatsapp_business_account' } });
-  if (res.status === 400 && res.data && res.data.error && res.data.error.code === 100) {
-    // an older/newer Graph version may not offer the account field on this node: ask for the core fields only
-    res = await axios.get(`${base}/${phoneId}`, { ...opts, params: { fields: 'display_phone_number,verified_name' } });
+  // Ask for the most first. If Meta refuses that and the refusal is not a token verdict (190) or a "try later", ask again for exactly
+  // what this check always asked for, so a token or Graph version that refuses the extra status fields gets the old request and the
+  // old verdict. If that still says HTTP 400 / code 100 (a field this Graph version lacks, or a wrong phone id), ask once more for
+  // the core fields. The LAST answer is the one evaluated. A pass or a token / transient verdict costs one call; a wrong phone id
+  // (400 / code 100 every time) costs three.
+  let res = await getPhone(PHONE_FIELDS_EXTENDED);
+  if (!isOk(res)) {
+    const e = errorOf(res);
+    if (!(e && e.code === 190) && !isTransientGraphFailure(res.status, e)) res = await getPhone(PHONE_FIELDS_PLAIN);
   }
-  const out = { phoneOk: false, tokenIsValid: null, displayPhoneNumber: null, verifiedName: null, wabaId: null };
+  if (res.status === 400 && errorOf(res) && errorOf(res).code === 100) res = await getPhone(PHONE_FIELDS_CORE);
+  const out = { phoneOk: false, tokenIsValid: null, displayPhoneNumber: null, verifiedName: null, wabaId: null, status: null, registered: null };
   if (res.status >= 200 && res.status < 300 && res.data && typeof res.data === 'object') {
     out.phoneOk = true;
     out.displayPhoneNumber = res.data.display_phone_number || null;
     out.verifiedName = res.data.verified_name || null;
     out.wabaId = res.data.whatsapp_business_account && res.data.whatsapp_business_account.id ? String(res.data.whatsapp_business_account.id) : null;
+    Object.assign(out, registrationOf({ status: res.data.status }));
   } else {
     const e = res.data && res.data.error;
     out.error = sanitizeMessage((e && e.message) || `HTTP ${res.status}`, [secret]);
@@ -535,7 +555,13 @@ function createRouter(overrides = {}) {
       throw err;
     }
     deps.invalidateSender(ws._id);
-    res.json({ whatsapp: whatsappStatus(await Workspace.findById(ws._id).select(WS_SELECT).lean()) });
+    const out = { whatsapp: whatsappStatus(await Workspace.findById(ws._id).select(WS_SELECT).lean()) };
+    if (check) { // a number that is not registered yet is saved all the same (it works once registered): the person is told, not refused
+      const finding = registrationFinding(check);
+      out.registration = finding.registration;
+      if (finding.message) out.message = finding.message;
+    }
+    res.json(out);
   }));
 
   router.post('/tenants/:id/whatsapp/verify', wrap(async (req, res) => {
@@ -562,8 +588,48 @@ function createRouter(overrides = {}) {
     await Workspace.updateOne({ _id: ws._id }, { $set: set }, { strict: false });
     deps.invalidateSender(ws._id);
     const out = { whatsapp: whatsappStatus(await Workspace.findById(ws._id).select(WS_SELECT).lean()) };
+    const finding = registrationFinding(check);
+    out.registration = finding.registration;
+    // a real problem is reported first; "not registered" is only a warning and never changes what was recorded above
     if (bad) out.message = bad.message;
+    else if (finding.message) out.message = finding.message;
     res.json(out);
+  }));
+
+  // The shared platform number, as the Platform screen shows it: is WhatsApp willing to send from it? Read-only (no audit row).
+  // One look at Meta is reused for a minute so reopening the screen does not hit Graph each time; ?fresh=1 looks again.
+  // Only a successful read of the number is kept: "could not reach Meta" and a problem verdict (bad token, no token, number not
+  // readable) are answered but never remembered, so a plain reload after a fix shows the new state at once.
+  let platformNumberMemo = null; // { phoneId, startedAt, number }
+  router.get('/whatsapp/platform-number', wrap(async (req, res) => {
+    const phoneId = process.env.WA_PHONE_ID || PLATFORM_PHONE_ID_DEFAULT;
+    const fresh = req.query.fresh === '1';
+    if (!fresh && platformNumberMemo && platformNumberMemo.phoneId === phoneId && Date.now() - platformNumberMemo.startedAt < PLATFORM_NUMBER_MEMO_MS) {
+      return res.json({ number: platformNumberMemo.number });
+    }
+    const startedAt = Date.now(); // when the look STARTED: a slow older look must not overwrite a newer one (see below)
+    const check = await runCheck(deps, { phoneId, wabaId: null, token: undefined }); // undefined token = the platform token
+    const { registration, message } = registrationFinding(check);
+    let problem = message;
+    if (check.tokenIsValid === false) problem = 'WhatsApp says the platform access token is not valid or has expired.';
+    else if (check.noToken === true) problem = 'No platform access token is configured on the server.';
+    else if (check.phoneOk === false) problem = 'WhatsApp could not read the platform number with this token. Check the phone number id, and that the token belongs to the same WhatsApp business account.';
+    const isProblem = check.tokenIsValid === false || check.noToken === true || check.phoneOk === false;
+    const number = {
+      phoneIdLast4: last4(phoneId),
+      displayPhoneNumber: check.displayPhoneNumber ? String(check.displayPhoneNumber) : null,
+      verifiedName: check.verifiedName ? String(check.verifiedName) : null,
+      status: isProblem ? null : registration.status,
+      registered: isProblem ? null : registration.registered,
+      message: problem || null,
+      checkedAt: new Date().toISOString(),
+    };
+    // Looks can overlap (a ?fresh=1 while a plain one is still waiting on Meta): only a look that started no earlier than the kept one
+    // may change it, so the older, slower answer never wins. A newer look replaces the kept answer with its own - or drops it when it
+    // found a problem, so a plain reload cannot go on showing an earlier "all fine" for the rest of the minute.
+    const keptIsNewer = platformNumberMemo && platformNumberMemo.phoneId === phoneId && platformNumberMemo.startedAt > startedAt;
+    if (!keptIsNewer) platformNumberMemo = check.phoneOk === true && !isProblem ? { phoneId, startedAt, number } : null;
+    res.json({ number });
   }));
 
   router.delete('/tenants/:id/whatsapp', wrap(async (req, res) => {
@@ -664,6 +730,15 @@ function describeBadCheck(check, { wabaId, usingPlatformToken, platformWaba }) {
     return { code: 'NEEDS_TOKEN', message: 'That number belongs to a different WhatsApp business account than WaFlow\'s own, so it needs its own access token.' };
   }
   return null;
+}
+
+// What a check says about registration: { registration: { status, registered }, message }. message is the plain sentence only for a
+// number WhatsApp will refuse sends from (registered === false), else null.
+// Kept apart from describeBadCheck on purpose: it is a warning, so it must not refuse a save or flip tokenIsValid (the token worked).
+function registrationFinding(check) {
+  const registration = registrationOf({ status: check.status });
+  if (typeof check.registered === 'boolean') registration.registered = check.registered; // a check that already decided (a stub, or metaCheck itself)
+  return { registration, message: registration.registered === false ? registrationMessage(registration.status) : null };
 }
 
 function refuseBadCheck(check, ctx) {
