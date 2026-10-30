@@ -46,11 +46,21 @@ describe('routes/legal', () => {
     await Workspace.findByIdAndDelete(workspace._id);
   });
 
-  test('GET /documents lists all five, each with a current version and draft status', async () => {
+  test('GET /documents lists all five, each with a current version; the Refund & Cancellation Policy is final, the other four are still drafts', async () => {
     const res = await request(app).get('/api/legal/documents').set('Authorization', `Bearer ${ownerToken}`);
     expect(res.status).toBe(200);
     expect(res.body).toHaveLength(5);
-    expect(res.body.every((d) => d.status === 'draft')).toBe(true);
+    expect(res.body.every((d) => typeof d.currentVersion === 'string' && d.currentVersion)).toBe(true);
+    const refund = res.body.find((d) => d.slug === 'refund_cancellation_policy');
+    expect(refund).toMatchObject({ currentVersion: 'v1', status: 'final', effectiveDate: '2026-10-25' });
+    expect(res.body.filter((d) => d.slug !== 'refund_cancellation_policy').every((d) => d.status === 'draft')).toBe(true);
+  });
+
+  test('the Refund & Cancellation Policy has no acceptance step: it is neither part of the combined acceptance nor of the DPA', async () => {
+    const res = await request(app).get('/api/legal/acceptance-status').set('Authorization', `Bearer ${ownerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.combined.documents.map((d) => d.slug)).toEqual(['terms_of_service', 'privacy_policy', 'acceptable_use_policy']);
+    expect(res.body.dpa.slug).toBe('data_processing_agreement');
   });
 
   test('GET /documents/:slug?version=<current> matches the no-param response; an unknown version 404s', async () => {

@@ -6,8 +6,11 @@
 // version stays fully retrievable (see routes/legal.js's `?version=`
 // support) even after the document is updated.
 //
-// All five documents below are still marked "DRAFT — FOR LEGAL REVIEW" in
-// their own body text and are NOT approved for real launch.
+// Four of the five documents below (Terms, Privacy, Acceptable Use, DPA) are
+// still marked "DRAFT — FOR LEGAL REVIEW" in their own body text and are NOT
+// approved for real launch. The Refund & Cancellation Policy is FINAL: version
+// 'v1' is the owner's text of 25 October 2026 (its first draft stays
+// retrievable as 'draft-1').
 
 const HOSTING_REGION = 'the Kingdom of Saudi Arabia';
 // NOTE: the current dev/staging environment actually runs on Microsoft Azure
@@ -708,7 +711,7 @@ partners@waflow.ai
 
   refund_cancellation_policy: {
     title: 'Refund & Cancellation Policy',
-    currentVersion: 'draft-1',
+    currentVersion: 'v1',
     versions: {
       'draft-1': { effectiveDate: DRAFT_DATE, status: 'draft', body: `# WaFlow Refund & Cancellation Policy
 
@@ -771,6 +774,53 @@ Processing Agreement], except where retention is required by law.
 
 Questions about billing, cancellation, or refunds can be directed to
 partners@waflow.ai.
+` },
+      // The owner's final text, "Last updated: 25 October 2026". Word for word, except that the two bracketed references in section 5
+      // ([Privacy Policy], [Data Processing Agreement]) are links to those documents in the app and the e-mail address is a mailto link.
+      'v1': { effectiveDate: '2026-10-25', status: 'final', body: `# WaFlow Refund & Cancellation Policy
+
+**Last updated:** 25 October 2026
+
+---
+
+## 1. Cancelling Your Subscription
+
+You may cancel your WaFlow subscription at any time from **Settings → Billing**. There is no long-term contract and no cancellation fee.
+
+Cancellation takes effect at the **end of your current billing period** - you will retain access to the Service and your included usage (customer profiles and AI Mode prompts) until that date.
+
+---
+
+## 2. Refunds
+
+- Subscription fees already paid for the current billing period are **not refunded** on cancellation, other than as required by applicable law.
+- Optional onboarding and set-up services are provided under a separate written agreement that sets out the scope, the fee, and any refund terms. This policy does not give a right to a refund of onboarding or set-up fees.
+- WhatsApp message fees are charged and collected by Meta directly, not by WaFlow, so WaFlow cannot refund them.
+
+---
+
+## 3. Changing Plans
+
+- **Upgrades** take effect immediately; you will be charged a prorated amount for the remainder of the current billing period.
+- **Downgrades** take effect at the start of your next billing period.
+
+---
+
+## 4. Non-Payment
+
+If a payment fails, we will notify you and attempt to retry the charge. If payment is not resolved within 7 days, your account may be restricted to read-only access, and promotions and automated flows will be paused, until payment is made.
+
+---
+
+## 5. Data After Cancellation
+
+Following cancellation, your data is retained for 30 days to allow reactivation, after which it will be deleted in accordance with our [Privacy Policy](/legal/privacy_policy) and [Data Processing Agreement](/legal/data_processing_agreement), except where retention is required by law.
+
+---
+
+## 6. Contact
+
+Questions about billing, cancellation, or refunds can be directed to [Support@waflowtech.com](mailto:Support@waflowtech.com).
 ` },
     },
   },
